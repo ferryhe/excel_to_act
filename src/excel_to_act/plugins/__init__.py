@@ -1,0 +1,1 @@
+"""Plugin contracts and registry."""
