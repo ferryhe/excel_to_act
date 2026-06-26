@@ -1,0 +1,420 @@
+{
+  "$defs": {
+    "CellInventory": {
+      "properties": {
+        "source_location": {
+          "$ref": "#/$defs/SourceLocation"
+        },
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "row": {
+          "minimum": 1,
+          "title": "Row",
+          "type": "integer"
+        },
+        "column": {
+          "minimum": 1,
+          "title": "Column",
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/CellKind"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "data_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Type"
+        },
+        "number_format": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Number Format"
+        },
+        "formula": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Formula"
+        },
+        "style_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Style Id"
+        }
+      },
+      "required": [
+        "source_location",
+        "address",
+        "row",
+        "column",
+        "kind"
+      ],
+      "title": "CellInventory",
+      "type": "object"
+    },
+    "CellKind": {
+      "enum": [
+        "value",
+        "formula",
+        "blank"
+      ],
+      "title": "CellKind",
+      "type": "string"
+    },
+    "CoverageSummary": {
+      "properties": {
+        "recognized_inventory_objects": {
+          "minimum": 0,
+          "title": "Recognized Inventory Objects",
+          "type": "integer"
+        },
+        "unsupported_or_opaque_objects": {
+          "minimum": 0,
+          "title": "Unsupported Or Opaque Objects",
+          "type": "integer"
+        },
+        "discovered_workbook_objects": {
+          "minimum": 0,
+          "title": "Discovered Workbook Objects",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "recognized_inventory_objects",
+        "unsupported_or_opaque_objects",
+        "discovered_workbook_objects"
+      ],
+      "title": "CoverageSummary",
+      "type": "object"
+    },
+    "RangeInventory": {
+      "properties": {
+        "source_location": {
+          "$ref": "#/$defs/SourceLocation"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "source_location",
+        "address",
+        "kind"
+      ],
+      "title": "RangeInventory",
+      "type": "object"
+    },
+    "SheetInventory": {
+      "properties": {
+        "source_location": {
+          "$ref": "#/$defs/SourceLocation"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "max_row": {
+          "minimum": 0,
+          "title": "Max Row",
+          "type": "integer"
+        },
+        "max_column": {
+          "minimum": 0,
+          "title": "Max Column",
+          "type": "integer"
+        },
+        "state": {
+          "default": "visible",
+          "title": "State",
+          "type": "string"
+        },
+        "cells": {
+          "items": {
+            "$ref": "#/$defs/CellInventory"
+          },
+          "title": "Cells",
+          "type": "array"
+        },
+        "ranges": {
+          "items": {
+            "$ref": "#/$defs/RangeInventory"
+          },
+          "title": "Ranges",
+          "type": "array"
+        },
+        "layout_objects": {
+          "items": {
+            "$ref": "#/$defs/RangeInventory"
+          },
+          "title": "Layout Objects",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_location",
+        "name",
+        "index",
+        "max_row",
+        "max_column"
+      ],
+      "title": "SheetInventory",
+      "type": "object"
+    },
+    "SourceLocation": {
+      "description": "Original workbook location for a discovered object.",
+      "properties": {
+        "workbook_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workbook Path"
+        },
+        "sheet_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Name"
+        },
+        "sheet_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Index"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "object_type": {
+          "title": "Object Type",
+          "type": "string"
+        },
+        "object_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Object Id"
+        },
+        "ooxml_part": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ooxml Part"
+        }
+      },
+      "required": [
+        "object_type"
+      ],
+      "title": "SourceLocation",
+      "type": "object"
+    },
+    "UnsupportedFeature": {
+      "properties": {
+        "feature_type": {
+          "title": "Feature Type",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "source_location": {
+          "$ref": "#/$defs/SourceLocation"
+        },
+        "severity": {
+          "$ref": "#/$defs/UnsupportedSeverity",
+          "default": "warning"
+        },
+        "opaque": {
+          "default": true,
+          "title": "Opaque",
+          "type": "boolean"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "feature_type",
+        "description",
+        "source_location"
+      ],
+      "title": "UnsupportedFeature",
+      "type": "object"
+    },
+    "UnsupportedSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ],
+      "title": "UnsupportedSeverity",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "default": "phase1.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "artifact_type": {
+      "const": "workbook_inventory",
+      "default": "workbook_inventory",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "workbook_sha256": {
+      "title": "Workbook Sha256",
+      "type": "string"
+    },
+    "sheets": {
+      "items": {
+        "$ref": "#/$defs/SheetInventory"
+      },
+      "title": "Sheets",
+      "type": "array"
+    },
+    "workbook_ranges": {
+      "items": {
+        "$ref": "#/$defs/RangeInventory"
+      },
+      "title": "Workbook Ranges",
+      "type": "array"
+    },
+    "unsupported_features": {
+      "items": {
+        "$ref": "#/$defs/UnsupportedFeature"
+      },
+      "title": "Unsupported Features",
+      "type": "array"
+    },
+    "coverage": {
+      "$ref": "#/$defs/CoverageSummary"
+    }
+  },
+  "required": [
+    "workbook_sha256",
+    "coverage"
+  ],
+  "title": "WorkbookInventory",
+  "type": "object"
+}

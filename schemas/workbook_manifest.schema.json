@@ -1,0 +1,306 @@
+{
+  "$defs": {
+    "PackagePart": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "content_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Type"
+        },
+        "relationship_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relationship Type"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "opaque": {
+          "default": false,
+          "title": "Opaque",
+          "type": "boolean"
+        },
+        "source_location": {
+          "$ref": "#/$defs/SourceLocation"
+        }
+      },
+      "required": [
+        "name",
+        "size",
+        "source_location"
+      ],
+      "title": "PackagePart",
+      "type": "object"
+    },
+    "SheetManifest": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "state": {
+          "default": "visible",
+          "title": "State",
+          "type": "string"
+        },
+        "max_row": {
+          "minimum": 0,
+          "title": "Max Row",
+          "type": "integer"
+        },
+        "max_column": {
+          "minimum": 0,
+          "title": "Max Column",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "index",
+        "max_row",
+        "max_column"
+      ],
+      "title": "SheetManifest",
+      "type": "object"
+    },
+    "SourceLocation": {
+      "description": "Original workbook location for a discovered object.",
+      "properties": {
+        "workbook_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workbook Path"
+        },
+        "sheet_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Name"
+        },
+        "sheet_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Index"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "object_type": {
+          "title": "Object Type",
+          "type": "string"
+        },
+        "object_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Object Id"
+        },
+        "ooxml_part": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ooxml Part"
+        }
+      },
+      "required": [
+        "object_type"
+      ],
+      "title": "SourceLocation",
+      "type": "object"
+    },
+    "UnsupportedFeature": {
+      "properties": {
+        "feature_type": {
+          "title": "Feature Type",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "source_location": {
+          "$ref": "#/$defs/SourceLocation"
+        },
+        "severity": {
+          "$ref": "#/$defs/UnsupportedSeverity",
+          "default": "warning"
+        },
+        "opaque": {
+          "default": true,
+          "title": "Opaque",
+          "type": "boolean"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "feature_type",
+        "description",
+        "source_location"
+      ],
+      "title": "UnsupportedFeature",
+      "type": "object"
+    },
+    "UnsupportedSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ],
+      "title": "UnsupportedSeverity",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "default": "phase1.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "artifact_type": {
+      "const": "workbook_manifest",
+      "default": "workbook_manifest",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "workbook_path": {
+      "title": "Workbook Path",
+      "type": "string"
+    },
+    "file_name": {
+      "title": "File Name",
+      "type": "string"
+    },
+    "file_size": {
+      "minimum": 0,
+      "title": "File Size",
+      "type": "integer"
+    },
+    "sha256": {
+      "title": "Sha256",
+      "type": "string"
+    },
+    "is_macro_enabled": {
+      "default": false,
+      "title": "Is Macro Enabled",
+      "type": "boolean"
+    },
+    "sheets": {
+      "items": {
+        "$ref": "#/$defs/SheetManifest"
+      },
+      "title": "Sheets",
+      "type": "array"
+    },
+    "named_ranges_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Named Ranges Count",
+      "type": "integer"
+    },
+    "calc_mode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Calc Mode"
+    },
+    "package_parts": {
+      "items": {
+        "$ref": "#/$defs/PackagePart"
+      },
+      "title": "Package Parts",
+      "type": "array"
+    },
+    "unsupported_features": {
+      "items": {
+        "$ref": "#/$defs/UnsupportedFeature"
+      },
+      "title": "Unsupported Features",
+      "type": "array"
+    }
+  },
+  "required": [
+    "workbook_path",
+    "file_name",
+    "file_size",
+    "sha256"
+  ],
+  "title": "WorkbookManifest",
+  "type": "object"
+}

@@ -1,0 +1,241 @@
+{
+  "$defs": {
+    "ActuarialHint": {
+      "enum": [
+        "assumption",
+        "rate_table",
+        "cashflow",
+        "projection",
+        "output",
+        "unknown"
+      ],
+      "title": "ActuarialHint",
+      "type": "string"
+    },
+    "ModuleCategory": {
+      "enum": [
+        "input",
+        "data_table",
+        "formula_block",
+        "lookup_block",
+        "output",
+        "presentation",
+        "external_dependency",
+        "unsupported_opaque",
+        "other"
+      ],
+      "title": "ModuleCategory",
+      "type": "string"
+    },
+    "ModuleClassificationItem": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "category": {
+          "$ref": "#/$defs/ModuleCategory"
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        },
+        "source_location": {
+          "$ref": "#/$defs/SourceLocation"
+        },
+        "source_artifact_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Artifact Refs",
+          "type": "array"
+        },
+        "actuarial_hints": {
+          "items": {
+            "$ref": "#/$defs/ActuarialHint"
+          },
+          "title": "Actuarial Hints",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "category",
+        "confidence",
+        "source_location"
+      ],
+      "title": "ModuleClassificationItem",
+      "type": "object"
+    },
+    "SourceLocation": {
+      "description": "Original workbook location for a discovered object.",
+      "properties": {
+        "workbook_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workbook Path"
+        },
+        "sheet_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Name"
+        },
+        "sheet_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Index"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "object_type": {
+          "title": "Object Type",
+          "type": "string"
+        },
+        "object_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Object Id"
+        },
+        "ooxml_part": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ooxml Part"
+        }
+      },
+      "required": [
+        "object_type"
+      ],
+      "title": "SourceLocation",
+      "type": "object"
+    },
+    "UnsupportedFeature": {
+      "properties": {
+        "feature_type": {
+          "title": "Feature Type",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "source_location": {
+          "$ref": "#/$defs/SourceLocation"
+        },
+        "severity": {
+          "$ref": "#/$defs/UnsupportedSeverity",
+          "default": "warning"
+        },
+        "opaque": {
+          "default": true,
+          "title": "Opaque",
+          "type": "boolean"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "feature_type",
+        "description",
+        "source_location"
+      ],
+      "title": "UnsupportedFeature",
+      "type": "object"
+    },
+    "UnsupportedSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ],
+      "title": "UnsupportedSeverity",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "default": "phase1.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "artifact_type": {
+      "const": "module_classification",
+      "default": "module_classification",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/ModuleClassificationItem"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "unsupported_features": {
+      "items": {
+        "$ref": "#/$defs/UnsupportedFeature"
+      },
+      "title": "Unsupported Features",
+      "type": "array"
+    }
+  },
+  "title": "ModuleClassification",
+  "type": "object"
+}
