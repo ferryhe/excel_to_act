@@ -1,0 +1,91 @@
+{
+  "$defs": {
+    "ArtifactMetadata": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "bytes": {
+          "minimum": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "schema_version": {
+          "default": "phase1.v1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "sha256",
+        "bytes"
+      ],
+      "title": "ArtifactMetadata",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "default": "phase1.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "artifact_type": {
+      "const": "run_metadata",
+      "default": "run_metadata",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "workbook_sha256": {
+      "title": "Workbook Sha256",
+      "type": "string"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completed At"
+    },
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/ArtifactMetadata"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run_id",
+    "workbook_sha256",
+    "started_at"
+  ],
+  "title": "RunMetadata",
+  "type": "object"
+}
