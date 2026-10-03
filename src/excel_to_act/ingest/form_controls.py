@@ -52,11 +52,17 @@ def _local(tag: str) -> str:
 
 
 def _normalize_ref(value: str | None) -> str | None:
-    """Turn ``Inputs!$B$2`` into ``Inputs!B2``."""
+    """Remove A1 anchors and unwrap quoted sheet names without losing apostrophes."""
 
     if not value:
         return None
-    return value.strip().replace("$", "").replace("'", "")
+    reference = value.strip()
+    if "!" in reference:
+        sheet, _, address = reference.rpartition("!")
+        if sheet.startswith("'") and sheet.endswith("'"):
+            sheet = sheet[1:-1].replace("''", "'")
+        return f"{sheet}!{address.replace('$', '')}"
+    return reference.replace("$", "")
 
 
 def _split_ref(ref: str | None) -> tuple[str | None, str | None]:

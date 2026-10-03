@@ -37,7 +37,7 @@ flowchart TD
     style O1 fill:#eef7ff,stroke:#1565c0
 ```
 
-**落地状态**：Step 0–2 已部分落地（`ingest/` `inventory/` `graph/` `classify/` `confirm/` `store/` `orchestrator/` `interfaces/`；Step 2 的 `artifact_index.json` 已由 `store/local_store.py` 产出）。Step 3 属 plan 的 Phase 1 范围、已部分落地（`classify/`）。**Step 4–5 未开工**；`report/markdown.py`（PR-12）是最后一个未开工的 Phase 1 任务。
+**落地状态**：Step 0–2 已部分落地（`ingest/` `inventory/` `graph/` `classify/` `confirm/` `store/` `orchestrator/` `interfaces/`；Step 2 的 `artifact_index.json` 已由 `store/local_store.py` 产出）。Step 3 属 plan 的 Phase 1 范围、已部分落地（`classify/`）。Step 1 的 JSON 与 Markdown handoff 已实现；**Step 4–5 未开工**。
 
 **当前建造目标：Step 1 的无损分解扩展**（见 §4 的缺口清单）。
 
@@ -105,9 +105,9 @@ flowchart LR
 
 ## 3. Step 1 输出目录
 
-### 3.1 当前实现（PR-11 验收布局）
+### 3.1 当前实现
 
-CLI 是 `excel-to-act inspect <workbook> --out <dir>`，且 `dir_okay=False`——**当前不接受目录入参**。产物是 6 个扁平 JSON：
+CLI 是 `excel-to-act inspect <workbook> --out <dir>`，且 `dir_okay=False`——**当前不接受目录入参**。每次运行写出七个数据 JSON、`run_metadata.json` 和供人阅读的 `handoff.md`：
 
 ```text
 <out>/workbooks/<workbook_sha256>/<run_id>/
@@ -116,19 +116,23 @@ CLI 是 `excel-to-act inspect <workbook> --out <dir>`，且 `dir_okay=False`—�
   dependency_graph.json
   module_classification.json
   confirmation_template.json
+  completeness.json
+  handoff.json
+  handoff.md
   run_metadata.json
 <out>/workbooks/<workbook_sha256>/artifact_index.json
-<out>/<artifact>.json          # latest-run 别名，非规范路径
+<out>/artifact_index.json
+<out>/<artifact>               # 最新运行产物的便捷别名（包括 handoff.md）
 ```
 
-无 Markdown 产物：`report/__init__.py` 只有 docstring，`report/markdown.py` 未开工（PR-12）。
+根目录会复制最新运行的产物作为便捷别名；`handoff.md` 和 `handoff.json` 也会复制到根目录。
 
 ### 3.2 目标布局（Step 1）
 
 - `--input` 支持**目录**（批量）
 - 命名空间沿用 `<workbook_sha256>/<run_id>/`，**不用 slug**：slug 由文件名派生，同名不同内容会串、改名会断链
 - 每一类同时产出 `.md`（人读）与 `.json`（机器读）
-- 新增 `coverage` 与 `handoff` 两个**独立契约**（当前 `CoverageSummary` 只是 `WorkbookInventory` 的内嵌字段，`Handoff` 类型不存在），需带独立 `artifact_type` 与 `schema_version` 才能单独落盘
+- `Handoff` 契约已实现并写出 JSON/Markdown；`CoverageSummary` 仍嵌在 `WorkbookInventory` 中，独立 coverage 产物仍是目标布局的一部分
 
 ```text
 output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
@@ -373,7 +377,7 @@ excel_to_act/
 - Step 0–2：只做分解、索引、摘要，**不做语义决策**
 - Step 3（≈ plan Phase 1 的 classify）允许判断"这是什么模块"，且必须可确认、可覆盖（经 `confirm/`）
 - 生成 Python（Step 4）之前必须通过对账（Step 5）
-- 当前 Phase 1 的验收产物是 6 个扁平 JSON（见 §3.1），**不是** §3.2 的分目录布局
+- 当前 Phase 1 按工作簿与运行 ID 写出七个数据 JSON、`run_metadata.json`、`handoff.md`，并提供根目录别名（见 §3.1）；**不是** §3.2 的分目录布局
 
 ## 参见
 

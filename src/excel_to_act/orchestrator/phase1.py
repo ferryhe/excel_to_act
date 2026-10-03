@@ -87,6 +87,16 @@ class Phase1Orchestrator:
                     opaque=True,
                 )
             )
+        if project.error:
+            inventory.unsupported_features.append(
+                UnsupportedFeature(
+                    feature_type="vba_extraction_failed",
+                    description=f"VBA source could not be parsed: {project.error}",
+                    source_location=SourceLocation(workbook_path=str(workbook_path), object_type="workbook"),
+                    severity=UnsupportedSeverity.warning,
+                    opaque=True,
+                )
+            )
         if not project.modules:
             return
         refs = extract_vba_cell_links(project)

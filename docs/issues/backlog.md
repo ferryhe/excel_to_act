@@ -199,7 +199,7 @@
 
 现状 `pyproject.toml` 的 `formula = ["formulas>=1.3", "xlcalculator>=0.5"]` 把 **EUPL 包** 与 **MIT 包** 捆绑在同一 extra，与"copyleft 隔离"结论相悖；且 extra 名 `formula` 与包名 `formulas` 不一致，易误用。
 
-同时：`requires-python = ">=3.11"` 无上限，CI 仅测 3.11/3.12，需确认待引入库在 CI 版本上可安装。
+同时：`requires-python = ">=3.11"` 无上限，CI 核心依赖矩阵现测 3.11/3.12/3.13；仍需确认待引入的可选库在目标 Python 版本上可安装。
 
 **不含：** 具体库的版本升级策略（另有）。
 

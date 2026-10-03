@@ -45,22 +45,23 @@ _METADATA_PREFIXES = ("docProps/",)
 # contains the corresponding objects, otherwise removing collection would go
 # unnoticed.
 _COVERED_PART_RULES: tuple[tuple[str, str], ...] = (
-    ("xl/worksheets/", "cells"),
+    ("xl/worksheets/", "worksheet"),
     ("xl/tables/", "table"),
     ("xl/comments/", "comment"),
 )
 _CELL_VALUE_TAGS = {"v", "f", "is"}
 
 
-def _collected_evidence(inventory: WorkbookInventory) -> set[str]:
-    """Evidence kinds present in the inventory (cells, table, comment, ...)."""
+def _collected_evidence(inventory: WorkbookInventory) -> dict[str, list[str]]:
+    """Inventory evidence available to account for individual package parts."""
 
-    evidence: set[str] = set()
+    evidence: dict[str, list[str]] = {}
     for sheet in inventory.sheets:
-        if sheet.cells:
-            evidence.add("cells")
+        evidence.setdefault("worksheet", []).append(sheet.name)
         for item in list(sheet.ranges) + list(sheet.layout_objects):
-            evidence.add(item.kind)
+            evidence.setdefault(item.kind, []).append(item.name or item.address or item.source_location.object_id or "")
+    for item in inventory.workbook_ranges:
+        evidence.setdefault(item.kind, []).append(item.name or item.address or item.source_location.object_id or "")
     return evidence
 
 
@@ -154,8 +155,8 @@ def verify_completeness(
         )
     )
 
-    # 3. No package part was silently dropped: every part is either collected
-    #    (with evidence in the output), marked opaque, or a known non-object.
+    # 3. No package part was silently dropped: each covered package part must
+    #    consume its own inventory evidence, marked opaque, or be known non-object.
     evidence = _collected_evidence(inventory)
     unaccounted_content: list[str] = []
     unaccounted_metadata: list[str] = []
@@ -171,7 +172,10 @@ def verify_completeness(
         accounted = False
         for prefix, required in _COVERED_PART_RULES:
             if name.startswith(prefix):
-                accounted = required in evidence
+                available = evidence.get(required, [])
+                if available:
+                    available.pop()
+                    accounted = True
                 break
         if accounted:
             continue

@@ -59,7 +59,7 @@ def test_one_dimensional_data_table(tmp_path: Path) -> None:
     inject_data_table(
         fixture,
         "Scenarios",
-        '<row r="7"><c r="B7"><f t="dataTable" ref="B7:C9" dt2D="0" dtr="0" r1="R2C2">=B2*B3</f><v></v></c></row>',
+        '<row r="7"><c r="B7"><f t="dataTable" ref="B7:C9" dt2D="0" dtr="0" r1="B2">=B2*B3</f><v></v></c></row>',
     )
 
     spec = read_data_tables(fixture)["Scenarios"][0]
@@ -88,7 +88,7 @@ def test_two_dimensional_data_table(tmp_path: Path) -> None:
     inject_data_table(
         fixture,
         "Scenarios",
-        '<row r="7"><c r="B7"><f t="dataTable" ref="B7:C9" dt2D="1" dtr="0" r1="R2C2" r2="R3C4">=B2*B3</f><v></v></c></row>',
+        '<row r="7"><c r="B7"><f t="dataTable" ref="B7:C9" dt2D="1" dtr="0" r1="B2" r2="D3">=B2*B3</f><v></v></c></row>',
     )
     inventory = _inventory(fixture)
     table = _data_tables(inventory)[0]
@@ -114,7 +114,7 @@ def test_openpyxl_exposes_data_table_as_object_hence_xml_read(tmp_path: Path) ->
     inject_data_table(
         fixture,
         "Scenarios",
-        '<row r="7"><c r="B7"><f t="dataTable" ref="B7:C9" dt2D="0" dtr="0" r1="R2C2">=B2*B3</f><v></v></c></row>',
+        '<row r="7"><c r="B7"><f t="dataTable" ref="B7:C9" dt2D="0" dtr="0" r1="B2">=B2*B3</f><v></v></c></row>',
     )
     wb = load_workbook(fixture)
     try:

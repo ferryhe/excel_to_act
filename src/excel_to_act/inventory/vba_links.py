@@ -22,7 +22,6 @@ from excel_to_act.schemas import GraphEdge, GraphNode, GraphNodeKind, SourceLoca
 _RANGE_RE = re.compile(r'(?<!\w)Range\s*\(\s*"([^"]+)"\s*\)')
 _NAMES_RE = re.compile(r'(?<!\w)Names\s*\(\s*"([^"]+)"\s*\)')
 _CELLS_RE = re.compile(r"(?<!\w)Cells\s*\((?:[^()]|\([^()]*\))*\)")
-_COMMENT_LINE_RE = re.compile(r"^\s*(?:'|Rem\b)", re.IGNORECASE)
 _A1_QUALIFIED = re.compile(r"^'?(?P<sheet>[^'!]+)'?!\s*(?P<ref>\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?)$")
 _A1_BARE = re.compile(r"^(?P<ref>\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?)$")
 
@@ -47,12 +46,75 @@ def _parse_range_literal(text: str) -> tuple[str | None, str | None]:
     return match.groupdict().get("sheet"), match.group("ref")
 
 
+def _strip_vba_noise(code: str) -> str:
+    """Remove comments and mask strings except literal Range/Names arguments."""
+
+    chars = list(code)
+    line_start = 0
+    statement_start = True
+    i = 0
+
+    def blank(start: int, end: int) -> None:
+        for index in range(start, end):
+            if chars[index] not in "\r\n":
+                chars[index] = " "
+
+    while i < len(code):
+        char = code[i]
+        if char in "\r\n":
+            line_start = i + 1
+            statement_start = True
+            i += 1
+            continue
+        if char == "'":
+            end = i
+            while end < len(code) and code[end] not in "\r\n":
+                end += 1
+            blank(i, end)
+            i = end
+            continue
+        if statement_start and re.match(r"Rem\b", code[i:], re.IGNORECASE):
+            end = i
+            while end < len(code) and code[end] not in "\r\n":
+                end += 1
+            blank(i, end)
+            i = end
+            continue
+        if char == '"':
+            end = i + 1
+            while end < len(code):
+                if code[end] == '"':
+                    if end + 1 < len(code) and code[end + 1] == '"':
+                        end += 2
+                        continue
+                    end += 1
+                    break
+                end += 1
+            prefix = code[line_start:i]
+            suffix = code[end:]
+            is_reference_argument = bool(
+                re.search(r"\b(?:Range|Names)\s*\(\s*$", prefix, re.IGNORECASE)
+                and re.match(r"\s*\)", suffix)
+            )
+            if not is_reference_argument:
+                blank(i, end)
+            statement_start = False
+            i = end
+            continue
+        if char == ":":
+            statement_start = True
+        elif not char.isspace():
+            statement_start = False
+        i += 1
+    return "".join(chars)
+
+
 def extract_vba_cell_links(project) -> list[VbaCellRef]:
     """Scan every module's source for cell/name references."""
 
     refs: list[VbaCellRef] = []
     for module in getattr(project, "modules", []):
-        code = "\n".join(line for line in (module.code or "").splitlines() if not _COMMENT_LINE_RE.match(line))
+        code = _strip_vba_noise(module.code or "")
         for match in _RANGE_RE.finditer(code):
             sheet, address = _parse_range_literal(match.group(1))
             if address and sheet:
@@ -129,7 +191,7 @@ def build_vba_edges(
                     label=label,
                     source_location=SourceLocation(
                         workbook_path=workbook_path,
-                        sheet_name=ref.sheet,
+                        sheet_name=sheet,
                         address=ref.address,
                         object_type="cell",
                         object_id=label,

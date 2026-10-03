@@ -24,7 +24,7 @@ OPAQUE_MARKERS = {
     "/slicers/": "slicer",
     "/timelines/": "timeline",
     "/macrosheets/": "excel 4.0 macro sheet",
-    "/customXml/": "custom xml / power query",
+    "customXml/": "custom xml / power query",
     "volatileDependencies.xml": "volatile dependency",
     "/webExtensions/": "office add-in",
     "xl/activeX/": "activex control",

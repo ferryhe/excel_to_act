@@ -29,10 +29,10 @@
 |---|---|---|---|
 | 读取 manifest | `src/excel_to_act/ingest/openpyxl_reader.py` | 已实现 | §4.6 确认 |
 | OOXML 包扫描 | `src/excel_to_act/ingest/ooxml_package.py` | 已实现 | §4.6b（v1 漏评，已补） |
-| 单元格清单 | `src/excel_to_act/inventory/extractor.py` | 已实现 | §4.6 确认；**缺 cached_value**，见 §7 |
+| 单元格清单 | `src/excel_to_act/inventory/extractor.py` | 已实现 | §4.6 确认；双视图读取公式与缓存值，缺失缓存会记录 warning |
 | 依赖图 | `src/excel_to_act/graph/builder.py` | 已实现（正则解析） | §6.5 判定需替换 |
 | 分类/确认/存储/编排/CLI | `classify/`, `confirm/`, `store/local_store.py`, `orchestrator/phase1.py`, `interfaces/cli.py` | 已实现 | 不在本文范围（归 B1） |
-| 报告 | `src/excel_to_act/report/` | **仅空壳 `__init__.py`** | 不在本文范围（归 B1 / D2） |
+| 报告 | `src/excel_to_act/report/handoff.py` | Step 1 JSON/Markdown handoff 已实现 | 通用报告生成不在本文范围（归 B1 / D2） |
 | 插件协议 | `src/excel_to_act/plugins/contracts.py` | 6 个 Protocol，**无 OracleRunner** | §7 L3 需新增 |
 | 可选依赖 | `pyproject.toml [project.optional-dependencies].formula` | `formulas>=1.3` + `xlcalculator>=0.5` 捆绑 | §7 建议拆分 |
 
@@ -151,7 +151,7 @@
   - `number_format`、`data_type`、`comment`、`hyperlink`、merged、tables、defined names、data validation、conditional formatting、sheet 保护/可见性
 - **局限:** 不计算；大文件慢（`read_only=True` 可流式加速，但会丢失部分格式/注释信息，与保真目标存在取舍）
 - **⚠ 当前实现尚未吃满其保真潜力（缺口清单）:**
-  1. **未做 `data_only=True` 二次加载**，`CellInventory`（`schemas/artifacts.py:95-105`）**无 `cached_value` 字段**
+  1. 缓存值采集已由 `ingest/cached_values.py` 使用 `data_only=True` 二次加载；工作簿未重算时，缓存仍不可用并记录 warning
   2. 引用解析用正则（`graph/builder.py:20` `REF_RE`），不识别结构化引用 `Table[Col]`，未构造 defined-name 节点
   3. 未采集 fills / fonts / borders / print areas（plan 桶 6 要求）
   4. 未识别 volatile / circular（plan 桶 5 要求）
@@ -193,7 +193,7 @@
 
 - **许可证:** BSD-3-Clause
 - **价值:** 用 Excel 自身重算，作为数值基线
-- **局限:** 依赖 Excel COM；CI 为 `ubuntu-latest`、Python 3.11/3.12（`.github/workflows/ci.yml:19`），**只能在开发者 Windows 机本地跑，不进 CI**
+- **局限:** 依赖 Excel COM；CI 为 `ubuntu-latest`、Python 3.11/3.12/3.13（`.github/workflows/ci.yml:19`），**只能在开发者 Windows 机本地跑，不进 CI**
 
 > 1. **放置层：** L3 oracle（本地基线，不进 CI）
 > 2. **许可证进核心：** 否
@@ -274,10 +274,10 @@ plan 明确点名 `formulas` / `xlcalculator` 可用于 **formula reference pars
 | **L0 采集** | `openpyxl` + stdlib `zipfile`/XML（核心）；`fastexcel` 仅旁路加速 | `ingest/openpyxl_reader.py`、`ingest/ooxml_package.py`、`inventory/extractor.py` | `inventory/layout.py`、`inventory/opaque.py`、`ingest/calamine_reader.py` |
 | **L1 视图** | **自研，无现成可用** | 无（仅有 `schemas/artifacts.py` 的 `SourceLocation`） | 建议新建 `view/` + `ViewSlice` 契约 |
 | **L2 语义推理** | 自研 | `classify/rules.py`、`classify/classifier.py`、`confirm/templates.py` | 无真正语义推理模块；`ActuarialHint`（6 值）与 plan 的 10 个 hint 不一致 |
-| **L3 校验 oracle** | `formulas`（可选依赖、隔离）+ LibreOffice（进程外）+ **缓存值对比（零依赖首选）** | **完全缺失** | `validation/{cached_value,formulas_oracle,libreoffice_oracle}.py` + `OracleRunner` 协议 + `ValidationReport` |
+| **L3 校验 oracle** | `formulas`（可选依赖、隔离）+ LibreOffice（进程外）+ **缓存值对比（零依赖首选）** | 公式缓存值采集已实现；数值对账与报告仍缺失 | `validation/{formulas_oracle,libreoffice_oracle}.py` + `OracleRunner` 协议 + `ValidationReport` |
 | 层外（B1 需补位） | — | `store/local_store.py`、`orchestrator/phase1.py`、`interfaces/cli.py` 已落地 | `report/markdown.py` 缺失（`jinja2` 已声明但未使用） |
 
-**⚠ 缓存值对比的前置条件：** 当前仓库**无 `data_only=True` 加载、无 `cached_value` 字段**，该 oracle **暂不可实现**。必须先补齐缓存值采集（且覆盖计数不得重复计数），否则 L3 只能依赖 `formulas` / LibreOffice。
+**⚠ 缓存值对比的前置条件：** `data_only=True` 双视图加载与 `cached_value` 字段已实现；工作簿未由 Excel 重算时仍可能没有可用缓存，并会记录 warning。缓存值采集已具备，但 L3 对账流程仍未实现。
 
 **⚠ extras 现状：** `pyproject.toml` 已声明 `formula = ["formulas>=1.3", "xlcalculator>=0.5"]`——把 EUPL 包与 MIT 包捆绑在同一个 extra，与本文"隔离"建议相悖。建议拆为 `oracle-formulas`（EUPL，显式 opt-in）与 `xlcalc`（MIT）。
 
@@ -288,7 +288,7 @@ plan 明确点名 `formulas` / `xlcalculator` 可用于 **formula reference pars
 1. `fastexcel` / `python-calamine` 的确切许可证与公式/格式读取能力 → 引入前实测
 2. `formulas` 在 EUPL 下"内部使用 vs 随产物分发"的边界 → 需法律确认（→ F1）
 3. `formulas` 对含 VBA / 数据透视表工作簿的失败模式 → 需 fixture 实测
-4. **Python 版本可行性**：`requires-python = ">=3.11"` 无上限，CI 仅测 3.11/3.12。须在 3.11/3.12 实测 `pip install formulas / xlcalculator / fastexcel` 可安装性与导入是否成功
+4. **Python 版本可行性**：`requires-python = ">=3.11"` 无上限，CI 核心依赖矩阵测 3.11/3.12/3.13；可选依赖尚未纳入该安装矩阵。须实测 `pip install formulas / xlcalculator / fastexcel` 的可安装性与导入
 5. **openpyxl 自带 tokenizer**（`openpyxl.formula.tokenizer`，openpyxl≥3.1）能否覆盖 A1/跨表/结构化引用/defined name → 若是，作为引用解析首选，替换正则
 6. **传递依赖许可证**：`formulas`→`schedula` 等、`xlcalculator`→numpy 等
 7. **缓存值缺失时**（工作簿从未由 Excel 重算存盘）该 oracle 如何降级为 warning 而非 error
@@ -306,7 +306,7 @@ plan 明确点名 `formulas` / `xlcalculator` 可用于 **formula reference pars
 | 与 A2/A3/B1/B2/B3/C1 边界无重叠 | **部分完成** | §1 Out of scope 已声明非规范性 | 六份关联文档均未创建，**待其创建后复核** |
 | 与仓库现状对齐（引用 `src/` 文件） | **完成** | §0 现状表、§4.6 缺口清单、§7 现有/缺失列 | — |
 | 放置建议映射到具体文件 | **完成** | §7 表格「现有模块 / 缺失模块」两列 | — |
-| 已转化为可执行动作（PR / extras 调整） | **未完成** | — | 需在 `docs/plans/pr_plan_phase1.md` 新增 PR-13（L3 oracle + `OracleRunner` + cached_value），并调整 `pyproject.toml` extras |
+| 已转化为可执行动作（PR / extras 调整） | **未完成** | — | 需在 `docs/plans/pr_plan_phase1.md` 新增 PR-13（L3 oracle + `OracleRunner`，复用已实现的 cached value 采集），并调整 `pyproject.toml` extras |
 | 版本/许可证数据可核验 | **部分完成** | PyPI 元数据页 + GitHub README | §8.4/§8.6 待实测；`FlyingKoala` 缺确切发版日期 |
 
 ---
@@ -314,7 +314,7 @@ plan 明确点名 `formulas` / `xlcalculator` 可用于 **formula reference pars
 ## 附录：代码侧偏差（不在本文决策范围，转 B3 / C 类文档 / 独立 issue）
 
 1. `inventory/extractor.py:100` 覆盖不变量为**恒等式**（`discovered = recognized + opaque`），等式永远成立，检测不了静默丢失；真正的 `discovered` 须由 `zipfile` 独立枚举
-2. `CellInventory` 无 `cached_value` 字段，且 `inventory/README.md` 声称含 "cached values"，与代码漂移
+2. `CellInventory.cached_value` 与 `cached_value_available` 已实现并与 `inventory/README.md` 一致；缓存值对账 oracle 仍未实现
 3. `ActuarialHint` 枚举（6 值）与 plan 第 88–97 行的 10 个 hint 不一致
 4. `ooxml_package.py:51` `zipfile.ZipFile` 无异常保护，加密/损坏文件会抛未捕获异常
 5. `tests/` 未按模块拆分（仅 2 个文件），`examples/` 无静态 fixture

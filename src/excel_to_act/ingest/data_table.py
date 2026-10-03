@@ -2,9 +2,9 @@
 
 A What-If data table is not a separate OOXML element: Excel stores it as the
 formula of the table's corner cell, marked with ``t="dataTable"`` and carrying
-the table range plus the row/column input cells in R1C1 notation:
+the table range plus the row/column input cells as A1 cell references:
 
-    <c r="B7"><f t="dataTable" ref="B7:C9" dt2D="1" dtr="0" r1="R2C2" r2="R3C4">=B2*B3</f></c>
+    <c r="B7"><f t="dataTable" ref="B7:C9" dt2D="1" dtr="0" r1="B2" r2="D3">=B2*B3</f></c>
 
 openpyxl reads that cell into a ``DataTableFormula`` object but **drops the
 formula text**, and any caller doing ``str(cell.value)`` silently turns it into
@@ -14,17 +14,16 @@ a repr. Both the geometry and the text are therefore read from XML here.
 from __future__ import annotations
 
 import posixpath
-import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from openpyxl.utils.cell import get_column_letter
+from openpyxl.utils.cell import coordinate_from_string
+from openpyxl.utils.exceptions import CellCoordinatesException
 
 _DOC_REL = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _PKG_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
-_R1C1 = re.compile(r"R(\d+)C(\d+)")
 _SUPPORTED_SUFFIXES = {".xlsx", ".xlsm"}
 
 
@@ -59,15 +58,15 @@ def resolve_package_part(base_dir: str, target: str) -> str:
     return posixpath.normpath(posixpath.join(base_dir, target))
 
 
-def _r1c1_to_a1(value: str | None) -> str | None:
-    """Convert absolute R1C1 (``R2C2``) to ``$B$2``; relative refs are not resolvable."""
-
+def _cell_ref_to_a1(value: str | None) -> str | None:
+    """Normalize an OOXML A1 cell reference such as ``B2`` to ``$B$2``."""
     if not value:
         return None
-    match = _R1C1.fullmatch(value.strip())
-    if match is None:
+    try:
+        column, row = coordinate_from_string(value.strip().replace("$", ""))
+    except (CellCoordinatesException, TypeError):
         return None
-    return f"${get_column_letter(int(match.group(2)))}${match.group(1)}"
+    return f"${column}${row}"
 
 
 def sheet_xml_parts(workbook_path: Path) -> dict[str, str]:
@@ -131,8 +130,8 @@ def read_data_tables(workbook_path: Path) -> dict[str, list[DataTableSpec]]:
                         corner_cell=cell.attrib.get("r", ""),
                         ref=formula.attrib.get("ref"),
                         formula_text=f"={text}" if text and not text.startswith("=") else (text or None),
-                        row_input_cell=_r1c1_to_a1(formula.attrib.get("r1")),
-                        col_input_cell=_r1c1_to_a1(formula.attrib.get("r2")),
+                        row_input_cell=_cell_ref_to_a1(formula.attrib.get("r1")),
+                        col_input_cell=_cell_ref_to_a1(formula.attrib.get("r2")),
                         two_dimensional=formula.attrib.get("dt2D") in {"1", "true"},
                         raw_r1=formula.attrib.get("r1"),
                         raw_r2=formula.attrib.get("r2"),

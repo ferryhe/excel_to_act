@@ -13,6 +13,7 @@ from pathlib import Path
 from excel_to_act.schemas import (
     CompletenessReport,
     ConfirmationTemplate,
+    CellKind,
     FormulaGraph,
     Handoff,
     HandoffArtifactRef,
@@ -78,7 +79,7 @@ def build_summary(inventory: WorkbookInventory, graph: FormulaGraph) -> dict[str
     return {
         "sheets": len(inventory.sheets),
         "cells": len(cells),
-        "formula_cells": sum(1 for cell in cells if cell.formula),
+        "formula_cells": sum(1 for cell in cells if cell.kind == CellKind.formula),
         "cached_values": sum(1 for cell in cells if cell.cached_value_available),
         "defined_names": kinds.get("defined_name", 0),
         "tables": kinds.get("table", 0),
@@ -136,7 +137,8 @@ def build_handoff(
         for artifact in metadata.artifacts
     ]
 
-    all_features = manifest.unsupported_features + inventory.unsupported_features + graph.unsupported_features
+    # inventory.unsupported_features already includes the manifest features.
+    all_features = inventory.unsupported_features + graph.unsupported_features
     # Only genuinely unparseable parts count as opaque; warnings such as
     # "missing_cached_values" are recoverable and must not inflate this number.
     opaque_features = [feature for feature in all_features if feature.opaque]
