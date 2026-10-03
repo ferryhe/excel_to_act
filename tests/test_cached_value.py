@@ -39,9 +39,12 @@ def inject_cached_values(path: Path, values: dict[str, str]) -> None:
         payload = {name: zf.read(name) for name in names}
     part = "xl/worksheets/sheet1.xml"
     xml = payload[part].decode("utf-8")
+    empty_value = re.compile(r"<v\s*/>|<v>\s*</v>")
     for address, value in values.items():
         cell_pattern = re.compile(rf'(<c r="{address}"[^>]*>.*?</c>)', re.DOTALL)
-        xml = cell_pattern.sub(lambda m: m.group(1).replace("<v></v>", f"<v>{value}</v>"), xml)
+        xml = cell_pattern.sub(
+            lambda m: empty_value.sub(lambda _: f"<v>{value}</v>", m.group(1)), xml
+        )
     payload[part] = xml.encode("utf-8")
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         for name in names:
