@@ -90,6 +90,32 @@
           ],
           "default": null,
           "title": "Style Id"
+        },
+        "cached_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached Value"
+        },
+        "cached_value_available": {
+          "default": false,
+          "title": "Cached Value Available",
+          "type": "boolean"
         }
       },
       "required": [
@@ -368,6 +394,37 @@
       ],
       "title": "UnsupportedSeverity",
       "type": "string"
+    },
+    "VbaModule": {
+      "description": "A VBA module, class, document, or form extracted from ``vbaProject.bin``.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "kind": {
+          "default": "StdModule",
+          "title": "Kind",
+          "type": "string"
+        },
+        "code": {
+          "default": "",
+          "title": "Code",
+          "type": "string"
+        },
+        "procedures": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Procedures",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "VbaModule",
+      "type": "object"
     }
   },
   "properties": {
@@ -398,6 +455,13 @@
         "$ref": "#/$defs/RangeInventory"
       },
       "title": "Workbook Ranges",
+      "type": "array"
+    },
+    "vba_modules": {
+      "items": {
+        "$ref": "#/$defs/VbaModule"
+      },
+      "title": "Vba Modules",
       "type": "array"
     },
     "unsupported_features": {

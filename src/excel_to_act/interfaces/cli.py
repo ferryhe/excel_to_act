@@ -26,3 +26,11 @@ def inspect(
     metadata = Phase1Orchestrator().run(workbook, out)
     typer.echo(f"Wrote Phase 1 artifacts to {out}")
     typer.echo(f"Run ID: {metadata.run_id}")
+    status = metadata.completeness_status or "unknown"
+    handoff = next((a.path for a in metadata.artifacts if a.name == "handoff.md"), None)
+    if handoff:
+        typer.echo(f"Handoff: {handoff}")
+    typer.echo(f"Completeness: {status}")
+    if status == "fail":
+        typer.echo("Completeness check failed; see completeness.json for blocking gaps.", err=True)
+        raise typer.Exit(code=1)

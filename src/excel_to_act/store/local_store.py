@@ -13,8 +13,10 @@ from pydantic import BaseModel
 
 from excel_to_act.schemas import (
     ArtifactMetadata,
+    CompletenessReport,
     ConfirmationTemplate,
     FormulaGraph,
+    Handoff,
     ModuleClassification,
     RunMetadata,
     WorkbookInventory,
@@ -29,6 +31,8 @@ ARTIFACT_NAMES: list[tuple[str, str]] = [
     ("dependency_graph", "dependency_graph.json"),
     ("module_classification", "module_classification.json"),
     ("confirmation_template", "confirmation_template.json"),
+    ("completeness", "completeness.json"),
+    ("handoff", "handoff.json"),
 ]
 
 _MODEL_BY_FILE: dict[str, type[BaseModel]] = {
@@ -37,6 +41,8 @@ _MODEL_BY_FILE: dict[str, type[BaseModel]] = {
     "dependency_graph.json": FormulaGraph,
     "module_classification.json": ModuleClassification,
     "confirmation_template.json": ConfirmationTemplate,
+    "completeness.json": CompletenessReport,
+    "handoff.json": Handoff,
     "run_metadata.json": RunMetadata,
 }
 
@@ -83,6 +89,19 @@ class LocalArtifactStore:
             schema_version=getattr(artifact, "schema_version", SCHEMA_VERSION),
         )
 
+    def write_text(self, name: str, text: str, run_dir: Path) -> ArtifactMetadata:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        path = run_dir / name
+        data = text.encode("utf-8")
+        path.write_bytes(data)
+        return ArtifactMetadata(
+            name=name,
+            path=str(path),
+            sha256=_sha256_bytes(data),
+            bytes=len(data),
+            schema_version=SCHEMA_VERSION,
+        )
+
     def read_json(self, path: str | Path, model: type[ArtifactModel]) -> ArtifactModel:
         data = Path(path).read_bytes()
         artifact = model.model_validate_json(data)
@@ -111,6 +130,8 @@ class LocalArtifactStore:
         metadata = self.read_json(self.run_dir(workbook_sha256, run_id) / "run_metadata.json", RunMetadata)
         for artifact in metadata.artifacts:
             if artifact.name in {"artifact_index.json", "run_metadata.json"}:
+                continue
+            if not artifact.name.endswith(".json"):  # e.g. handoff.md is human-facing only
                 continue
             self.read_artifact(artifact)
         return metadata
@@ -166,6 +187,7 @@ class LocalArtifactStore:
         classification: ModuleClassification,
         confirmation: ConfirmationTemplate,
         metadata: RunMetadata,
+        completeness: CompletenessReport | None = None,
     ) -> RunMetadata:
         run_dir = self.run_dir(metadata.workbook_sha256, metadata.run_id)
         written = [
@@ -175,6 +197,9 @@ class LocalArtifactStore:
             self.write_json("module_classification.json", classification, run_dir),
             self.write_json("confirmation_template.json", confirmation, run_dir),
         ]
+        if completeness is not None:
+            written.append(self.write_json("completeness.json", completeness, run_dir))
+            metadata.completeness_status = completeness.status
         metadata.artifacts = written
         metadata.completed_at = datetime.now(UTC)
         meta = self.write_json("run_metadata.json", metadata, run_dir)
@@ -183,5 +208,21 @@ class LocalArtifactStore:
         metadata.artifacts.append(index_meta)
         # Rewrite metadata after adding index metadata so canonical run metadata is complete.
         metadata.artifacts[-2] = self.write_json("run_metadata.json", metadata, run_dir)
+        self._copy_latest_aliases(metadata)
+        return metadata
+
+    def append_artifacts(self, metadata: RunMetadata, artifacts: list[ArtifactMetadata]) -> RunMetadata:
+        """Register artifacts produced after the main run and refresh metadata/index.
+
+        Used for the handoff, which can only be written once the other artifact
+        paths are known.
+        """
+
+        run_dir = self.run_dir(metadata.workbook_sha256, metadata.run_id)
+        metadata.artifacts.extend(artifacts)
+        metadata.artifacts = [a for a in metadata.artifacts if a.name != "run_metadata.json"]
+        metadata.artifacts.append(self.write_json("run_metadata.json", metadata, run_dir))
+        metadata.artifacts = [a for a in metadata.artifacts if a.name != "artifact_index.json"]
+        metadata.artifacts.append(self._write_index(metadata, run_dir))
         self._copy_latest_aliases(metadata)
         return metadata

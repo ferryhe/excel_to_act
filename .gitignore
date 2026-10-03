@@ -1,17 +1,43 @@
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
+build/
+dist/
 .venv/
+venv/
+
+# Tooling caches
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.coverage
+htmlcov/
 
-# Local artifacts
-artifacts/
+# IDE / agent working data
+.codebuddy/
+.vscode/
+.idea/
+
+# Runtime data (CLI points elsewhere via --input/--output)
+# Anchored at repo root only, so tests/fixtures/**/output etc. stay tracked.
+/input/
+/output/
+# Current CLI default: excel-to-act inspect <workbook> --out artifacts
+/artifacts/
+
+# Workbooks are never committed (see docs/plans/pr_plan_phase1.md);
+# sanitized fixtures under examples/ are the exception.
 *.xlsx
 *.xlsm
 *.xlsb
 *.xls
+!examples/**
 
-# Packaging
-*.egg-info/
+# Local env / secrets
+.env
+*.local
+
+# OS
+.DS_Store
+Thumbs.db

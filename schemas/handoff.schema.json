@@ -1,0 +1,199 @@
+{
+  "$defs": {
+    "CompletenessStatus": {
+      "enum": [
+        "pass",
+        "warn",
+        "fail"
+      ],
+      "title": "CompletenessStatus",
+      "type": "string"
+    },
+    "CoverageSummary": {
+      "properties": {
+        "recognized_inventory_objects": {
+          "minimum": 0,
+          "title": "Recognized Inventory Objects",
+          "type": "integer"
+        },
+        "unsupported_or_opaque_objects": {
+          "minimum": 0,
+          "title": "Unsupported Or Opaque Objects",
+          "type": "integer"
+        },
+        "discovered_workbook_objects": {
+          "minimum": 0,
+          "title": "Discovered Workbook Objects",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "recognized_inventory_objects",
+        "unsupported_or_opaque_objects",
+        "discovered_workbook_objects"
+      ],
+      "title": "CoverageSummary",
+      "type": "object"
+    },
+    "HandoffArtifactRef": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Count"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "kind",
+        "sha256"
+      ],
+      "title": "HandoffArtifactRef",
+      "type": "object"
+    }
+  },
+  "description": "The single artifact a downstream agent reads to continue the pipeline.\n\nMachine-readable summary of what Step 1 produced, what it could not parse,\nand what must happen before Step 3 may trust the output.",
+  "properties": {
+    "schema_version": {
+      "default": "phase1.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "artifact_type": {
+      "const": "handoff",
+      "default": "handoff",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "step": {
+      "default": "step1_decomposition",
+      "title": "Step",
+      "type": "string"
+    },
+    "next_step": {
+      "default": "step2_index",
+      "title": "Next Step",
+      "type": "string"
+    },
+    "workbook_sha256": {
+      "title": "Workbook Sha256",
+      "type": "string"
+    },
+    "workbook_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Workbook Path"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "produced_at": {
+      "format": "date-time",
+      "title": "Produced At",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/CompletenessStatus",
+      "default": "pass"
+    },
+    "summary": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Summary",
+      "type": "object"
+    },
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/HandoffArtifactRef"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "coverage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CoverageSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "opaque_summary": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Opaque Summary",
+      "type": "array"
+    },
+    "blockers": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Blockers",
+      "type": "array"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    },
+    "next_actions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Next Actions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "workbook_sha256"
+  ],
+  "title": "Handoff",
+  "type": "object"
+}
