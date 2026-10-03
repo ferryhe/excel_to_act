@@ -1,0 +1,238 @@
+{
+  "$defs": {
+    "CompletenessCheck": {
+      "description": "One independent assertion about whether the output accounts for the input.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "severity": {
+          "$ref": "#/$defs/UnsupportedSeverity",
+          "default": "warning"
+        },
+        "expected": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected"
+        },
+        "actual": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actual"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "passed"
+      ],
+      "title": "CompletenessCheck",
+      "type": "object"
+    },
+    "CompletenessStatus": {
+      "enum": [
+        "pass",
+        "warn",
+        "fail"
+      ],
+      "title": "CompletenessStatus",
+      "type": "string"
+    },
+    "SourceLocation": {
+      "description": "Original workbook location for a discovered object.",
+      "properties": {
+        "workbook_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workbook Path"
+        },
+        "sheet_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Name"
+        },
+        "sheet_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Index"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "object_type": {
+          "title": "Object Type",
+          "type": "string"
+        },
+        "object_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Object Id"
+        },
+        "ooxml_part": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ooxml Part"
+        }
+      },
+      "required": [
+        "object_type"
+      ],
+      "title": "SourceLocation",
+      "type": "object"
+    },
+    "UnsupportedSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ],
+      "title": "UnsupportedSeverity",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "default": "phase1.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "artifact_type": {
+      "const": "completeness_report",
+      "default": "completeness_report",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "workbook_sha256": {
+      "title": "Workbook Sha256",
+      "type": "string"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "status": {
+      "$ref": "#/$defs/CompletenessStatus",
+      "default": "pass"
+    },
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/CompletenessCheck"
+      },
+      "title": "Checks",
+      "type": "array"
+    },
+    "recognized_inventory_objects": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Recognized Inventory Objects",
+      "type": "integer"
+    },
+    "unsupported_or_opaque_objects": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Unsupported Or Opaque Objects",
+      "type": "integer"
+    },
+    "discovered_workbook_objects": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Discovered Workbook Objects",
+      "type": "integer"
+    },
+    "gaps": {
+      "items": {
+        "$ref": "#/$defs/SourceLocation"
+      },
+      "title": "Gaps",
+      "type": "array"
+    },
+    "blocking_reasons": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Blocking Reasons",
+      "type": "array"
+    }
+  },
+  "required": [
+    "workbook_sha256"
+  ],
+  "title": "CompletenessReport",
+  "type": "object"
+}
