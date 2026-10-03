@@ -27,6 +27,18 @@
           "default": null,
           "title": "Formula"
         },
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
         "source_location": {
           "anyOf": [
             {
@@ -90,7 +102,8 @@
         "range",
         "name",
         "external",
-        "unsupported"
+        "unsupported",
+        "vba"
       ],
       "title": "GraphNodeKind",
       "type": "string"

@@ -7,7 +7,11 @@ from typing import Any
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell
+from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
+from excel_to_act.ingest.cached_values import read_cached_values
+from excel_to_act.ingest.data_table import read_data_tables
+from excel_to_act.ingest.form_controls import read_form_controls
 from excel_to_act.schemas import (
     CellInventory,
     CellKind,
@@ -15,6 +19,8 @@ from excel_to_act.schemas import (
     RangeInventory,
     SheetInventory,
     SourceLocation,
+    UnsupportedFeature,
+    UnsupportedSeverity,
     WorkbookInventory,
     WorkbookManifest,
 )
@@ -36,10 +42,15 @@ class OpenpyxlInventoryExtractor:
     def extract(self, workbook_path: Path, manifest: WorkbookManifest) -> WorkbookInventory:
         workbook_path = workbook_path.expanduser().resolve()
         wb = load_workbook(workbook_path, data_only=False, read_only=False, keep_vba=workbook_path.suffix.lower() == ".xlsm")
+        cached_values = read_cached_values(workbook_path)
+        data_tables = read_data_tables(workbook_path)
+        form_controls = read_form_controls(workbook_path)
         sheets: list[SheetInventory] = []
         workbook_ranges: list[RangeInventory] = []
         unsupported = list(manifest.unsupported_features)
         recognized = 0
+        formula_cells = 0
+        cached_hits = 0
         try:
             for i, ws in enumerate(wb.worksheets):
                 sheet = SheetInventory(
@@ -50,12 +61,32 @@ class OpenpyxlInventoryExtractor:
                     max_column=ws.max_column or 0,
                     state=ws.sheet_state,
                 )
+                tables_by_corner = {spec.corner_cell: spec for spec in data_tables.get(ws.title, [])}
                 for row in ws.iter_rows():
                     for cell in row:
                         if cell.value is None:
                             continue
                         assert isinstance(cell, Cell)
-                        is_formula = isinstance(cell.value, str) and cell.value.startswith("=")
+                        # openpyxl models what-if data tables and array formulas as
+                        # objects, not strings; str()-ing them would destroy the cell.
+                        table_spec = tables_by_corner.get(cell.coordinate)
+                        if table_spec is not None:
+                            is_formula = True
+                            formula_text = table_spec.formula_text
+                        elif isinstance(cell.value, ArrayFormula):
+                            is_formula = True
+                            formula_text = cell.value.text
+                        elif isinstance(cell.value, DataTableFormula):
+                            is_formula = True
+                            formula_text = None
+                        else:
+                            is_formula = isinstance(cell.value, str) and cell.value.startswith("=")
+                            formula_text = str(cell.value) if is_formula else None
+                        cache_key = (ws.title, cell.coordinate)
+                        has_cached = is_formula and cache_key in cached_values
+                        if is_formula:
+                            formula_cells += 1
+                            cached_hits += 1 if has_cached else 0
                         sheet.cells.append(
                             CellInventory(
                                 source_location=_loc(workbook_path, "cell", ws.title, i, cell.coordinate, f"{ws.title}!{cell.coordinate}"),
@@ -64,10 +95,12 @@ class OpenpyxlInventoryExtractor:
                                 column=cell.column,
                                 kind=CellKind.formula if is_formula else CellKind.literal,
                                 value=None if is_formula else _safe_value(cell.value),
-                                formula=str(cell.value) if is_formula else None,
+                                formula=formula_text,
                                 data_type=cell.data_type,
                                 number_format=cell.number_format,
                                 style_id=getattr(cell, "style_id", None),
+                                cached_value=cached_values.get(cache_key) if has_cached else None,
+                                cached_value_available=has_cached,
                             )
                         )
                         recognized += 1
@@ -76,6 +109,44 @@ class OpenpyxlInventoryExtractor:
                     recognized += 1
                 for table in ws.tables.values():
                     sheet.ranges.append(RangeInventory(source_location=_loc(workbook_path, "table", ws.title, i, table.ref, table.name), name=table.name, address=table.ref, kind="table", metadata={"display_name": table.displayName}))
+                    recognized += 1
+                for spec in data_tables.get(ws.title, []):
+                    sheet.ranges.append(
+                        RangeInventory(
+                            source_location=_loc(workbook_path, "data_table", ws.title, i, spec.ref or spec.corner_cell, f"data_table:{spec.corner_cell}"),
+                            address=spec.ref or spec.corner_cell,
+                            kind="data_table",
+                            metadata={
+                                "corner_cell": spec.corner_cell,
+                                "formula": spec.formula_text,
+                                "row_input_cell": spec.row_input_cell,
+                                "col_input_cell": spec.col_input_cell,
+                                "two_dimensional": spec.two_dimensional,
+                                "raw_r1": spec.raw_r1,
+                                "raw_r2": spec.raw_r2,
+                                "dtr": spec.dtr,
+                            },
+                        )
+                    )
+                    recognized += 1
+                for control in form_controls.get(ws.title, []):
+                    sheet.ranges.append(
+                        RangeInventory(
+                            source_location=_loc(workbook_path, "form_control", ws.title, i, control.linked_address or control.control_id or "", f"control:{control.control_id}"),
+                            # `address` stays a bare A1 like every other range object;
+                            # the sheet-qualified reference lives in metadata.
+                            address=control.linked_address or control.control_id or "",
+                            kind="form_control",
+                            metadata={
+                                "control_id": control.control_id,
+                                "control_type": control.control_type,
+                                "linked_cell": control.linked_cell,
+                                "linked_sheet": control.linked_sheet,
+                                "list_fill_range": control.list_fill_range,
+                                "macro": control.macro,
+                            },
+                        )
+                    )
                     recognized += 1
                 self._layout(ws, workbook_path, i, sheet)
                 recognized += len(sheet.layout_objects)
@@ -96,6 +167,20 @@ class OpenpyxlInventoryExtractor:
                     recognized += 1
         finally:
             wb.close()
+        if formula_cells and cached_hits == 0:
+            unsupported.append(
+                UnsupportedFeature(
+                    feature_type="missing_cached_values",
+                    description=(
+                        f"工作簿没有保存任何公式结果（{formula_cells} 个公式格）："
+                        "它从未被 Excel 重算过，因此缓存值对账不可用。"
+                    ),
+                    source_location=SourceLocation(workbook_path=str(workbook_path), object_type="workbook"),
+                    severity=UnsupportedSeverity.warning,
+                    opaque=False,
+                    metadata={"formula_cells": formula_cells, "cells_with_cached_value": cached_hits},
+                )
+            )
         opaque_count = len(unsupported)
         coverage = CoverageSummary(recognized_inventory_objects=recognized, unsupported_or_opaque_objects=opaque_count, discovered_workbook_objects=recognized + opaque_count)
         return WorkbookInventory(workbook_sha256=manifest.sha256, sheets=sheets, workbook_ranges=workbook_ranges, unsupported_features=unsupported, coverage=coverage)

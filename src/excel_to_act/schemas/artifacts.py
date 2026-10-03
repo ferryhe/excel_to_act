@@ -103,6 +103,11 @@ class CellInventory(BaseModel):
     number_format: str | None = None
     formula: str | None = None
     style_id: int | None = None
+    # Cached result Excel stored next to the formula (``<v>`` in the sheet XML).
+    # ``None`` means "not stored", which is different from "stored as empty".
+    cached_value: str | int | float | bool | None = None
+    # True only for formula cells whose cached result was actually read.
+    cached_value_available: bool = False
 
 
 class RangeInventory(BaseModel):
@@ -137,11 +142,21 @@ class CoverageSummary(BaseModel):
         return self
 
 
+class VbaModule(BaseModel):
+    """A VBA module, class, document, or form extracted from ``vbaProject.bin``."""
+
+    name: str
+    kind: str = "StdModule"  # StdModule | ClassModule | UserForm | Document
+    code: str = ""
+    procedures: list[str] = Field(default_factory=list)
+
+
 class WorkbookInventory(Artifact):
     artifact_type: Literal["workbook_inventory"] = "workbook_inventory"
     workbook_sha256: str
     sheets: list[SheetInventory] = Field(default_factory=list)
     workbook_ranges: list[RangeInventory] = Field(default_factory=list)
+    vba_modules: list[VbaModule] = Field(default_factory=list)
     unsupported_features: list[UnsupportedFeature] = Field(default_factory=list)
     coverage: CoverageSummary
 
@@ -152,6 +167,7 @@ class GraphNodeKind(str, Enum):
     name = "name"
     external = "external"
     unsupported = "unsupported"
+    vba = "vba"
 
 
 class GraphNode(BaseModel):
@@ -167,6 +183,7 @@ class GraphEdge(BaseModel):
     target: str
     relationship: str = "references"
     formula: str | None = None
+    confidence: float | None = None
     source_location: SourceLocation | None = None
 
 
@@ -238,6 +255,73 @@ class ConfirmationTemplate(Artifact):
     decisions: list[DecisionRecord] = Field(default_factory=list)
 
 
+class CompletenessStatus(str, Enum):
+    # `pass` is a keyword; the serialized value stays "pass".
+    ok = "pass"
+    warn = "warn"
+    fail = "fail"
+
+
+class CompletenessCheck(BaseModel):
+    """One independent assertion about whether the output accounts for the input."""
+
+    name: str
+    passed: bool
+    severity: UnsupportedSeverity = UnsupportedSeverity.warning
+    expected: int | None = None
+    actual: int | None = None
+    detail: str = ""
+
+
+class CompletenessReport(Artifact):
+    artifact_type: Literal["completeness_report"] = "completeness_report"
+    workbook_sha256: str
+    run_id: str | None = None
+    status: CompletenessStatus = CompletenessStatus.ok
+    checks: list[CompletenessCheck] = Field(default_factory=list)
+    # Counts are recomputed independently of WorkbookInventory.coverage, whose
+    # `discovered` is currently an identity and therefore proves nothing.
+    recognized_inventory_objects: int = Field(ge=0, default=0)
+    unsupported_or_opaque_objects: int = Field(ge=0, default=0)
+    discovered_workbook_objects: int = Field(ge=0, default=0)
+    gaps: list[SourceLocation] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+
+
+class HandoffArtifactRef(BaseModel):
+    name: str
+    path: str
+    kind: str
+    count: int | None = None
+    sha256: str
+
+
+class Handoff(Artifact):
+    """The single artifact a downstream agent reads to continue the pipeline.
+
+    Machine-readable summary of what Step 1 produced, what it could not parse,
+    and what must happen before Step 3 may trust the output.
+    """
+
+    artifact_type: Literal["handoff"] = "handoff"
+    step: str = "step1_decomposition"
+    next_step: str = "step2_index"
+    workbook_sha256: str
+    workbook_path: str | None = None
+    run_id: str | None = None
+    produced_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    status: CompletenessStatus = CompletenessStatus.ok
+    # One-glance counts (sheets / cells / formula_cells / edges / ...). Machine
+    # readable so Step 2 can index it, and rendered as the TL;DR in handoff.md.
+    summary: dict[str, int] = Field(default_factory=dict)
+    artifacts: list[HandoffArtifactRef] = Field(default_factory=list)
+    coverage: CoverageSummary | None = None
+    opaque_summary: list[dict[str, Any]] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    next_actions: list[str] = Field(default_factory=list)
+
+
 class ArtifactMetadata(BaseModel):
     name: str
     path: str
@@ -252,6 +336,7 @@ class RunMetadata(Artifact):
     workbook_sha256: str
     started_at: datetime
     completed_at: datetime | None = None
+    completeness_status: str | None = None
     artifacts: list[ArtifactMetadata] = Field(default_factory=list)
 
     @field_validator("run_id")
