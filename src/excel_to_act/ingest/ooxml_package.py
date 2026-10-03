@@ -17,6 +17,17 @@ OPAQUE_MARKERS = {
     "/connections": "connection",
     "/embeddings/": "embedded OLE object",
     "/media/": "media",
+    "xl/model/": "power pivot data model",
+    "_xmlsignatures/": "digital signature",
+    "calcChain.xml": "calculation chain",
+    "/ctrlProps/": "form control properties",
+    "/slicers/": "slicer",
+    "/timelines/": "timeline",
+    "/macrosheets/": "excel 4.0 macro sheet",
+    "/customXml/": "custom xml / power query",
+    "volatileDependencies.xml": "volatile dependency",
+    "/webExtensions/": "office add-in",
+    "xl/activeX/": "activex control",
 }
 
 
@@ -36,7 +47,7 @@ def _content_types(zf: zipfile.ZipFile) -> dict[str, str]:
     result = dict(overrides)
     for info in zf.infolist():
         if info.filename not in result:
-            result[info.filename] = defaults.get(Path(info.filename).suffix.lstrip("""."""), "")
+            result[info.filename] = defaults.get(Path(info.filename).suffix.lstrip("."), "")
     return result
 
 
