@@ -80,6 +80,10 @@ def read_cached_values(workbook_path: Path) -> CachedValueMap:
             reset = getattr(ws, "reset_dimensions", None)
             if callable(reset):
                 reset()
+                try:
+                    ws.calculate_dimension(force=True)
+                except UnboundLocalError:  # openpyxl's dimension scan finds no cells
+                    continue
             for row in ws.iter_rows():
                 for cell in row:
                     if cell.value is None:
