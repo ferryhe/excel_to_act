@@ -74,7 +74,7 @@ def test_completeness_and_handoff_are_written(tmp_path: Path) -> None:
     # The markdown is the human-facing twin: it must carry a one-glance summary
     # and be readable without opening any JSON.
     markdown = markdown_path.read_text(encoding="utf-8")
-    assert "Handoff" in markdown and "一眼看懂" in markdown and "下一步" in markdown
+    assert "Handoff" in markdown and "At a glance" in markdown and "Next steps" in markdown
 
     handoff = LocalArtifactStore(out).read_json(handoff_path, Handoff)
     assert handoff.summary.get("sheets") == 1

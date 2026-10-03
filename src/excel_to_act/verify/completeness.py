@@ -110,9 +110,9 @@ def verify_completeness(
             severity=UnsupportedSeverity.error,
             expected=len(manifest_sheets),
             actual=len(inventory_sheets),
-            detail="workbook.xml 里每个 <sheet> 都有对应 SheetInventory"
+            detail="every <sheet> in workbook.xml has a matching SheetInventory entry"
             if not missing_sheets
-            else f"缺失的工作表: {missing_sheets}",
+            else f"missing worksheets: {missing_sheets}",
         )
     )
 
@@ -148,9 +148,9 @@ def verify_completeness(
             severity=UnsupportedSeverity.error,
             expected=xml_total,
             actual=inventory_total,
-            detail="各表单元格数与 worksheet XML 独立扫描一致"
+            detail="cell counts match an independent scan of the worksheet XML"
             if not cell_mismatches
-            else "单元格数不一致: " + "; ".join(cell_mismatches),
+            else "cell counts differ: " + "; ".join(cell_mismatches),
         )
     )
 
@@ -184,9 +184,9 @@ def verify_completeness(
             severity=UnsupportedSeverity.error,
             expected=0,
             actual=len(unaccounted_content),
-            detail="每个内容部件都已采集（有产出证据）或已标 opaque"
+            detail="every content part is either collected (with evidence in the output) or marked opaque"
             if not unaccounted_content
-            else f"静默丢弃的部件: {unaccounted_content}",
+            else f"silently dropped parts: {unaccounted_content}",
         )
     )
     checks.append(
@@ -196,9 +196,9 @@ def verify_completeness(
             severity=UnsupportedSeverity.info,
             expected=0,
             actual=len(unaccounted_metadata),
-            detail=f"未建模的元数据部件（可解析，暂未采集）: {', '.join(unaccounted_metadata)}"
+            detail=f"unmodelled metadata parts (parseable, not collected yet): {', '.join(unaccounted_metadata)}"
             if unaccounted_metadata
-            else "没有未建模的元数据部件",
+            else "no unmodelled metadata parts",
         )
     )
 
@@ -220,9 +220,9 @@ def verify_completeness(
             severity=UnsupportedSeverity.warning,
             expected=len(formula_cells),
             actual=len(formula_cells) - len(unlinked),
-            detail="每个公式格都有依赖边或有 unparseable 记录"
+            detail="every formula cell has a dependency edge or an unparseable record"
             if not unlinked
-            else f"无依赖边的公式格: {unlinked[:10]}",
+            else f"formula cells without an edge: {unlinked[:10]}",
         )
     )
 
@@ -238,10 +238,11 @@ def verify_completeness(
             severity=UnsupportedSeverity.info,
             expected=discovered,
             actual=recognized + opaque,
-            detail="覆盖等式闭合：recognized + opaque == 独立重算的 discovered"
+            detail="coverage equation closes: recognized + opaque == independently recomputed discovered"
             if arithmetic_ok
-            else f"覆盖等式未闭合：recognized({recognized}) + opaque({opaque}) ≠ 独立重算 discovered({discovered})；"
-            "inventory 自带的 coverage 是恒等式，探测不到这个差异（issue #5）",
+            else f"coverage equation does not close: recognized({recognized}) + opaque({opaque}) != "
+            f"independently recomputed discovered({discovered}); the coverage block inside "
+            "inventory.json is an identity and cannot detect this (issue #5)",
         )
     )
 

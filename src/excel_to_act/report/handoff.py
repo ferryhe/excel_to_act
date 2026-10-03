@@ -37,31 +37,31 @@ _KIND_BY_FILE = {
 
 # Labels used by the human-facing markdown; keep them self-explanatory.
 _KIND_LABEL = {
-    "manifest": "包部件清单",
-    "inventory": "单元格与范围清单",
-    "graph": "依赖边",
-    "classification": "模块分类",
-    "confirmation": "待确认问题",
-    "completeness": "完备性检查项",
-    "metadata": "运行元数据",
-    "index": "历史运行索引",
-    "other": "其他",
+    "manifest": "package parts",
+    "inventory": "cells and ranges",
+    "graph": "dependency edges",
+    "classification": "module classification",
+    "confirmation": "open questions",
+    "completeness": "completeness checks",
+    "metadata": "run metadata",
+    "index": "run index",
+    "other": "other",
 }
 
 _SUMMARY_LABEL = {
-    "sheets": "工作表",
-    "cells": "单元格",
-    "formula_cells": "其中公式格",
-    "cached_values": "有缓存值",
-    "defined_names": "已定义名称",
-    "tables": "Excel 表",
-    "merged_ranges": "合并区",
-    "data_tables": "模拟运算表",
-    "form_controls": "表单控件",
-    "vba_modules": "VBA 模块",
-    "graph_nodes": "依赖图节点",
-    "graph_edges": "依赖图边",
-    "vba_edges": "其中 VBA 边",
+    "sheets": "Worksheets",
+    "cells": "Cells",
+    "formula_cells": "— of which formulas",
+    "cached_values": "— with cached value",
+    "defined_names": "Defined names",
+    "tables": "Excel tables",
+    "merged_ranges": "Merged ranges",
+    "data_tables": "What-if data tables",
+    "form_controls": "Form controls",
+    "vba_modules": "VBA modules",
+    "graph_nodes": "Graph nodes",
+    "graph_edges": "Graph edges",
+    "vba_edges": "— of which VBA",
 }
 
 
@@ -167,12 +167,15 @@ def build_handoff(
     ]
     opaque_total = sum(entry["count"] for entry in opaque_summary)
     if opaque_total:
-        next_actions.append(f"{opaque_total} 个未解析对象（opaque）：决定是补解析，还是记录为「接受」")
+        next_actions.append(
+            f"{opaque_total} unresolved (opaque) objects: decide whether to parse them "
+            "or record them as accepted"
+        )
     if confirmation.questions:
-        next_actions.append(f"Step 3 之前需回答 {len(confirmation.questions)} 个确认问题")
+        next_actions.append(f"Answer {len(confirmation.questions)} confirmation question(s) before Step 3")
     if completeness.status == "fail":
-        next_actions.append("先解决上面的阻塞项，再让任何下游消费 inventory.json")
-    next_actions.append("Step 2：基于上述产物建立 agent 使用的索引")
+        next_actions.append("Resolve the blockers above before any downstream consumer trusts inventory.json")
+    next_actions.append("Step 2: build the agent-facing index from the artifacts above")
 
     return Handoff(
         workbook_sha256=manifest.sha256,
@@ -200,25 +203,26 @@ def render_handoff_markdown(handoff: Handoff) -> str:
     lines = [
         f"# Handoff · {handoff.step} → {handoff.next_step}",
         "",
-        f"**{workbook}** · 状态 **{handoff.status}** · run `{handoff.run_id}`",
+        f"**{workbook}** · status **{handoff.status}** · run `{handoff.run_id}`",
         "",
-        "> 这是给人看的摘要；机器读同目录 `handoff.json`，完整明细在 `inventory.json` / `dependency_graph.json`。",
+        "> Human summary; machines read `handoff.json` in the same directory. "
+        "Full detail lives in `inventory.json` / `dependency_graph.json`.",
         "",
     ]
 
     if handoff.summary:
-        lines += ["## 一眼看懂", "", "| 项 | 数量 |", "| --- | --- |"]
+        lines += ["## At a glance", "", "| Item | Count |", "| --- | --- |"]
         lines += [
             f"| {_SUMMARY_LABEL.get(key, key)} | {value} |" for key, value in handoff.summary.items()
         ]
         lines.append("")
 
     if handoff.blockers:
-        lines += ["## ⛔ 阻塞（必须先处理）", ""] + [f"- {item}" for item in handoff.blockers] + [""]
+        lines += ["## Blockers (must fix first)", ""] + [f"- {item}" for item in handoff.blockers] + [""]
     if handoff.warnings:
-        lines += ["## ⚠️ 警告", ""] + [f"- {item}" for item in handoff.warnings] + [""]
+        lines += ["## Warnings", ""] + [f"- {item}" for item in handoff.warnings] + [""]
 
-    lines += ["## 产出", "", "| 文件 | 内容 | 条数 |", "| --- | --- | --- |"]
+    lines += ["## Artifacts", "", "| File | Contents | Items |", "| --- | --- | --- |"]
     lines += [
         f"| `{artifact.name}` | {_KIND_LABEL.get(artifact.kind, artifact.kind)} | "
         f"{artifact.count if artifact.count is not None else '-'} |"
@@ -228,10 +232,10 @@ def render_handoff_markdown(handoff: Handoff) -> str:
     lines.append("")
 
     if handoff.opaque_summary:
-        lines += ["## 未解析（opaque）", "", "| 类型 | 数量 |", "| --- | --- |"]
+        lines += ["## Unresolved (opaque)", "", "| Type | Count |", "| --- | --- |"]
         lines += [f"| {entry['feature_type']} | {entry['count']} |" for entry in handoff.opaque_summary]
         lines.append("")
     if handoff.next_actions:
-        lines += ["## 下一步", ""] + [f"- {item}" for item in handoff.next_actions] + [""]
+        lines += ["## Next steps", ""] + [f"- {item}" for item in handoff.next_actions] + [""]
 
     return "\n".join(lines)

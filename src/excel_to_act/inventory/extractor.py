@@ -172,8 +172,8 @@ class OpenpyxlInventoryExtractor:
                 UnsupportedFeature(
                     feature_type="missing_cached_values",
                     description=(
-                        f"工作簿没有保存任何公式结果（{formula_cells} 个公式格）："
-                        "它从未被 Excel 重算过，因此缓存值对账不可用。"
+                        f"Workbook stores no cached formula results ({formula_cells} formula cells); "
+                        "it was never recalculated by Excel, so cached-value reconciliation is unavailable."
                     ),
                     source_location=SourceLocation(workbook_path=str(workbook_path), object_type="workbook"),
                     severity=UnsupportedSeverity.warning,
