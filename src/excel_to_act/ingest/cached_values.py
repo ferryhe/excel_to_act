@@ -82,10 +82,11 @@ def read_cached_values(workbook_path: Path) -> CachedValueMap:
                 reset()
             for row in ws.iter_rows():
                 for cell in row:
-                    key = (ws.title, cell.coordinate)
-                    if cell.value is None and key not in empty_string_caches:
+                    if cell.value is None:
                         continue
-                    values[key] = "" if key in empty_string_caches else _safe_value(cell.value)
+                    key = (ws.title, cell.coordinate)
+                    values[key] = _safe_value(cell.value)
     finally:
         wb.close()
+    values.update({key: "" for key in empty_string_caches})
     return values
