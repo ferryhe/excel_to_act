@@ -471,7 +471,7 @@
 - [x] `metadata_parts_accounted`（`docProps/`）与 `coverage_arithmetic` 记为 info，不改变状态
 - [x] `status=fail` 时 CLI 退出码 1
 - [x] `handoff.json` 列出全部产物（路径 / sha256 / 条数）+ `summary` 计数 + opaque 汇总 + next_actions
-- [x] `handoff.md` 是**人读的简要中文摘要**：工作簿速写（表/格/公式/缓存值/名称/表/合并区/dataTable/控件/VBA/图节点边）+ ⛔阻塞 + ⚠️警告 + 产出清单 + 未解析 + 下一步；run 目录与 `<out>/` 根各一份
+- [x] `handoff.md` 是**人读的简短英文摘要**：工作簿速写（表/格/公式/缓存值/名称/表/合并区/dataTable/控件/VBA/图节点边）+ `At a glance` + `Blockers` + `Warnings` + `Artifacts` + `Unresolved` + `Next steps`；run 目录与 `<out>/` 根各一份
 - [x] opaque 汇总只统计 `opaque=True` 的项（`missing_cached_values` 这类 warning 不计入）
 - [x] `store.read_run()` 能回读并校验 `completeness.json` / `handoff.json`
 - [x] `pytest`（24 passed）与 `ruff check .` 通过

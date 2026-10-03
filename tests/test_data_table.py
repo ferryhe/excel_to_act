@@ -65,15 +65,16 @@ def test_one_dimensional_data_table(tmp_path: Path) -> None:
     spec = read_data_tables(fixture)["Scenarios"][0]
     assert spec.corner_cell == "B7"
     assert spec.ref == "B7:C9"
-    assert spec.row_input_cell == "$B$2"
-    assert spec.col_input_cell is None
+    assert spec.row_input_cell is None
+    assert spec.col_input_cell == "$B$2"
     assert spec.two_dimensional is False
 
     inventory = _inventory(fixture)
     tables = _data_tables(inventory)
     assert len(tables) == 1
     assert tables[0].address == "B7:C9"
-    assert tables[0].metadata["row_input_cell"] == "$B$2"
+    assert tables[0].metadata["row_input_cell"] is None
+    assert tables[0].metadata["col_input_cell"] == "$B$2"
     assert tables[0].metadata["formula"] == "=B2*B3"
 
     # The corner cell must survive as a formula, not as str(DataTableFormula).
@@ -81,6 +82,19 @@ def test_one_dimensional_data_table(tmp_path: Path) -> None:
     assert corner.kind == "formula"
     assert corner.formula == "=B2*B3"
     assert corner.value is None
+
+
+def test_one_dimensional_row_oriented_data_table(tmp_path: Path) -> None:
+    fixture = build_fixture(tmp_path / "one_dim_row.xlsx")
+    inject_data_table(
+        fixture,
+        "Scenarios",
+        '<row r="7"><c r="B7"><f t="dataTable" ref="B7:C9" dt2D="0" dtr="1" r1="B2">=B2*B3</f><v></v></c></row>',
+    )
+
+    table = read_data_tables(fixture)["Scenarios"][0]
+    assert table.row_input_cell == "$B$2"
+    assert table.col_input_cell is None
 
 
 def test_two_dimensional_data_table(tmp_path: Path) -> None:

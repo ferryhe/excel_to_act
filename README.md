@@ -190,7 +190,7 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 |---|---|---|
 | `completeness.json` | 机器 | 检查项、期望/实际、gaps、blocking_reasons |
 | `handoff.json` | 机器 | `summary` 计数、产物清单（路径 / sha256 / 条数）、coverage、opaque 汇总、blockers、warnings、next_actions |
-| `handoff.md` | **人** | 同一份信息的简要中文摘要：一眼看懂 / ⛔ 阻塞 / ⚠️ 警告 / 产出 / 未解析 / 下一步。**不打开任何 JSON 就能判断本次分解能否被信任** |
+| `handoff.md` | **人** | 同一份信息的简短英文摘要，包含 `At a glance` / `Blockers` / `Warnings` / `Artifacts` / `Unresolved (opaque)` / `Next steps`。**不打开任何 JSON 就能判断本次分解能否被信任** |
 
 `handoff.md` 顶部是工作簿速写（工作表 / 单元格 / 公式格 / 缓存值 / 已定义名称 / 表 / 合并区 / 模拟运算表 / 表单控件 / VBA 模块 / 依赖图节点与边），供人快速核对"是不是我那个文件、规模对不对"。
 

@@ -125,14 +125,24 @@ def read_data_tables(workbook_path: Path) -> dict[str, list[DataTableSpec]]:
                 if formula is None:
                     continue
                 text = (formula.text or "").strip()
+                two_dimensional = formula.attrib.get("dt2D") in {"1", "true"}
+                row_oriented = formula.attrib.get("dtr") in {"1", "true"}
+                r1 = _cell_ref_to_a1(formula.attrib.get("r1"))
+                r2 = _cell_ref_to_a1(formula.attrib.get("r2"))
+                if two_dimensional:
+                    row_input_cell, col_input_cell = r1, r2
+                elif row_oriented:
+                    row_input_cell, col_input_cell = r1, None
+                else:
+                    row_input_cell, col_input_cell = None, r1
                 tables.append(
                     DataTableSpec(
                         corner_cell=cell.attrib.get("r", ""),
                         ref=formula.attrib.get("ref"),
                         formula_text=f"={text}" if text and not text.startswith("=") else (text or None),
-                        row_input_cell=_cell_ref_to_a1(formula.attrib.get("r1")),
-                        col_input_cell=_cell_ref_to_a1(formula.attrib.get("r2")),
-                        two_dimensional=formula.attrib.get("dt2D") in {"1", "true"},
+                        row_input_cell=row_input_cell,
+                        col_input_cell=col_input_cell,
+                        two_dimensional=two_dimensional,
                         raw_r1=formula.attrib.get("r1"),
                         raw_r2=formula.attrib.get("r2"),
                         dtr=formula.attrib.get("dtr"),
