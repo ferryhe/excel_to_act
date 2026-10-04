@@ -114,11 +114,11 @@ class CellInventory(BaseModel):
     raw_value_text: str | None = None
     raw_formula_text: str | None = None
     raw_formula_attributes: dict[str, str] = Field(default_factory=dict)
-    formula_present: bool = False
+    formula_present: bool | None = None
     ooxml_cell_type: str | None = None
     cached_text: str | None = None
-    cached_text_present: bool = False
-    workbook_date_system: str = "1900"
+    cached_text_present: bool | None = None
+    workbook_date_system: str | None = None
     date_serial_text: str | None = None
 
 

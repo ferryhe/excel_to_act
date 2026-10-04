@@ -65,6 +65,8 @@ excel-to-act step1 finalize --run <run-dir>      # 通过新检查后发布最�
 
 `raw_value_text`、原始公式文本/属性、缓存文本和日期序列是源文件原文证据；下游若要求精确数值文本，应读取 `raw_value_text`。标准化数值会转换为整数或浮点数，长小数可能有浮点近似；日期按工作簿的 1900/1904 日期系统转换。公式缓存只表示文件中保存的结果，缺失缓存保持为缺失，转换过程不会重新计算公式。
 
+这些扩展源事实只有 Step1 扫描实际测量后才有值；旧 `inspect` 输出或早期 JSON 中的 `null` 表示未测量，不表示 `false` 或 1900 日期系统。
+
 字符串的标准化值拼接 OOXML 正文 `<t>` 与富文本 `<r><t>`，不把 `<rPh>` 注音或容器排版空白并入单元格文字；原始工作表和共享字符串部件仍按原字节保留并校验。
 
 每批生成 `batches/<batch-id>/batch_handoff.{json,md}`，每个源文件有独立候选目录，其中包括 `source_facts.json`、`logical_objects.json`、`package_parts.json`、`quality.json` 和双格式 handoff。通过 `finalize` 的候选复制到唯一的 `final/` 目录；被阻断的候选仍有 handoff 和可操作的下一步建议。

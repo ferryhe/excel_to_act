@@ -21,6 +21,9 @@ import pytest
 from typer.testing import CliRunner
 
 from excel_to_act.interfaces.cli import app
+from excel_to_act.ingest.openpyxl_reader import OpenpyxlWorkbookReader
+from excel_to_act.inventory.extractor import OpenpyxlInventoryExtractor
+from excel_to_act.schemas import CellInventory
 from excel_to_act.steps.step1.source_scan import SourceScanError, scan_step1_source
 from excel_to_act.steps.step1.workflow import _hash_file, auto_recover, convert_directory, execute_tool, finalize_run
 
@@ -310,6 +313,23 @@ def _add_phonetic_string_cases(path: Path) -> tuple[bytes, bytes]:
         return source.read("xl/sharedStrings.xml"), source.read("xl/worksheets/sheet1.xml")
 
 
+def _make_shared_string_index_case(path: Path, index: str, *, formula: bool) -> Path:
+    _make_book(path)
+    _add_phonetic_string_cases(path)
+    address = "A2" if formula else "A1"
+    with zipfile.ZipFile(path, "r") as package:
+        sheet = ET.fromstring(package.read("xl/worksheets/sheet1.xml"))
+    cell = next(item for item in sheet.iter() if item.tag == MAIN + "c" and item.attrib.get("r") == address)
+    cell.attrib["t"] = "s"
+    for child in list(cell):
+        cell.remove(child)
+    if formula:
+        ET.SubElement(cell, MAIN + "f").text = "1+1"
+    ET.SubElement(cell, MAIN + "v").text = index
+    _rewrite_package(path, replacements={"xl/worksheets/sheet1.xml": ET.tostring(sheet, encoding="utf-8", xml_declaration=True)})
+    return path
+
+
 def _make_multi_sheet_book(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
@@ -433,6 +453,9 @@ def test_raw_facts_normalized_fidelity_and_persisted_recovery(tmp_path: Path) ->
     assert cells[("Facts", "D3")]["normalized_cached_value"] is False
     assert cells[("Facts", "D4")]["normalized_cached_value"] == ""
     assert cells[("Facts", "D5")]["formula_present"] is True
+    assert cells[("Facts", "D2")]["cached_text_present"] is True
+    assert cells[("Facts", "D5")]["cached_text_present"] is False
+    assert all(cell["workbook_date_system"] == "1904" for cell in facts["cells"])
     assert cells[("Facts", "D5")]["normalized_cached_value_available"] is False
     assert cells[("Facts", "E2")]["normalized_value"] == ""
     inventory = _read(run / "inventory.json")
@@ -448,7 +471,6 @@ def test_raw_facts_normalized_fidelity_and_persisted_recovery(tmp_path: Path) ->
         ("Rate", "workbook"), ("Rate", "Facts")
     }
     assert execute_tool("step1.check", run)["status"] == "pass"
-
     cell = next(cell for cell in inventory["sheets"][0]["cells"] if cell["address"] == "B2")
     cell["value"] = 7
     _write(run / "inventory.json", inventory)
@@ -463,6 +485,81 @@ def test_raw_facts_normalized_fidelity_and_persisted_recovery(tmp_path: Path) ->
     assert repaired["attempt"] == 1
     assert _read(run / "attempt_history.json")["attempts"][0]["improved"] is True
     assert execute_tool("step1.check", run)["status"] == "pass"
+
+
+def test_legacy_inventory_source_facts_remain_unknown_until_step1_measures(tmp_path: Path) -> None:
+    source = _make_book(tmp_path / "raw" / "legacy.xlsx")
+    manifest = OpenpyxlWorkbookReader().read_manifest(source)
+    legacy = OpenpyxlInventoryExtractor().extract(source, manifest)
+    formula = next(cell for cell in legacy.sheets[0].cells if cell.address == "D2")
+    assert formula.formula == "=B2*2"
+    assert formula.cached_value == 0 and formula.cached_value_available is True
+    assert formula.formula_present is None
+    assert formula.cached_text_present is None
+    assert formula.workbook_date_system is None
+
+    previous_json = formula.model_dump(mode="json")
+    for field in ("formula_present", "cached_text_present", "workbook_date_system"):
+        previous_json.pop(field)
+    loaded = CellInventory.model_validate(previous_json)
+    assert loaded.formula_present is loaded.cached_text_present is loaded.workbook_date_system is None
+
+    output = tmp_path / "legacy-artifacts"
+    inspected = CliRunner().invoke(app, ["inspect", str(source), "--out", str(output)])
+    assert inspected.exit_code == 0, inspected.output
+    inventory = _read(output / "inventory.json")
+    serialized = next(cell for cell in inventory["sheets"][0]["cells"] if cell["address"] == "D2")
+    assert serialized["formula"] == "=B2*2"
+    assert serialized["cached_value"] == 0 and serialized["cached_value_available"] is True
+    assert serialized["formula_present"] is serialized["cached_text_present"] is serialized["workbook_date_system"] is None
+
+
+@pytest.mark.parametrize("formula", [False, True])
+@pytest.mark.parametrize("index", ["-1", "9", "not-an-index", "", "0_0"])
+def test_invalid_shared_string_indexes_are_source_errors(tmp_path: Path, index: str, formula: bool) -> None:
+    source = _make_shared_string_index_case(tmp_path / f"invalid-{formula}-{index or 'empty'}.xlsx", index, formula=formula)
+    with pytest.raises(SourceScanError, match="shared-string index"):
+        scan_step1_source(source)
+
+
+@pytest.mark.parametrize("index", ["+0", " +0 "])
+def test_shared_string_indexes_keep_decimal_whitespace_and_sign_support(tmp_path: Path, index: str) -> None:
+    source = _make_shared_string_index_case(tmp_path / "valid.xlsx", index, formula=False)
+    scan = scan_step1_source(source)
+    assert next(cell for cell in scan["cells"] if cell["address"] == "A1")["normalized_value"] == "漢字"
+
+
+def test_shared_string_index_zero_and_mixed_batch_failure_are_handled_truthfully(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    valid = _make_shared_string_index_case(raw / "valid.xlsx", "0", formula=False)
+    with zipfile.ZipFile(valid, "r") as package:
+        sheet = ET.fromstring(package.read("xl/worksheets/sheet1.xml"))
+    formula_cell = next(item for item in sheet.iter() if item.tag == MAIN + "c" and item.attrib.get("r") == "A2")
+    formula_cell.attrib["t"] = "s"
+    for child in list(formula_cell):
+        formula_cell.remove(child)
+    ET.SubElement(formula_cell, MAIN + "f").text = "1+1"
+    ET.SubElement(formula_cell, MAIN + "v").text = "0"
+    _rewrite_package(valid, replacements={"xl/worksheets/sheet1.xml": ET.tostring(sheet, encoding="utf-8", xml_declaration=True)})
+    _make_shared_string_index_case(raw / "invalid.xlsx", "0_0", formula=True)
+
+    output = tmp_path / "converted"
+    result = convert_directory(raw, output)
+    entries = {entry["relative_path"]: entry for entry in result["entries"]}
+    assert entries["valid.xlsx"]["status"] == "pass"
+    assert entries["invalid.xlsx"]["status"] == "fail"
+    assert entries["invalid.xlsx"]["metrics_state"] == "unavailable"
+    bad_run = output / entries["invalid.xlsx"]["run_path"]
+    assert execute_tool("step1.check", bad_run)["status"] == "fail"
+    assert finalize_run(bad_run)["final_output"] is None
+    assert not list((output / "final").rglob("promotion.json"))
+
+    good_run = output / entries["valid.xlsx"]["run_path"]
+    valid_facts = _read(good_run / "source_facts.json")
+    fact_cells = {cell["address"]: cell for cell in valid_facts["cells"]}
+    assert fact_cells["A1"]["normalized_value"] == "漢字"
+    assert fact_cells["A2"]["normalized_cached_value"] == "漢字"
+    assert fact_cells["A2"]["cached_text"] == "0"
 
 
 def test_date_serial_requires_numeric_source_type_and_raw_number(tmp_path: Path) -> None:
@@ -647,6 +744,125 @@ def test_missing_object_opaque_part_and_fresh_finalization_gate(tmp_path: Path) 
     assert refused["final_output"] is None
     assert _read(run / "handoff.json")["final_output"] is None
     assert len(list((tmp_path / "converted" / "final").rglob("promotion.json"))) == 1
+
+
+@pytest.mark.parametrize("damage", ["modified", "deleted", "missing_hash", "invalid_hash"])
+def test_final_link_is_retained_only_for_hash_valid_promoted_payloads(tmp_path: Path, damage: str) -> None:
+    _, run, _ = _convert_single(tmp_path)
+    final = finalize_run(run)
+    output = tmp_path / "converted" / final["final_output"]
+    promotion_path = output / "promotion.json"
+    promotion = _read(promotion_path)
+    if damage == "modified":
+        (output / "inventory.json").write_text("tampered\n", encoding="utf-8")
+    elif damage == "deleted":
+        (output / "inventory.json").unlink()
+    elif damage == "missing_hash":
+        promotion["files"].pop("inventory.json")
+        _write(promotion_path, promotion)
+    else:
+        promotion["files"]["inventory.json"] = "bad-hash"
+        _write(promotion_path, promotion)
+
+    checked = execute_tool("step1.check", run)
+    assert checked["status"] == "pass"
+    assert _read(run / "handoff.json")["final_output"] is None
+    assert output.exists()  # An invalid link is cleared; the previous final folder is preserved.
+
+
+def test_final_link_survives_an_unrecorded_sidecar_in_final_directory(tmp_path: Path) -> None:
+    _, run, _ = _convert_single(tmp_path)
+    final = finalize_run(run)
+    assert final["final_output"]
+    output = tmp_path / "converted" / final["final_output"]
+    note = output / "review-note.txt"
+    note.write_text("Review annotation\n", encoding="utf-8")
+
+    checked = execute_tool("step1.check", run)
+
+    assert checked["status"] == "pass"
+    assert _read(run / "handoff.json")["final_output"] == final["final_output"]
+    assert note.read_text(encoding="utf-8") == "Review annotation\n"
+
+
+def test_final_link_survives_output_relocation_when_payload_hashes_match(tmp_path: Path) -> None:
+    _, run, converted = _convert_single(tmp_path)
+    final = finalize_run(run)
+    moved_output = tmp_path / "relocated-output"
+    (tmp_path / "converted").replace(moved_output)
+    moved_run = moved_output / converted["entries"][0]["run_path"]
+
+    checked = execute_tool("step1.check", moved_run)
+    assert checked["status"] == "pass"
+    assert _read(moved_run / "handoff.json")["final_output"] == final["final_output"]
+
+
+def test_finalize_refreshes_only_target_batch_diagnostics_and_human_report(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    _make_book(raw / "opaque.xlsx", custom_part=True, marker="opaque")
+    _make_book(raw / "healthy.xlsx", marker="healthy")
+    output = tmp_path / "converted"
+    converted = convert_directory(raw, output)
+    entries = {entry["relative_path"]: entry for entry in converted["entries"]}
+    run = output / entries["opaque.xlsx"]["run_path"]
+    other_before = entries["healthy.xlsx"]
+    batch_path = run.parents[3] / "batch.json"
+    handoff_path = run.parents[3] / "batch_handoff.json"
+    initial_other = next(entry for entry in _read(batch_path)["entries"] if entry["run_id"] == other_before["run_id"])
+
+    inventory = _read(run / "inventory.json")
+    next(cell for cell in inventory["sheets"][0]["cells"] if cell["address"] == "B2")["value"] = 999
+    _write(run / "inventory.json", inventory)
+    failed = finalize_run(run)
+    failed_codes = {item["code"] for item in failed["diagnostics"]}
+    assert failed["status"] == "fail"
+    assert "normalized_fidelity_mismatch" in failed_codes
+    mismatch = next(item for item in failed["diagnostics"] if item["code"] == "normalized_fidelity_mismatch")
+
+    failed_entry = next(entry for entry in _read(handoff_path)["entries"] if entry["run_id"] == failed["run_id"])
+    assert failed_entry["status"] == "fail"
+    assert failed_entry["diagnostics"] == failed["diagnostics"]
+    assert {item["code"] for item in failed_entry["diagnostics"]} == failed_codes
+    report = (run.parents[3] / "batch_handoff.md").read_text(encoding="utf-8")
+    assert "normalized_fidelity_mismatch [error]" in report
+    assert mismatch["message"] in report and "B2" in report
+    unchanged_other = next(entry for entry in _read(batch_path)["entries"] if entry["run_id"] == other_before["run_id"])
+    assert unchanged_other == initial_other
+
+    repaired = execute_tool("inventory.extract", run)
+    assert repaired["status"] == "partial"
+    accepted = finalize_run(run)
+    assert accepted["status"] == "partial" and accepted["ready_for_next_step"] is True
+    current_entry = next(entry for entry in _read(handoff_path)["entries"] if entry["run_id"] == accepted["run_id"])
+    current_codes = {item["code"] for item in current_entry["diagnostics"]}
+    assert current_entry["diagnostics"] == accepted["diagnostics"]
+    assert "opaque_parts_preserved" in current_codes
+    assert "normalized_fidelity_mismatch" not in current_codes
+    report = (run.parents[3] / "batch_handoff.md").read_text(encoding="utf-8")
+    warning = next(item for item in accepted["diagnostics"] if item["code"] == "opaque_parts_preserved")
+    assert "opaque_parts_preserved [warning]" in report
+    assert warning["message"] in report and "normalized_fidelity_mismatch" not in report
+    unchanged_other = next(entry for entry in _read(batch_path)["entries"] if entry["run_id"] == other_before["run_id"])
+    assert unchanged_other == initial_other
+
+
+def test_legacy_manifest_counts_workbook_and_sheet_scoped_name_declarations(tmp_path: Path) -> None:
+    workbook = Workbook()
+    facts = workbook.active
+    facts.title = "Facts"
+    facts["A1"] = 1
+    other = workbook.create_sheet("Other")
+    other["C2"] = 2
+    workbook.defined_names.add(DefinedName("GlobalRate", attr_text="'Facts'!$A$1"))
+    facts.defined_names.add(DefinedName("LocalRate", attr_text="'Facts'!$A$1"))
+    facts.defined_names.add(DefinedName("LocalMulti", attr_text="'Facts'!$A$1,'Other'!$C$2"))
+    facts.defined_names.add(DefinedName("LocalCross", attr_text="'Other'!$C$2"))
+    source = tmp_path / "four-names.xlsx"
+    workbook.save(source)
+    workbook.close()
+
+    manifest = OpenpyxlWorkbookReader().read_manifest(source)
+    assert manifest.named_ranges_count == 4
 
 
 def test_identityless_projection_multiset_and_parent_ownership_are_checked(tmp_path: Path) -> None:
@@ -1380,11 +1596,123 @@ def test_auto_recover_exhaustion_is_consistent_and_blocks_suggested_tool(tmp_pat
     assert _read(run / "attempt_history.json")["attempt_limit"] == 1
 
 
+def test_manifest_repair_success_is_recorded_as_a_cumulative_attempt(tmp_path: Path) -> None:
+    _, run, _ = _convert_single(tmp_path)
+    (run / "workbook_manifest.json").write_text("{", encoding="utf-8")
+    before = execute_tool("step1.check", run)
+    assert before["next_tool"]["name"] == "manifest.read"
+
+    repaired = execute_tool("manifest.read", run)
+    history = _read(run / "attempt_history.json")
+    assert repaired["status"] == "pass"
+    assert repaired["attempt"] == 1 and repaired["attempt_limit"] == 3
+    assert history["attempts"][0]["tool"] == "manifest.read"
+    assert history["attempts"][0]["improved"] is True
+
+
+def test_manifest_repair_failures_share_persisted_attempt_and_no_progress_bounds(tmp_path: Path) -> None:
+    _, run, _ = _convert_single(tmp_path)
+    (run / "workbook_manifest.json").write_text("{", encoding="utf-8")
+    before = execute_tool("step1.check", run)
+    assert before["next_tool"]["name"] == "manifest.read"
+
+    with patch("excel_to_act.steps.step1.workflow._tool_action", side_effect=OSError("read-only manifest")):
+        first = execute_tool("manifest.read", run)
+    assert first["status"] == "error"
+    assert first["attempt"] == 1
+    history = _read(run / "attempt_history.json")
+    assert len(history["attempts"]) == 1 and history["attempts"][0]["error"]
+
+    with patch("excel_to_act.steps.step1.workflow._tool_action", return_value={"artifacts": []}):
+        second = execute_tool("manifest.read", run)
+    assert second["recovery_stopped"] is True
+    assert second["stop_reason"] == "no_progress_stop"
+    assert second["attempt"] == 2
+    assert len(_read(run / "attempt_history.json")["attempts"]) == 2
+
+    checked = execute_tool("step1.check", run)
+    handoff = _read(run / "handoff.json")
+    auto = auto_recover(run)
+    blocked = execute_tool("manifest.read", run)
+    assert checked["stop_reason"] == handoff["stop_reason"] == auto["stop_reason"] == blocked["stop_reason"] == "no_progress_stop"
+    assert auto["actions"] == [] and auto["attempts_total"] == 2
+    assert blocked["status"] == "blocked" and blocked["attempt"] == 2
+
+
+@pytest.mark.parametrize("summary_flag", [None, False], ids=["missing-flag", "false-flag"])
+def test_last_no_progress_count_keeps_recovery_stopped_without_summary_flag(
+    tmp_path: Path, summary_flag: bool | None
+) -> None:
+    _, run, _ = _convert_single(tmp_path)
+    manifest_path = run / "workbook_manifest.json"
+    manifest_path.write_text("{", encoding="utf-8")
+    assert execute_tool("step1.check", run)["next_tool"]["name"] == "manifest.read"
+
+    with patch("excel_to_act.steps.step1.workflow._tool_action", side_effect=OSError("read-only manifest")):
+        first = execute_tool("manifest.read", run)
+    with patch("excel_to_act.steps.step1.workflow._tool_action", return_value={"artifacts": []}):
+        second = execute_tool("manifest.read", run)
+    assert first["status"] == "error" and first["attempt"] == 1
+    assert second["recovery_stopped"] is True and second["attempt"] == 2
+
+    history_path = run / "attempt_history.json"
+    history = _read(history_path)
+    assert history["attempts"][-1]["no_progress_count"] == 2
+    if summary_flag is None:
+        history.pop("no_progress_stopped")
+    else:
+        history["no_progress_stopped"] = summary_flag
+    _write(history_path, history)
+    persisted_history = history_path.read_bytes()
+    persisted_manifest = manifest_path.read_bytes()
+
+    checked = execute_tool("step1.check", run)
+    handoff = _read(run / "handoff.json")
+    auto = auto_recover(run)
+    blocked = execute_tool("manifest.read", run)
+    finalized = finalize_run(run)
+
+    assert checked["recovery_stopped"] is True and checked["retryable"] is False
+    assert checked["next_tool"] is None and checked["remaining_tool"]["name"] == "manifest.read"
+    assert checked["stop_reason"] == handoff["stop_reason"] == auto["stop_reason"] == blocked["stop_reason"] == finalized["stop_reason"] == "no_progress_stop"
+    assert handoff["recovery_stopped"] is True and handoff["ready_for_next_step"] is False
+    assert auto["actions"] == [] and auto["attempts_total"] == 2
+    assert blocked["status"] == "blocked" and blocked["attempt"] == 2
+    assert finalized["status"] == "fail" and finalized["final_output"] is None
+    assert history_path.read_bytes() == persisted_history
+    assert manifest_path.read_bytes() == persisted_manifest
+    assert not list((run.parents[5] / "final").rglob("promotion.json"))
+
+
+def test_one_no_progress_attempt_still_allows_manifest_repair(tmp_path: Path) -> None:
+    _, run, _ = _convert_single(tmp_path)
+    manifest_path = run / "workbook_manifest.json"
+    manifest_path.write_text("{", encoding="utf-8")
+    assert execute_tool("step1.check", run)["next_tool"]["name"] == "manifest.read"
+
+    with patch("excel_to_act.steps.step1.workflow._tool_action", side_effect=OSError("read-only manifest")):
+        failed = execute_tool("manifest.read", run)
+    checked = execute_tool("step1.check", run)
+    repaired = execute_tool("manifest.read", run)
+    history = _read(run / "attempt_history.json")
+
+    assert failed["status"] == "error" and failed["attempt"] == 1
+    assert checked["recovery_stopped"] is False
+    assert checked["retryable"] is True and checked["next_tool"]["name"] == "manifest.read"
+    assert repaired["status"] == "pass" and repaired["attempt"] == 2
+    assert history["attempts"][0]["no_progress_count"] == 1
+    assert history["attempts"][1]["improved"] is True
+    assert history["attempts"][1]["no_progress_count"] == 0
+
+
 @pytest.mark.parametrize(
     ("history_bytes", "reason"),
     [
         (b"{", "attempt_history_unreadable"),
         (b"[]", "attempt_history_invalid"),
+        (b"{}", "attempt_history_invalid"),
+        (b'{"attempt_limit":3}', "attempt_history_invalid"),
+        (b'{"attempts":[]}', "attempt_history_invalid"),
         (b'{"attempts":{},"attempt_limit":3}', "attempt_history_invalid"),
         (b'{"attempts":[],"attempt_limit":true}', "attempt_history_invalid"),
         (b'{"attempts":[],"attempt_limit":null}', "attempt_history_invalid"),

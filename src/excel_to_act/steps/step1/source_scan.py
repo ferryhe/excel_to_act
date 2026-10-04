@@ -129,6 +129,23 @@ def _resolve_shared_strings(zf: zipfile.ZipFile, workbook_rels: list[dict[str, s
     return [Text.from_tree(si).content or "" for si in root if _local(si.tag) == "si"]
 
 
+def _shared_string_at(shared_strings: list[str], raw_index: str | None, *, part: str, address: str) -> str:
+    try:
+        if raw_index is None:
+            index = -1
+        else:
+            decimal = raw_index.strip()
+            digits = decimal[1:] if decimal[:1] in {"+", "-"} else decimal
+            if not digits or not digits.isdecimal():
+                raise ValueError(f"not a decimal integer: {raw_index!r}")
+            index = int(decimal)
+    except ValueError as exc:
+        raise SourceScanError(f"{part}: cell {address} has invalid shared-string index {raw_index!r}") from exc
+    if index < 0 or index >= len(shared_strings):
+        raise SourceScanError(f"{part}: cell {address} has out-of-range shared-string index {raw_index!r}")
+    return shared_strings[index]
+
+
 def scan_step1_source(path: Path) -> dict[str, Any]:
     """Read raw cell facts and independently enumerate supported logical objects.
 
@@ -283,11 +300,8 @@ def scan_step1_source(path: Path) -> dict[str, Any]:
                 parsed_value: Any
                 if inline_node is not None:
                     parsed_value = normalized_inline_text or ""
-                elif cell_type == "s" and raw_value is not None:
-                    try:
-                        parsed_value = shared_strings[int(raw_value)]
-                    except (ValueError, IndexError):
-                        parsed_value = raw_value
+                elif cell_type == "s" and value_node is not None:
+                    parsed_value = _shared_string_at(shared_strings, raw_value, part=part, address=ref)
                 else:
                     parsed_value = _parse_scalar(raw_value, cell_type)
                 if formula is None and isinstance(parsed_value, int | float) and not isinstance(parsed_value, bool) and style_index < len(style_dates) and style_dates[style_index]:
@@ -297,10 +311,7 @@ def scan_step1_source(path: Path) -> dict[str, Any]:
                         pass
                 cached_value = _parse_scalar(raw_value, cell_type) if formula_node is not None and value_node is not None else None
                 if formula_node is not None and value_node is not None and cell_type == "s":
-                    try:
-                        cached_value = shared_strings[int(raw_value or "0")]
-                    except (ValueError, IndexError):
-                        cached_value = raw_value
+                    cached_value = _shared_string_at(shared_strings, raw_value, part=part, address=ref)
                 if formula_node is not None and value_node is not None and cell_type == "inlineStr":
                     cached_value = normalized_inline_text or ""
                 if formula_node is not None and isinstance(cached_value, int | float) and not isinstance(cached_value, bool) and style_index < len(style_dates) and style_dates[style_index]:

@@ -123,6 +123,14 @@ def _read_attempt_history(run_dir: Path) -> dict[str, Any]:
     if not isinstance(history, dict):
         raise _AttemptHistoryError("attempt_history_invalid", "attempt_history.json must contain a JSON object.")
 
+    missing_fields = [field for field in ("attempts", "attempt_limit") if field not in history]
+    if missing_fields:
+        fields = ", ".join(missing_fields)
+        raise _AttemptHistoryError(
+            "attempt_history_invalid",
+            f"attempt_history.json must include {fields}.",
+        )
+
     attempts = history.get("attempts", [])
     attempt_limit = history.get("attempt_limit", 3)
     no_progress_stopped = history.get("no_progress_stopped", False)
@@ -571,6 +579,8 @@ def _valid_final_link(run_dir: Path, quality: dict[str, Any]) -> str | None:
         return None
     try:
         previous = _read_json(run_dir / "handoff.json")
+        if not isinstance(previous, dict):
+            return None
         final_path = previous.get("final_output")
         if not final_path:
             return None
@@ -581,17 +591,46 @@ def _valid_final_link(run_dir: Path, quality: dict[str, Any]) -> str | None:
         final_dir = (output_root / Path(*relative.parts)).resolve()
         final_dir.relative_to(output_root)
         promotion = _read_json(final_dir / "promotion.json")
+        if not isinstance(promotion, dict):
+            return None
         if (
             promotion.get("source_sha256") != quality.get("source_sha256")
             or promotion.get("run_id") != quality.get("run_id")
             or promotion.get("quality_status") != quality.get("status")
         ):
             return None
+        promoted_files = promotion.get("files")
+        if not isinstance(promoted_files, dict) or not promoted_files:
+            return None
+        for name, recorded_hash in promoted_files.items():
+            relative_file = PurePosixPath(name) if isinstance(name, str) else PurePosixPath("..")
+            if (
+                not isinstance(name, str)
+                or not isinstance(recorded_hash, str)
+                or len(recorded_hash) != 64
+                or relative_file.is_absolute()
+                or not relative_file.parts
+                or ".." in relative_file.parts
+            ):
+                return None
+            payload = (final_dir / Path(*relative_file.parts)).resolve()
+            payload.relative_to(final_dir)
+            if not payload.is_file() or _hash_file(payload) != recorded_hash:
+                return None
+        candidate_files = {
+            file.relative_to(run_dir).as_posix()
+            for file in run_dir.rglob("*")
+            if file.is_file()
+        }
+        if not candidate_files.issubset(promoted_files):
+            return None
         promoted_handoff = _read_json(final_dir / "handoff.json")
+        if not isinstance(promoted_handoff, dict):
+            return None
         if promoted_handoff.get("final_output") != relative.as_posix():
             return None
         return relative.as_posix()
-    except (OSError, ValueError, IndexError, json.JSONDecodeError):
+    except (OSError, ValueError, IndexError, TypeError, json.JSONDecodeError):
         return None
 
 
@@ -1075,7 +1114,8 @@ def _check_run(run_dir: Path, *, write: bool = True) -> dict[str, Any]:
     elif status == "fail" and next_tool is not None and attempt_history is not None:
         attempts = attempt_history["attempts"]
         attempt_limit = attempt_history["attempt_limit"]
-        if attempt_history.get("no_progress_stopped", False):
+        last_no_progress_count = attempts[-1].get("no_progress_count", 0) if attempts else 0
+        if attempt_history.get("no_progress_stopped", False) or last_no_progress_count >= 2:
             stop_reason = "no_progress_stop"
         elif len(attempts) >= attempt_limit:
             stop_reason = "attempt_limit_reached"
@@ -1260,9 +1300,26 @@ def _batch_handoff(batch_dir: Path, entries: list[dict[str, Any]], discovery: di
         "entries": entries,
     }
     _write_json(batch_dir / "batch_handoff.json", result)
-    lines = [f"# Step1 batch handoff · {batch_dir.name}", "", f"**Status:** {status} · **Inputs:** {len(entries)} · **Pass:** {result['passed']} · **Partial:** {len(partial)} · **Fail:** {len(failed)}", "", "| Input | SHA-256 | Status | Metrics | Candidate/handoff |", "| --- | --- | --- | --- | --- |"]
+    lines = [f"# Step1 batch handoff · {batch_dir.name}", "", f"**Status:** {status} · **Inputs:** {len(entries)} · **Pass:** {result['passed']} · **Partial:** {len(partial)} · **Fail:** {len(failed)}", "", "| Input | SHA-256 | Status | Metrics | Diagnostics | Candidate/handoff |", "| --- | --- | --- | --- | --- | --- |"]
     for entry in entries:
-        lines.append(f"| `{entry.get('relative_path')}` | `{entry.get('sha256')}` | {entry.get('status')} | {entry.get('metrics_state', 'unavailable')} | `{entry.get('handoff_path', '')}` |")
+        diagnostics = []
+        for item in entry.get("diagnostics", []):
+            if not isinstance(item, dict):
+                continue
+            location = item.get("source_location")
+            location_text = ""
+            if isinstance(location, dict):
+                sheet = location.get("sheet_name") or location.get("sheet")
+                address = location.get("address")
+                if sheet or address:
+                    location_text = f" ({f'{sheet}!' if sheet else ''}{address or ''})"
+                elif location.get("object_id"):
+                    location_text = f" (object {location['object_id']})"
+                elif location.get("ooxml_part") or location.get("part"):
+                    location_text = f" (part {location.get('ooxml_part') or location.get('part')})"
+            detail = f"{item.get('code', 'unknown')} [{item.get('severity', 'unknown')}]: {item.get('message', '')}{location_text}"
+            diagnostics.append(detail.replace("|", r"\|").replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>"))
+        lines.append(f"| `{entry.get('relative_path')}` | `{entry.get('sha256')}` | {entry.get('status')} | {entry.get('metrics_state', 'unavailable')} | {', '.join(diagnostics)} | `{entry.get('handoff_path', '')}` |")
     (batch_dir / "batch_handoff.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     _write_json(batch_dir / "batch.json", {"batch_id": batch_dir.name, "discovery": discovery or {}, "entries": entries})
     return result
@@ -1616,7 +1673,7 @@ def execute_tool(name: str, run_dir: Path) -> dict[str, Any]:
     except _AttemptHistoryError:
         history = None
         quality_before = _check_run(run_dir)
-    recovery_tools = {"inventory.extract", "cached_values.read", "data_tables.read", "form_controls.read", "source_facts.refresh", "package.preserve"}
+    recovery_tools = {"manifest.read", "inventory.extract", "cached_values.read", "data_tables.read", "form_controls.read", "source_facts.refresh", "package.preserve"}
     source = _safe_run_source(run_dir)
     if name in recovery_tools and quality_before.get("recovery_stopped"):
         return {
@@ -1788,6 +1845,7 @@ def finalize_run(run_dir: Path) -> dict[str, Any]:
                 entry["status"] = quality.get("status")
                 entry["metrics_state"] = quality.get("metrics_state", "unavailable")
                 entry["metrics"] = quality.get("metrics", {})
+                entry["diagnostics"] = quality.get("diagnostics", [])
                 entry["final_path"] = final_relative
                 entry["handoff_path"] = (run_dir / "handoff.json").relative_to(output_root).as_posix()
         _batch_handoff(batch_dir, batch_data.get("entries", []), batch_data.get("discovery", {}))
