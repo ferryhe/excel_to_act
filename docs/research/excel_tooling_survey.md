@@ -1,320 +1,320 @@
-# A1 · Excel 工具调研：计算引擎与"Excel → 代码"类项目
+# A1 · Excel Tooling Survey: Calculation Engines and "Excel → Code" Projects
 
-- **Status:** Draft v2（已合并独立审核意见，待最终确认）
-- **数据核实日期:** 2026-10-02
-- **数据来源:** 各项目 PyPI 元数据页、GitHub README / 源码
-- **文档类型:** 调研（Research）
-- **审核:** 已由独立 subagent 对照 `docs/plans/*`、`pyproject.toml`、`src/**` 全量复核
+- **Status:** Draft v2 (independent review feedback incorporated; awaiting final confirmation)
+- **Data verified on:** 2026-10-02
+- **Data sources:** Each project's PyPI metadata page, GitHub README, and source code
+- **Document type:** Research
+- **Review:** An independent subagent cross-checked the full document against `docs/plans/*`, `pyproject.toml`, and `src/**`.
 
-## 关联文档（路径 + 当前状态）
+## Related Documents (Path + Current Status)
 
-| 编号 | 路径 | 状态 |
+| ID | Path | Status |
 |---|---|---|
-| A2 | `docs/research/docling_fidelity_assessment.md` | 未创建 |
-| A3 | `docs/research/llm_table_encoding.md` | 未创建 |
-| B1 | `docs/design/layered_architecture.md` | 未创建 |
-| B2 | `docs/design/agent_reading_contract.md` | 未创建 |
-| B3 | `docs/design/fidelity_rules.md` | 未创建 |
-| C1 | `docs/design/views_l1_compiler.md` | 未创建 |
-| E1/E2 | `docs/experiments/*` | 未创建 |
-| F1/F2 | `docs/adr/*` | 未创建 |
+| A2 | `docs/research/docling_fidelity_assessment.md` | Not created |
+| A3 | `docs/research/llm_table_encoding.md` | Not created |
+| B1 | `docs/design/layered_architecture.md` | Not created |
+| B2 | `docs/design/agent_reading_contract.md` | Not created |
+| B3 | `docs/design/fidelity_rules.md` | Not created |
+| C1 | `docs/design/views_l1_compiler.md` | Not created |
+| E1/E2 | `docs/experiments/*` | Not created |
+| F1/F2 | `docs/adr/*` | Not created |
 
 ---
 
-## 0. 现状对齐（As-is）
+## 0. Current State Alignment (As-is)
 
-本文是**已开工项目**的选型复核，不是立项前调研。仓库现有能力：
+This is a selection review for a **project already in progress**, not pre-project research. Current repository capabilities:
 
-| 模块 | 文件 | 状态 | 本文结论相关性 |
+| Module | File | Status | Relevance to this document's conclusions |
 |---|---|---|---|
-| 读取 manifest | `src/excel_to_act/ingest/openpyxl_reader.py` | 已实现 | §4.6 确认 |
-| OOXML 包扫描 | `src/excel_to_act/ingest/ooxml_package.py` | 已实现 | §4.6b（v1 漏评，已补） |
-| 单元格清单 | `src/excel_to_act/inventory/extractor.py` | 已实现 | §4.6 确认；双视图读取公式与缓存值，缺失缓存会记录 warning |
-| 依赖图 | `src/excel_to_act/graph/builder.py` | 已实现（正则解析） | §6.5 判定需替换 |
-| 分类/确认/存储/编排/CLI | `classify/`, `confirm/`, `store/local_store.py`, `orchestrator/phase1.py`, `interfaces/cli.py` | 已实现 | 不在本文范围（归 B1） |
-| 报告 | `src/excel_to_act/report/handoff.py` | Step 1 JSON/Markdown handoff 已实现 | 通用报告生成不在本文范围（归 B1 / D2） |
-| 插件协议 | `src/excel_to_act/plugins/contracts.py` | 6 个 Protocol，**无 OracleRunner** | §7 L3 需新增 |
-| 可选依赖 | `pyproject.toml [project.optional-dependencies].formula` | `formulas>=1.3` + `xlcalculator>=0.5` 捆绑 | §7 建议拆分 |
+| Manifest reader | `src/excel_to_act/ingest/openpyxl_reader.py` | Implemented | Confirmed in §4.6 |
+| OOXML package scanning | `src/excel_to_act/ingest/ooxml_package.py` | Implemented | §4.6b (omitted from v1 review; now added) |
+| Cell inventory | `src/excel_to_act/inventory/extractor.py` | Implemented | Confirmed in §4.6; dual-view load reads formulas and cached values, and records a warning when a cache is missing |
+| Dependency graph | `src/excel_to_act/graph/builder.py` | Implemented (regex parsing) | §6.5 concludes it needs replacement |
+| Classification/confirmation/storage/orchestration/CLI | `classify/`, `confirm/`, `store/local_store.py`, `orchestrator/phase1.py`, `interfaces/cli.py` | Implemented | Outside this document's scope (belongs to B1) |
+| Report | `src/excel_to_act/report/handoff.py` | Step 1 JSON/Markdown handoff implemented | General report generation is outside this document's scope (belongs to B1 / D2) |
+| Plugin protocols | `src/excel_to_act/plugins/contracts.py` | 6 Protocols, **no OracleRunner** | Add one for L3 in §7 |
+| Optional dependencies | `pyproject.toml [project.optional-dependencies].formula` | `formulas>=1.3` + `xlcalculator>=0.5` bundled together | §7 recommends splitting them |
 
 ---
 
-## 1. 边界（Scope）
+## 1. Scope
 
 ### In scope
 
-评估 **"能读懂 Excel 公式并把它们算出来 / 编译成代码"** 的一类工具（计算引擎 / 编译器 / 求值器）+ **输入形态**相关工具，回答：
+Evaluate tools that **"understand Excel formulas and calculate them / compile them to code"** (calculation engines / compilers / evaluators), plus tools related to **input formats**, and answer:
 
-> 有没有现成的开源库，可以直接作为 excel_to_act 的 **核心** 依赖？如果没有，各自能放在哪一层？
+> Is there an existing open-source library that can serve directly as a **core** dependency for excel_to_act? If not, where can each option fit in the architecture?
 
 ### Out of scope
 
-| 不在本文范围 | 归属 |
+| Out of scope | Owner |
 |---|---|
-| Docling / markitdown / pandas 渲染等"文档解析器"是否保真 | **A2** |
-| 给 LLM 的编码/压缩/采样策略 | **A3** |
-| 分层架构的**正式定义**与层间契约 | **B1**（本文 §7 仅为输入 B1 的**非规范性初稿**） |
-| 是否采用的最终决策记录 | **F1** |
-| **新增**工具的集成代码与 PR 拆分 | C 类模块设计 / `docs/plans/pr_plan_phase1.md`（已落地实现以 `src/` 为准） |
-| 性能基准 | E3（待建） |
-| 测试策略与 fixture | `tests/README.md` + D 类实施计划 |
-| 许可证合规的 CI 落地 | F1 ADR + CI workflow |
-| Python 版本与运行环境矩阵 | `pyproject.toml` + `.github/workflows/ci.yml` |
+| Fidelity of "document parsers" such as Docling / markitdown / pandas rendering | **A2** |
+| Encoding / compression / sampling strategies for LLMs | **A3** |
+| **Formal definition** of the layered architecture and inter-layer contracts | **B1** (this document's §7 is only a **non-normative draft** to inform B1) |
+| Final decision record on whether to adopt | **F1** |
+| Integration code and PR split for **new** tools | C-class module design / `docs/plans/pr_plan_phase1.md` (use `src/` as the authority for implemented behavior) |
+| Performance benchmarks | E3 (not created) |
+| Test strategy and fixtures | `tests/README.md` + D-class implementation plan |
+| CI implementation of license compliance | F1 ADR + CI workflow |
+| Python versions and runtime environment matrix | `pyproject.toml` + `.github/workflows/ci.yml` |
 
 ---
 
-## 2. 评估维度
+## 2. Evaluation Criteria
 
-| 维度 | 为什么重要 |
+| Criterion | Why it matters |
 |---|---|
-| **核心能力** | 是"求值"、"产出可读代码"还是"纯读取" |
-| **函数覆盖** | 精算模型常用 LOOKUP / INDEX / MATCH / OFFSET / 财务函数的可得性 |
-| **产物形态** | 是否产出可审计、可版本化的中间表示 |
-| **结构覆盖** | defined name / 结构化引用 / volatile / circular / 样式是否可得 |
-| **许可证** | 项目约定：**避免 GPL/AGPL 类 copyleft 进入核心依赖路径** |
-| **活跃度** | 最后一次发版时间 |
-| **建议放置层** | 待 B1 确认的初稿（L0 采集 / L3 校验 / 仅参考） |
+| **Core capability** | Is it for "evaluation," "generating readable code," or "reading only"? |
+| **Function coverage** | Availability of LOOKUP / INDEX / MATCH / OFFSET / financial functions commonly used in actuarial models |
+| **Artifact form** | Does it produce an auditable, versionable intermediate representation? |
+| **Structural coverage** | Availability of defined names / structured references / volatile / circular / styles |
+| **License** | Project convention: **avoid GPL/AGPL-style copyleft in the core dependency path** |
+| **Activity** | Date of the most recent release |
+| **Suggested layer** | Draft pending B1 confirmation (L0 ingestion / L3 validation / reference only) |
 
 ---
 
-## 3. 结论摘要（TL;DR）
+## 3. Summary of Conclusions (TL;DR)
 
-1. **没有现成库能当核心。** 现有项目全部是 **计算引擎**（回答"算出什么"），本项目需要的是 **无损提取器**（回答"表里有什么、在哪、什么格式"）。引擎吞掉源信息，提取器必须保留源信息。
-2. **最强的 `formulas` 也是最危险的依赖**：覆盖最高（90.1%）、最活跃，但许可证为 **EUPL 1.1+（copyleft）**。
-3. **`pycel` 直接出局**：GPLv3 + 2021 年后停更。
-4. **核心采集层自研（openpyxl）已落地**，本文确认该选择，并给出可选增强（stdlib 包扫描、tokenizer 替换正则）与校验路径（L3 oracle）。
-5. **当前实现尚未吃满 openpyxl 的保真潜力**（见 §4.6 缺口清单）——这是"保真"能否成立的真正瓶颈，不是选库问题。
+1. **No existing library can serve as the core.** The current options are all **calculation engines** (answering "what does it calculate?"); this project needs a **lossless extractor** (answering "what is in the workbook, where is it, and in what format?"). An engine discards source information; the extractor must preserve it.
+2. **The strongest option, `formulas`, is also the riskiest dependency:** it has the highest coverage (90.1%) and is the most active, but its license is **EUPL 1.1+ (copyleft)**.
+3. **`pycel` is ruled out:** GPLv3 + inactive since 2021.
+4. **The in-house core ingestion layer (openpyxl) is implemented.** This document confirms that choice and identifies optional enhancements (stdlib package scanning, replacing regex with a tokenizer) and a validation path (L3 oracle).
+5. **The current implementation does not yet realize openpyxl's full fidelity potential** (see the gap list in §4.6) — that is the real bottleneck to achieving "fidelity," not library selection.
 
 ---
 
-## 4. 逐一评估
+## 4. Individual Evaluations
 
-> 规则：§4.1–§4.8 每个工具必须给出**三行结论**（放置层 / 许可证 / 最后发版）；§4.9 为降级参考项，不适用该规则。
+> Rule: Each tool in §4.1–§4.8 must have a **three-line conclusion** (layer / license / latest release); §4.9 contains fallback references and is exempt from this rule.
 
-### 4.1 `formulas`（vinci1it2000）
+### 4.1 `formulas` (vinci1it2000)
 
-- **定位:** Excel 公式解释器 + 工作簿编译器
-- **版本 / 活跃度:** 1.3.4，2026-03-11（活跃）
-- **许可证:** **EUPL 1.1+**（copyleft，与 GPL 兼容）
-- **能力:** `ExcelModel().loads().finish().calculate()` 编译整个工作簿为 Python 执行图（schedula dispatch）；支持循环引用 `circular=True`；`from_ranges()` 子模型抽取；`compile(inputs, outputs)`；模型可导出 JSON；CLI `build/calc/test/serve`，支持 batch 多场景
-- **函数覆盖:** **483 / 536 = 90.1%**（DATE&TIME / ENGINEERING / FINANCIAL / STATISTICAL / LOGICAL / OPERATORS 均 100%；LOOKUP 82.5%、MATH&TRIG 88.8%、TEXT 88.0%；**CUBE / DATABASE / WEB / AUTOMATION 为 0%**）
-- **局限:** 产物不是可读 Python 源码（内部 dispatch 图）；不产出坐标级保真清单；缺 CUBE/DATABASE/WEB
+- **Position:** Excel formula interpreter + workbook compiler
+- **Version / activity:** 1.3.4, 2026-03-11 (active)
+- **License:** **EUPL 1.1+** (copyleft, compatible with GPL)
+- **Capabilities:** `ExcelModel().loads().finish().calculate()` compiles an entire workbook into a Python execution graph (schedula dispatch); supports circular references with `circular=True`; extracts submodels with `from_ranges()`; supports `compile(inputs, outputs)`; models can be exported as JSON; CLI `build/calc/test/serve`, with batch multi-scenario support
+- **Function coverage:** **483 / 536 = 90.1%** (DATE&TIME / ENGINEERING / FINANCIAL / STATISTICAL / LOGICAL / OPERATORS are all 100%; LOOKUP 82.5%, MATH&TRIG 88.8%, TEXT 88.0%; **CUBE / DATABASE / WEB / AUTOMATION are 0%**)
+- **Limitations:** Output is not readable Python source code (it is an internal dispatch graph); it does not produce a coordinate-level fidelity inventory; CUBE/DATABASE/WEB are missing
 
-> 1. **放置层：** L3 校验 oracle（可选依赖，隔离进程/可选 extra）
-> 2. **许可证进核心：** **否**（EUPL 1.1+ copyleft）
-> 3. **最后发版：** 2026-03-11
+> 1. **Layer:** L3 validation oracle (optional dependency, isolated process/optional extra)
+> 2. **Allowed in core dependencies:** **No** (EUPL 1.1+ copyleft)
+> 3. **Latest release:** 2026-03-11
 
 ### 4.2 `pycel`
 
-- **版本:** 1.0b30，**2021-10-13**（停更 4 年+）
-- **许可证:** **GPLv3**
-- **能力:** 生成 graph-based Python（缓存 + 惰性求值）；支持数组 CSE、INDIRECT/OFFSET/INDEX、结构化引用、迭代计算
-- **局限:** GPLv3；停更；不编译 VBA；OFFSET 依赖单元格是否已编译
+- **Version:** 1.0b30, **2021-10-13** (inactive for 4+ years)
+- **License:** **GPLv3**
+- **Capabilities:** Generates graph-based Python (caching + lazy evaluation); supports array CSE, INDIRECT/OFFSET/INDEX, structured references, and iterative calculation
+- **Limitations:** GPLv3; inactive; does not compile VBA; OFFSET depends on whether cells have been compiled
 
-> 1. **放置层：** 仅研究参考（tokenizer / 地址处理思路，**禁止引入代码**）
-> 2. **许可证进核心：** **否**（GPLv3）
-> 3. **最后发版：** 2021-10-13
+> 1. **Layer:** Research reference only (tokenizer / address-handling ideas, **do not import code**)
+> 2. **Allowed in core dependencies:** **No** (GPLv3)
+> 3. **Latest release:** 2021-10-13
 
-### 4.3 `xlcalculator`（koala2 现代化版）
+### 4.3 `xlcalculator` (modernized version of koala2)
 
-- **版本:** 0.5.0，**2023-02-06**；**许可证: MIT**（0.2.3 起由 GPL-3 改为 MIT）
-- **能力:** 工作簿 → Python 状态（可存/可取）；子模型聚焦；求值单格/命名区域/区域/共享公式；可注册自定义函数
-- **局限:** **0.1.0 起重构为 AST 求值，不再生成 Python 代码**；不支持数组/CSE 公式；**缺 INDEX / OFFSET / INDIRECT / HLOOKUP / COLUMN / ROW**；VLOOKUP 仅精确匹配；LN / YEARFRAC 与 Excel 有偏差
-- **与 plan 差异：** plan 允许其作为插件内实验；本文因上述能力缺口，**不建议投入工程时间**
+- **Version:** 0.5.0, **2023-02-06**; **License: MIT** (changed from GPL-3 to MIT starting in 0.2.3)
+- **Capabilities:** Workbook → Python state (can be saved/loaded); focuses on submodels; evaluates individual cells/named ranges/ranges/shared formulas; custom functions can be registered
+- **Limitations:** **Refactored to AST evaluation starting in 0.1.0; it no longer generates Python code**; does not support array/CSE formulas; **missing INDEX / OFFSET / INDIRECT / HLOOKUP / COLUMN / ROW**; VLOOKUP supports exact match only; LN / YEARFRAC differ from Excel
+- **Difference from the plan:** The plan allows it as an in-plugin experiment; due to the capability gaps above, this document **does not recommend spending engineering time on it**
 
-> 1. **放置层：** 研究参考（AST 设计与精度处理章节）
-> 2. **许可证进核心：** 允许（MIT），但能力不足，不建议
-> 3. **最后发版：** 2023-02-06
+> 1. **Layer:** Research reference (AST design and precision-handling sections)
+> 2. **Allowed in core dependencies:** Allowed (MIT), but not recommended because capabilities are insufficient
+> 3. **Latest release:** 2023-02-06
 
 ### 4.4 `koala2`
 
-`xlcalculator` 前身，已废弃。不使用。
+Predecessor to `xlcalculator`, deprecated. Do not use.
 
-> 1. **放置层：** 不使用
-> 2. **许可证进核心：** 不适用（已废弃）
-> 3. **最后发版：** 已停止维护
+> 1. **Layer:** Do not use
+> 2. **Allowed in core dependencies:** Not applicable (deprecated)
+> 3. **Latest release:** Maintenance discontinued
 
 ### 4.5 `FlyingKoala`
 
-- **定位:** xlwings 辅助函数集，Excel 公式可被 Python 调用与单元测试；依赖 xlwings + koala + pandas
-- **价值:** "用 Excel 自身做计算引擎来单元测试公式"与增量迁移的方法论
-- **局限:** 依赖 Excel COM，**无法在 CI（ubuntu-only）中运行**
+- **Position:** A set of xlwings helper functions that let Python call and unit-test Excel formulas; depends on xlwings + koala + pandas
+- **Value:** Methodology for "using Excel itself as the calculation engine to unit-test formulas" and for incremental migration
+- **Limitations:** Depends on Excel COM, **so it cannot run in CI (ubuntu-only)**
 
-> 1. **放置层：** L3 校验思路参考（回归方法论），**不进 CI**
-> 2. **许可证进核心：** 否（依赖 Excel COM）
-> 3. **最后发版：** N/A（无近期发版；仓库低活跃，需人工确认具体日期）
+> 1. **Layer:** L3 validation reference (regression methodology), **not in CI**
+> 2. **Allowed in core dependencies:** No (depends on Excel COM)
+> 3. **Latest release:** N/A (no recent release; repository has low activity, exact date needs manual confirmation)
 
-### 4.6 `openpyxl`（**L0 核心**）
+### 4.6 `openpyxl` (**L0 core**)
 
-- **许可证:** MIT；**版本:** 已由 `pyproject.toml` 锁定 `openpyxl>=3.1`
-- **决定性能力:**
-  - `data_only=False` → **公式原文**；`data_only=True` → **缓存值**
-  - `number_format`、`data_type`、`comment`、`hyperlink`、merged、tables、defined names、data validation、conditional formatting、sheet 保护/可见性
-- **局限:** 不计算；大文件慢（`read_only=True` 可流式加速，但会丢失部分格式/注释信息，与保真目标存在取舍）
-- **⚠ 当前实现尚未吃满其保真潜力（缺口清单）:**
-  1. 缓存值采集已由 `ingest/cached_values.py` 使用 `data_only=True` 二次加载；工作簿未重算时，缓存仍不可用并记录 warning
-  2. 引用解析用正则（`graph/builder.py:20` `REF_RE`），不识别结构化引用 `Table[Col]`，未构造 defined-name 节点
-  3. 未采集 fills / fonts / borders / print areas（plan 桶 6 要求）
-  4. 未识别 volatile / circular（plan 桶 5 要求）
+- **License:** MIT; **version:** `pyproject.toml` pins `openpyxl>=3.1`
+- **Decisive capabilities:**
+  - `data_only=False` → **original formula**; `data_only=True` → **cached value**
+  - `number_format`, `data_type`, `comment`, `hyperlink`, merged cells, tables, defined names, data validation, conditional formatting, sheet protection/visibility
+- **Limitations:** Does not calculate; slow on large files (`read_only=True` can speed up streaming, but loses some formatting/comment information, trading off against the fidelity goal)
+- **⚠ The current implementation does not yet realize its full fidelity potential (gap list):**
+  1. Cached values are now collected by a second load with `data_only=True` in `ingest/cached_values.py`; if the workbook has not been recalculated, a cache may still be unavailable and a warning is recorded.
+  2. Reference parsing uses regex (`graph/builder.py:20` `REF_RE`), does not recognize structured references such as `Table[Col]`, and does not construct defined-name nodes.
+  3. Fills / fonts / borders / print areas are not collected (required by plan bucket 6).
+  4. Volatile / circular items are not identified (required by plan bucket 5).
 
-> 1. **放置层：** **L0 核心采集层（已落地）**
-> 2. **许可证进核心：** **是**（MIT）
-> 3. **最后发版：** 持续维护
+> 1. **Layer:** **L0 core ingestion layer (implemented)**
+> 2. **Allowed in core dependencies:** **Yes** (MIT)
+> 3. **Latest release:** Actively maintained
 
-### 4.6b Python 标准库 `zipfile` + `xml.etree`（OOXML 包扫描）
+### 4.6b Python standard library `zipfile` + `xml.etree` (OOXML package scanning)
 
-- **许可证:** PSF / PSF-2.0；**零新增依赖**
-- **作用:** 识别 openpyxl 无法建模的 workbook 部件：`xl/vbaProject.bin`、`charts/`、`pivotTables/`、`externalLinks/`、`connections.xml`、`drawings/`、`embeddings/`、`media/`，产出 `UnsupportedFeature` — **这是项目"禁止静默丢弃"约定的唯一实现机制**
-- **已落地:** `src/excel_to_act/ingest/ooxml_package.py`（`OPAQUE_MARKERS`）
-- **⚠ 已知缺陷:** `ooxml_package.py:51` 的 `zipfile.ZipFile(...)` 无异常保护，加密/损坏工作簿会抛出未捕获异常而非产出 `UnsupportedFeature`
+- **License:** PSF / PSF-2.0; **no new dependencies**
+- **Purpose:** Detect workbook parts that openpyxl cannot model: `xl/vbaProject.bin`, `charts/`, `pivotTables/`, `externalLinks/`, `connections.xml`, `drawings/`, `embeddings/`, and `media/`, then emit `UnsupportedFeature` — **this is the only implementation mechanism for the project's "do not silently drop" convention**
+- **Implemented:** `src/excel_to_act/ingest/ooxml_package.py` (`OPAQUE_MARKERS`)
+- **⚠ Known defect:** `zipfile.ZipFile(...)` at `ooxml_package.py:51` has no exception handling, so encrypted/damaged workbooks raise an uncaught exception instead of producing `UnsupportedFeature`.
 
-> 1. **放置层：** **L0 核心采集层（与 openpyxl 并列，已落地）**
-> 2. **许可证进核心：** **是**（标准库）
-> 3. **最后发版：** 随 CPython 发布
+> 1. **Layer:** **L0 core ingestion layer (implemented alongside openpyxl)**
+> 2. **Allowed in core dependencies:** **Yes** (standard library)
+> 3. **Latest release:** Released with CPython
 
 ### 4.7 `fastexcel` / `python-calamine`
 
-- **定位:** Rust calamine 绑定，高速只读；**许可证:** MIT 系（引入前最终核实）
-- **⚠ 约束（必须遵守）:** 仅作**旁路加速/预筛**，**不得作为唯一 L0 数据源**。必须实现 `WorkbookReader` 协议，产物须标注 `fidelity='values_only'`，并对未覆盖维度产出 `unsupported_or_opaque` 记录；否则直接与覆盖不变量冲突
+- **Position:** Rust bindings for calamine, fast and read-only; **license:** MIT family (verify before adoption)
+- **⚠ Constraint (must be followed):** Use only for **side-path acceleration / pre-screening**, **never as the sole L0 data source**. It must implement the `WorkbookReader` protocol, label artifacts `fidelity='values_only'`, and produce `unsupported_or_opaque` records for uncovered dimensions; otherwise it directly conflicts with the coverage invariant.
 
-> 1. **放置层：** L0 可选旁路加速（非数据源）
-> 2. **许可证进核心：** 待核实
-> 3. **最后发版：** 持续维护
+> 1. **Layer:** Optional L0 side-path acceleration (not a data source)
+> 2. **Allowed in core dependencies:** To be verified
+> 3. **Latest release:** Actively maintained
 
 ### 4.8 LibreOffice（headless / soffice）
 
-- **许可证:** MPL 2.0；**用法:** 进程外调用重算与转换，不链接
-- **价值:** L3 第二 oracle；价值与局限并存（需安装、启动慢、与 Excel 数值存在已知差异）
+- **License:** MPL 2.0; **usage:** invoke recalculation and conversion out of process; do not link
+- **Value:** A second L3 oracle; has both value and limitations (requires installation, starts slowly, and has known numerical differences from Excel)
 
-> 1. **放置层：** L3 校验 oracle（进程外）
-> 2. **许可证进核心：** 不适用（进程外调用，不链接）
-> 3. **最后发版：** 持续维护
+> 1. **Layer:** L3 validation oracle (out of process)
+> 2. **Allowed in core dependencies:** Not applicable (out-of-process invocation, not linked)
+> 3. **Latest release:** Actively maintained
 
-### 4.8b `xlwings`（plan 点名的 oracle runner）
+### 4.8b `xlwings` (oracle runner named in the plan)
 
-- **许可证:** BSD-3-Clause
-- **价值:** 用 Excel 自身重算，作为数值基线
-- **局限:** 依赖 Excel COM；CI 为 `ubuntu-latest`、Python 3.11/3.12/3.13（`.github/workflows/ci.yml:19`），**只能在开发者 Windows 机本地跑，不进 CI**
+- **License:** BSD-3-Clause
+- **Value:** Recalculates with Excel itself as the numerical baseline
+- **Limitations:** Depends on Excel COM; CI uses `ubuntu-latest` and Python 3.11/3.12/3.13 (`.github/workflows/ci.yml:19`), so it **can run only on a developer's local Windows machine, not in CI**.
 
-> 1. **放置层：** L3 oracle（本地基线，不进 CI）
-> 2. **许可证进核心：** 否
-> 3. **最后发版：** 活跃（具体版本待核实）
+> 1. **Layer:** L3 oracle (local baseline, not in CI)
+> 2. **Allowed in core dependencies:** No
+> 3. **Latest release:** Active (exact version to be verified)
 
-### 4.9 其他研究参考（不适用三行结论规则）
+### 4.9 Other Research References (Exempt from the Three-Line Conclusion Rule)
 
-| 项目 | 定位 | 许可证 | 结论 |
+| Project | Position | License | Conclusion |
 |---|---|---|---|
-| `Gridmonger` | JVM/Kotlin Excel 逆向工程可视化 | GPLv3 | 仅算法/交互参考 |
-| `orcus` / `ixion` | C++ 表格模型导入与公式引擎 | MPL 2.0 | 仅语法/引擎参考 |
-| `PyXLL` / `Excel-DNA` | Excel 内嵌 Python | 商业/混合 | 方向相反，不适用 |
-| `SpreadsheetConverter` | Excel → C#/Java | 商业 | 不采用 |
-| `Mito` | Jupyter 录制生成 pandas 代码 | 开源 | 是"录制操作"非"解析既有模型"，不适用 |
+| `Gridmonger` | JVM/Kotlin Excel reverse-engineering visualization | GPLv3 | Algorithm / interaction reference only |
+| `orcus` / `ixion` | C++ spreadsheet model import and formula engine | MPL 2.0 | Syntax / engine reference only |
+| `PyXLL` / `Excel-DNA` | Python embedded in Excel | Commercial / mixed | Opposite direction; not applicable |
+| `SpreadsheetConverter` | Excel → C#/Java | Commercial | Do not adopt |
+| `Mito` | Records in Jupyter to generate pandas code | Open source | Records operations rather than parsing existing models; not applicable |
 
-### 4.10 输入形态：加密 / 受保护 / 二进制与旧格式
+### 4.10 Input Formats: Encrypted / Protected / Binary and Legacy Formats
 
-| 形态 | 候选工具 | 说明 |
+| Format | Candidate tool | Notes |
 |---|---|---|
-| 加密 / 受保护工作簿 | `msoffcrypto-tool` | 许可证与 API 稳定性待核实 |
-| `.xlsb` | `pyxlsb` | 公式/格式覆盖度待核实 |
-| `.xls` / 旧格式 | LibreOffice 转换 | 进程外转换后再走标准流程 |
+| Encrypted / protected workbook | `msoffcrypto-tool` | License and API stability to be verified |
+| `.xlsb` | `pyxlsb` | Formula/format coverage to be verified |
+| `.xls` / legacy format | LibreOffice conversion | Convert out of process, then use the standard workflow |
 
-**硬约束（项目约定）：** 任何读取失败必须产出 `UnsupportedFeature(severity=error)`，**不得抛出未捕获异常**。当前 `ooxml_package.py:51` 违反此约束。
+**Hard constraint (project convention):** Any read failure must produce `UnsupportedFeature(severity=error)` and **must not raise an uncaught exception**. `ooxml_package.py:51` currently violates this constraint.
 
 ---
 
-## 5. 横向对比矩阵
+## 5. Comparative Matrix
 
-| 工具 | 产出可读代码 | 函数覆盖 | 许可证 | 最后发版 | 求公式值 | 结构保真 |
+| Tool | Produces readable code | Function coverage | License | Latest release | Evaluates formulas | Structural fidelity |
 |---|---|---|---|---|---|---|
-| `formulas` | 否（dispatch 图 + JSON） | **90.1%** | EUPL 1.1+ | 2026-03 | 是 | 否 |
-| `pycel` | 是（graph Python） | 未统计（随需求） | GPLv3 | 2021-10 | 是 | 否 |
-| `xlcalculator` | 否（AST 求值） | 中低 | MIT | 2023-02 | 是 | 否 |
-| `koala2` | — | 低 | — | 已废弃 | 是 | 否 |
-| `openpyxl` | 不适用 | 不适用 | **MIT** | 活跃 | 否（**但可读 Excel 缓存值**） | **是** |
-| stdlib `zipfile`+XML | 不适用 | 不适用 | PSF | 随 CPython | 否 | **是（部件级）** |
-| `fastexcel` | 不适用 | 不适用 | MIT（待核实） | 活跃 | 否 | 部分（values-only） |
-| LibreOffice | 不适用 | 高 | MPL 2.0（进程外） | 活跃 | 是 | 部分 |
+| `formulas` | No (dispatch graph + JSON) | **90.1%** | EUPL 1.1+ | 2026-03 | Yes | No |
+| `pycel` | Yes (graph-based Python) | Not measured (depends on requirements) | GPLv3 | 2021-10 | Yes | No |
+| `xlcalculator` | No (AST evaluation) | Medium-low | MIT | 2023-02 | Yes | No |
+| `koala2` | — | Low | — | Deprecated | Yes | No |
+| `openpyxl` | N/A | N/A | **MIT** | Active | No (**but can read Excel cached values**) | **Yes** |
+| stdlib `zipfile`+XML | N/A | N/A | PSF | With CPython | No | **Yes (at part level)** |
+| `fastexcel` | N/A | N/A | MIT (to be verified) | Active | No | Partial (values-only) |
+| LibreOffice | N/A | High | MPL 2.0 (out of process) | Active | Yes | Partial |
 
-**关键对角线：** 唯一具备保真**潜力**的是 `openpyxl`，而它恰恰不计算。且"潜力"能否兑现取决于我们的实现完整度（见 §4.6 缺口清单）。
+**Key diagonal:** `openpyxl` is the only option with **fidelity potential**, yet it does not calculate. Whether that potential is realized depends on the completeness of our implementation (see the gap list in §4.6).
 
 ---
 
-## 6. 许可证风险汇总
+## 6. License Risk Summary
 
-| 许可证 | 工具 | 进核心 | 说明 |
+| License | Tool | Allowed in core | Notes |
 |---|---|---|---|
-| MIT | openpyxl、xlcalculator、fastexcel | **允许** | 无 copyleft 传染 |
-| PSF | stdlib zipfile/xml | **允许** | 标准库 |
-| EUPL 1.1+ | formulas | **否** | copyleft；内部自用风险较低，随产物分发需法律确认 |
-| GPLv3 | pycel、Gridmonger | **否** | 与项目约定冲突 |
-| MPL 2.0 | LibreOffice、orcus/ixion | 不适用 | 进程外调用或仅参考，不链接 |
-| BSD-3 | xlwings | 否 | 依赖 Excel COM |
+| MIT | openpyxl, xlcalculator, fastexcel | **Allowed** | No copyleft propagation |
+| PSF | stdlib zipfile/xml | **Allowed** | Standard library |
+| EUPL 1.1+ | formulas | **No** | Copyleft; lower risk for internal use, legal review required for distribution with artifacts |
+| GPLv3 | pycel, Gridmonger | **No** | Conflicts with project convention |
+| MPL 2.0 | LibreOffice, orcus/ixion | N/A | Out-of-process invocation or reference only; not linked |
+| BSD-3 | xlwings | No | Depends on Excel COM |
 
-> **加严声明：** plan 原文为 "Avoid **GPL/AGPL** core dependencies"。本文把 **EUPL 1.1+** 也判为禁止进核心，属**加严解释**，须由 F1 ADR 确认，并回写 `docs/plans/phase1_excel_decomposition_plan.md` 相应段落。
-> **传递依赖：** 上表仅覆盖直接依赖。`formulas` 传递依赖 `schedula` 等、`xlcalculator` 传递依赖 numpy/openpyxl，**须一并核实**（见 §8）。
+> **Stricter interpretation:** The plan says "Avoid **GPL/AGPL** core dependencies." This document also classifies **EUPL 1.1+** as prohibited from core dependencies; this is a **stricter interpretation** that F1 ADR must confirm and that must be reflected in the corresponding section of `docs/plans/phase1_excel_decomposition_plan.md`.
+> **Transitive dependencies:** The table covers direct dependencies only. Transitive dependencies such as `schedula` for `formulas` and numpy/openpyxl for `xlcalculator` **must also be verified** (see §8).
 
 ---
 
-## 6.5 公式引用解析（tokenizer / AST）专项
+## 6.5 Formula Reference Parsing (Tokenizer / AST) Focus
 
-plan 明确点名 `formulas` / `xlcalculator` 可用于 **formula reference parsing / evaluation** 实验。本文分别回答：
+The plan explicitly names `formulas` / `xlcalculator` for **formula reference parsing / evaluation** experiments. This document answers each use case separately:
 
-| 用途 | 结论 |
+| Use | Conclusion |
 |---|---|
-| **reference parsing（引用解析）** | 首选 **`openpyxl.formula.tokenizer`**（已是核心依赖，MIT，**零新增依赖、零许可证风险**）。**不得为引用解析引入 EUPL/GPL 依赖** |
-| **evaluation（求值）** | `formulas` 仅作 L3 oracle（EUPL，隔离）；pycel tokenizer 思路仅参考（GPLv3，**禁止引入代码**） |
+| **Reference parsing** | Prefer **`openpyxl.formula.tokenizer`** (already a core dependency, MIT, **no new dependency and no license risk**). **Do not add EUPL/GPL dependencies for reference parsing.** |
+| **Evaluation** | Use `formulas` only as an isolated L3 oracle (EUPL); refer to pycel tokenizer ideas only (GPLv3, **do not import code**). |
 
-当前实现为正则（`graph/builder.py:20`），存在字符串常量内伪地址误判、不识别 `Table[Col]`、未构造 defined-name 节点三类问题。
+The current implementation uses regex (`graph/builder.py:20`) and has three problems: false address matches inside string literals, failure to recognize `Table[Col]`, and no defined-name nodes.
 
 ---
 
-## 7. 放置建议（**非规范性初稿，待 B1 确认**）
+## 7. Placement Recommendations (**Non-normative Draft, Pending B1 Confirmation**)
 
-| 层 | 采用 | 现有模块 | 缺失模块 |
+| Layer | Choice | Existing modules | Missing modules |
 |---|---|---|---|
-| **L0 采集** | `openpyxl` + stdlib `zipfile`/XML（核心）；`fastexcel` 仅旁路加速 | `ingest/openpyxl_reader.py`、`ingest/ooxml_package.py`、`inventory/extractor.py` | `inventory/layout.py`、`inventory/opaque.py`、`ingest/calamine_reader.py` |
-| **L1 视图** | **自研，无现成可用** | 无（仅有 `schemas/artifacts.py` 的 `SourceLocation`） | 建议新建 `view/` + `ViewSlice` 契约 |
-| **L2 语义推理** | 自研 | `classify/rules.py`、`classify/classifier.py`、`confirm/templates.py` | 无真正语义推理模块；`ActuarialHint`（6 值）与 plan 的 10 个 hint 不一致 |
-| **L3 校验 oracle** | `formulas`（可选依赖、隔离）+ LibreOffice（进程外）+ **缓存值对比（零依赖首选）** | 公式缓存值采集已实现；数值对账与报告仍缺失 | `validation/{formulas_oracle,libreoffice_oracle}.py` + `OracleRunner` 协议 + `ValidationReport` |
-| 层外（B1 需补位） | — | `store/local_store.py`、`orchestrator/phase1.py`、`interfaces/cli.py` 已落地 | `report/markdown.py` 缺失（`jinja2` 已声明但未使用） |
+| **L0 Ingestion** | `openpyxl` + stdlib `zipfile`/XML (core); `fastexcel` for side-path acceleration only | `ingest/openpyxl_reader.py`, `ingest/ooxml_package.py`, `inventory/extractor.py` | `inventory/layout.py`, `inventory/opaque.py`, `ingest/calamine_reader.py` |
+| **L1 View** | **In-house; no ready-made option** | None (only `SourceLocation` in `schemas/artifacts.py`) | Recommend adding `view/` + `ViewSlice` contract |
+| **L2 Semantic reasoning** | In-house | `classify/rules.py`, `classify/classifier.py`, `confirm/templates.py` | No actual semantic reasoning module; `ActuarialHint` (6 values) differs from the plan's 10 hints |
+| **L3 Validation oracle** | `formulas` (optional dependency, isolated) + LibreOffice (out of process) + **cached-value comparison (preferred, no dependency)** | Formula cached-value collection implemented; numerical reconciliation and reporting still missing | `validation/{formulas_oracle,libreoffice_oracle}.py` + `OracleRunner` protocol + `ValidationReport` |
+| Outside layers (B1 must address) | — | `store/local_store.py`, `orchestrator/phase1.py`, `interfaces/cli.py` implemented | `report/markdown.py` missing (`jinja2` is declared but unused) |
 
-**⚠ 缓存值对比的前置条件：** `data_only=True` 双视图加载与 `cached_value` 字段已实现；工作簿未由 Excel 重算时仍可能没有可用缓存，并会记录 warning。缓存值采集已具备，但 L3 对账流程仍未实现。
+**⚠ Prerequisite for cached-value comparison:** Dual-view loading with `data_only=True` and the `cached_value` field are implemented; if a workbook has not been recalculated by Excel, a usable cache may still be missing, and a warning will be recorded. Cached-value collection is available, but the L3 reconciliation workflow is not implemented yet.
 
-**⚠ extras 现状：** `pyproject.toml` 已声明 `formula = ["formulas>=1.3", "xlcalculator>=0.5"]`——把 EUPL 包与 MIT 包捆绑在同一个 extra，与本文"隔离"建议相悖。建议拆为 `oracle-formulas`（EUPL，显式 opt-in）与 `xlcalc`（MIT）。
-
----
-
-## 8. 待核实项（Open Questions）
-
-1. `fastexcel` / `python-calamine` 的确切许可证与公式/格式读取能力 → 引入前实测
-2. `formulas` 在 EUPL 下"内部使用 vs 随产物分发"的边界 → 需法律确认（→ F1）
-3. `formulas` 对含 VBA / 数据透视表工作簿的失败模式 → 需 fixture 实测
-4. **Python 版本可行性**：`requires-python = ">=3.11"` 无上限，CI 核心依赖矩阵测 3.11/3.12/3.13；可选依赖尚未纳入该安装矩阵。须实测 `pip install formulas / xlcalculator / fastexcel` 的可安装性与导入
-5. **openpyxl 自带 tokenizer**（`openpyxl.formula.tokenizer`，openpyxl≥3.1）能否覆盖 A1/跨表/结构化引用/defined name → 若是，作为引用解析首选，替换正则
-6. **传递依赖许可证**：`formulas`→`schedula` 等、`xlcalculator`→numpy 等
-7. **缓存值缺失时**（工作簿从未由 Excel 重算存盘）该 oracle 如何降级为 warning 而非 error
-8. `msoffcrypto-tool` 许可证与 API 稳定性；`pyxlsb` 对 `.xlsb` 的公式/格式覆盖度
-9. `openpyxl` `read_only=True` 模式下具体丢失哪些保真维度 → 实测
+**⚠ Current extras:** `pyproject.toml` declares `formula = ["formulas>=1.3", "xlcalculator>=0.5"]`, bundling an EUPL package and an MIT package in the same extra, contrary to this document's isolation recommendation. Recommend splitting into `oracle-formulas` (EUPL, explicit opt-in) and `xlcalc` (MIT).
 
 ---
 
-## 9. 验收自检
+## 8. Items to Verify (Open Questions)
 
-| 验收项 | 状态 | 证据 | 阻塞项 |
+1. Exact license and formula/format-reading capabilities of `fastexcel` / `python-calamine` → test before adoption.
+2. Boundary under EUPL between "internal use vs. distribution with artifacts" for `formulas` → legal confirmation needed (→ F1).
+3. Failure modes of `formulas` on workbooks containing VBA / pivot tables → test with fixtures.
+4. **Python version feasibility:** `requires-python = ">=3.11"` has no upper bound; the CI core dependency matrix tests 3.11/3.12/3.13; optional dependencies are not yet in that install matrix. Test whether `pip install formulas / xlcalculator / fastexcel` installs and imports successfully.
+5. Whether the built-in **openpyxl tokenizer** (`openpyxl.formula.tokenizer`, openpyxl≥3.1) covers A1 / cross-sheet / structured references / defined names → if so, prefer it for reference parsing and replace regex.
+6. **Transitive dependency licenses:** `formulas` → `schedula`, etc.; `xlcalculator` → numpy, etc.
+7. How the oracle degrades to a warning rather than an error when **cached values are missing** (workbook has never been recalculated and saved by Excel).
+8. License and API stability of `msoffcrypto-tool`; formula/format coverage of `.xlsb` by `pyxlsb`.
+9. Which fidelity dimensions `openpyxl`'s `read_only=True` mode specifically loses → test.
+
+---
+
+## 9. Acceptance Self-Check
+
+| Acceptance item | Status | Evidence | Blocker |
 |---|---|---|---|
-| 每个工具（§4.1–§4.8）有三行结论 | **完成** | 4.1–4.8b 各含三行结论块 | — |
-| 计算引擎类主要候选已覆盖 | **完成**（13 个工具 / 11 节） | §4 全节；§4.9 为降级参考项 | 未纳入清单：SheetJS、pandas、xlrd（均非"Excel→代码/求值"定位） |
-| 与 A2/A3/B1/B2/B3/C1 边界无重叠 | **部分完成** | §1 Out of scope 已声明非规范性 | 六份关联文档均未创建，**待其创建后复核** |
-| 与仓库现状对齐（引用 `src/` 文件） | **完成** | §0 现状表、§4.6 缺口清单、§7 现有/缺失列 | — |
-| 放置建议映射到具体文件 | **完成** | §7 表格「现有模块 / 缺失模块」两列 | — |
-| 已转化为可执行动作（PR / extras 调整） | **未完成** | — | 需在 `docs/plans/pr_plan_phase1.md` 新增 PR-13（L3 oracle + `OracleRunner`，复用已实现的 cached value 采集），并调整 `pyproject.toml` extras |
-| 版本/许可证数据可核验 | **部分完成** | PyPI 元数据页 + GitHub README | §8.4/§8.6 待实测；`FlyingKoala` 缺确切发版日期 |
+| Each tool (§4.1–§4.8) has a three-line conclusion | **Complete** | Each section 4.1–4.8b has a three-line conclusion block | — |
+| Main calculation-engine candidates are covered | **Complete** (13 tools / 11 sections) | Entire §4; §4.9 contains fallback references | Not included: SheetJS, pandas, xlrd (none is positioned as "Excel → code/evaluation") |
+| No overlap with A2/A3/B1/B2/B3/C1 | **Partially complete** | §1 Out of scope states the non-normative boundary | Six related documents have not been created; **review after their creation** |
+| Aligned with repository state (references `src/` files) | **Complete** | §0 current-state table, §4.6 gap list, §7 existing/missing columns | — |
+| Placement recommendations map to specific files | **Complete** | §7 table's "Existing modules / Missing modules" columns | — |
+| Converted into actionable work (PR / extras adjustment) | **Not complete** | — | Add PR-13 to `docs/plans/pr_plan_phase1.md` (L3 oracle + `OracleRunner`, reusing implemented cached-value collection) and adjust `pyproject.toml` extras |
+| Version/license data is verifiable | **Partially complete** | PyPI metadata pages + GitHub README | §8.4/§8.6 need testing; `FlyingKoala` lacks an exact release date |
 
 ---
 
-## 附录：代码侧偏差（不在本文决策范围，转 B3 / C 类文档 / 独立 issue）
+## Appendix: Code-Side Gaps (Outside This Document's Decisions; Refer to B3 / C-Class Documents / Separate Issues)
 
-1. `inventory/extractor.py:100` 覆盖不变量为**恒等式**（`discovered = recognized + opaque`），等式永远成立，检测不了静默丢失；真正的 `discovered` 须由 `zipfile` 独立枚举
-2. `CellInventory.cached_value` 与 `cached_value_available` 已实现并与 `inventory/README.md` 一致；缓存值对账 oracle 仍未实现
-3. `ActuarialHint` 枚举（6 值）与 plan 第 88–97 行的 10 个 hint 不一致
-4. `ooxml_package.py:51` `zipfile.ZipFile` 无异常保护，加密/损坏文件会抛未捕获异常
-5. `tests/` 未按模块拆分（仅 2 个文件），`examples/` 无静态 fixture
+1. The coverage invariant in `inventory/extractor.py:100` is an **identity** (`discovered = recognized + opaque`), so it is always true and cannot detect silent data loss; `discovered` must be enumerated independently with `zipfile`.
+2. `CellInventory.cached_value` and `cached_value_available` are implemented and match `inventory/README.md`; the cached-value reconciliation oracle is still unimplemented.
+3. The `ActuarialHint` enum (6 values) differs from the 10 hints on lines 88–97 of the plan.
+4. `zipfile.ZipFile` at `ooxml_package.py:51` has no exception handling; encrypted/damaged files raise an uncaught exception.
+5. `tests/` is not split by module (only 2 files), and `examples/` has no static fixture.

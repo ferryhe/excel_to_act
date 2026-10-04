@@ -48,6 +48,10 @@ class OpenpyxlWorkbookReader:
             ]
             defined_names = getattr(wb, "defined_names", None)
             named_count = len(list(getattr(defined_names, "items", lambda: [])())) if defined_names is not None else 0
+            named_count += sum(
+                len(list(getattr(getattr(ws, "defined_names", None), "items", lambda: [])()))
+                for ws in wb.worksheets
+            )
             calc = getattr(wb, "calculation", None)
             calc_mode = getattr(calc, "calcMode", None) or getattr(calc, "mode", None)
             return WorkbookManifest(

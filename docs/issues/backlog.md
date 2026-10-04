@@ -1,479 +1,541 @@
 # Issue Backlog
 
-由 A1 调研（`docs/research/excel_tooling_survey.md`）与独立审核导出。每个 issue 统一三段式：**做什么 / 提交物 / 怎么检查**。
-本文件是 issue 的**源**，同步到 GitHub Issues（仓库 `ferryhe/excel_to_act`）后仍保留在仓库中作为留档。
+Reorganized after an independent review on October 3, 2026. This file is synchronized with the task definitions in GitHub Issues `ferryhe/excel_to_act`; the real Issues are #3–#14. Use the updated issue bodies as the source of truth for titles, statuses, and acceptance criteria; priorities are stated in each item.
 
----
+The review baseline is branch `feat/step1-coverage-handoff` at commit `c86fa55`. Core ingestion was merged in PR #15, and the cache-boundary regression for #4 was merged in PR #16; the current working directory is main (`f12871b`), and the original review branch is retained. #4 was accepted and closed, #10 was closed as deferred, and #12 was closed after being merged into #14; 9 issues remain open and 3 are closed. The remaining implementation work is still pending.
 
-<!-- ISSUE: docs: Phase 1.5 文档与缺口补齐总览（Epic） -->
+<!-- ISSUE_NUMBER: 3 -->
+<!-- ISSUE: docs: Phase 1.5 actual tasks, dependencies, and phase acceptance (Epic) -->
 
-## 做什么
+## Issue 3 docs: Phase 1.5 actual tasks, dependencies, and phase acceptance (Epic)
 
-串联 Phase 1 之后（代号 Phase 1.5）的全部资料与代码缺口工作，**只做总览与索引，不做具体设计**。
+[GitHub Issue #3](https://github.com/ferryhe/excel_to_act/issues/3) · Open
 
-背景：A1 调研已确认「现成 Excel→代码 库都不能作核心」，需要自研；同时独立审核发现现有实现存在 5 处保真/健壮性偏差。为避免零散推进，建立统一清单。
+### Current status
 
-**不含：** 任何具体设计决策（归各 A/B/C/D/E/F 子文档）、任何代码实现。
+Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`.
 
-## 提交物
+This Epic tracks this cycle's actual tasks, dependencies, and phase exits. Core ingestion was merged into main in [PR #15](https://github.com/ferryhe/excel_to_act/pull/15); #4's cache-boundary regression and field review were completed in [PR #16](https://github.com/ferryhe/excel_to_act/pull/16). All 5 cache-specific tests, all 26 tests, and Ruff passed; CI passed on Python 3.11/3.12/3.13. The remaining fixes will proceed as listed below.
 
-- 本 Epic 仅维护下方清单；子项以独立 issue 存在
-- 目录约定（`docs/` 下新建）：`research/`、`design/`、`adr/`、`experiments/`（原有 `plans/`）
+### What to do
 
-## 怎么检查
+Make the decomposition artifacts reliable first, then proceed with Agent views and numerical verification. Implementation details and rules belong in the child Issues; this Epic does not maintain a second design.
 
-- [x] 下方每个子 issue 均已创建并可跳转（GitHub Issues #3–#14）
-- [x] 子 issue 编号回填到本清单
+### Actual child items
 
-## 子项清单
-
-| Issue | 类别 | 内容 | 优先级 |
+| Issue | Status | Priority | Current work |
 |---|---|---|---|
-| **#4** | feat | 补齐 `cached_value` 采集（双次加载） | P0 |
-| **#5** | bug | 覆盖不变量恒等式 → `discovered` 独立枚举 | P0 |
-| **#6** | feat | 引用解析改用 `openpyxl.formula.tokenizer` | P0 |
-| **#7** | feat | L3 oracle 校验层 | P1 |
-| **#8** | bug | 加密/损坏/.xlsb/.xls 输入健壮性 | P1 |
-| **#9** | chore | pyproject extras 拆分 + 许可证合规检查 | P1 |
-| **#10** | docs | A2 Docling/markitdown 保真度评估 | P0 |
-| **#11** | docs | B1 L0–L3 分层架构与层间契约 | P0 |
-| **#12** | docs | B2 Agent 读取契约 | P0 |
-| **#13** | docs | B3 数字与公式保真规则 | P0 |
-| **#14** | docs | C1 L1 视图编译器设计 | P0 |
-| **#15** | feat | 采集模拟运算表 `dataTable`（What-If 数据表） | P0 |
-| **#16** | feat | 采集表单控件 `linkedCell`（`ctrlProps` + `vmlDrawing`） | P0 |
-| **#17** | feat | 提取 VBA 源码并抽取 VBA↔单元格依赖边 | P0 |
-| **#18** | feat | Step 1 收尾：完备性检查 + handoff 契约输出 | P0 |
+| #4 | Completed and closed | Complete | Core ingestion and cache-boundary regression merged in PR #15/#16 |
+| #8 | Not started | P0 | Diagnostics for input-read failures, stop downstream work, and complete the CLI path |
+| #5 | Partially implemented; needs correction | P0 | Object accounting, independent discovery, fail on omissions, and per-sheet differences |
+| #13 | Not started | P0 | Fidelity rules and minimal support for raw values/formula properties |
+| #6 | Not started | P0 | Tokenizer and reliable reference graph |
+| #11 | To be written | P1; required conventions first | Existing layers, cross-layer services, and artifact boundaries |
+| #14 | Not started; includes #12 | P1 | Minimal executable views and Agent reference validation |
+| #9 | Partially implemented | P1 | Core dependency boundary and actual compatibility of the selected backend |
+| #7 | Not started | P1 | Cached baseline plus one real recalculation source |
+| #10 | Closed as deferred | Reopen as needed | No current integration need; this does not mean the focused research is complete |
+| #12 | Closed after merging into #14 | With #14 | Reading/write-back contract and all positive/negative examples moved to #14 |
+
+The items #4–#14 above are all real GitHub Issues. The four items previously labeled #15–#18 in the backlog are local entries, not Issue numbers; #15 is a PR. Keep them as local implementation records: dataTable, VML control binding, VBA extraction/candidate edges, and completeness/handoff, with evidence pointing to PR #15. Do not create duplicate Issues for existing implementations or describe partial implementations as if every original proposal were complete.
+
+### Phases and dependencies
+
+1. Align the backlog: synchronize real IDs, scope, status, local backlog, and README; #4 is accepted and closed, #10 is deferred, and #12 is merged into #14.
+2. Make decomposition reliable: #11 first defines the required object/source conventions; the default engineering order is #8 → #5 → #13 → #6.
+3. Enable Agent use: #11 completes the short document, and #14 includes the original #12 contract.
+4. Numerical verification: #9 validates the first backend, and #7 implements the first real comparison.
+
+#8 and #9 can proceed independently; #7 does not depend on views. If numerical evidence is the focus of the next milestone, phase 4 can move ahead of phase 3.
+
+### How to verify
+
+- [ ] Every item has a real link and accurate status, scope, and dependencies; the README, local backlog, and GitHub agree; local tasks in the README are no longer labeled issues #15/#16/#17.
+- [x] #4 cache-boundary regression has been accepted and closed; PR #15/#16 are merged, and the implementation boundaries and evidence for data tables/controls/VBA/handoff are retained.
+- [ ] Invalid input produces readable failure artifacts and stops downstream work; valid input can be read back.
+- [ ] Omissions fail under unified object accounting, raw facts remain traceable, and the reference graph does not create false edges.
+- [ ] Minimal views compile deterministically, retain all records within budget, and allow Agent source references to be validated.
+- [ ] Numerical verification has a real independent result; missing sources are clearly marked unverified, and differences include location and tolerance.
+- [ ] Close the Epic only after its child items are complete; creating child Issues does not mean implementation is complete.
+
+Create directories when their documents are ready; do not add empty scaffolding. Record tests using real encrypted files, real VBA integration samples, and recalculation backends under their respective paths; existing unit tests do not replace unperformed integration acceptance.
 
 ---
 
-<!-- ISSUE: feat(ingest): 补齐 cached_value 采集（双次加载） -->
+<!-- ISSUE_NUMBER: 4 -->
+<!-- ISSUE: feat(ingest): cached_value ingestion and boundary regression acceptance complete -->
 
-## 做什么
+## Issue 4 feat(ingest): cached_value ingestion and boundary regression acceptance complete
 
-让每个单元格同时保留 **公式原文** 与 **Excel 缓存值**。这是后续"数值对账"与"无 Excel 环境下取基准值"的唯一零依赖来源。
+[GitHub Issue #4](https://github.com/ferryhe/excel_to_act/issues/4) · Closed: acceptance complete; PR #16 merged
 
-现状：`extractor.py:38` 与 `openpyxl_reader.py:37` 均为 `load_workbook(data_only=False)`；`CellInventory`（`schemas/artifacts.py:95-105`）**无 `cached_value` 字段**；而 `inventory/README.md` 声称含 "cached values"，与代码漂移。
+### Current status
 
-**不含：** 求值/重算（那属于 L3 oracle）；缓存值缺失时的对账流程（另立）。
+Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`.
 
-## 提交物
+The remaining cache-boundary regression was merged into main by [PR #16](https://github.com/ferryhe/excel_to_act/pull/16) on 2026-10-03 at 15:08 UTC (squash commit `f12871b`), which closed this Issue via `Closes #4`. [PR #15](https://github.com/ferryhe/excel_to_act/pull/15) remains the historical delivery evidence for the core cache ingestion capability.
 
-- `src/excel_to_act/schemas/artifacts.py`：`CellInventory` 新增 `cached_value: str | int | float | bool | None = None` 与 `cached_value_available: bool`
-- `src/excel_to_act/inventory/extractor.py`：双次加载（`data_only=False` + `data_only=True`），同一坐标合并
-- `src/excel_to_act/ingest/cached_values.py`（**新建**）：值侧读取与标量收敛。**偏差说明**：原计划"同步支持 `openpyxl_reader.py`"不执行——manifest 不持有单元格，在那里再加一次全量读取只会多一次 IO 且无处存放；双次加载的单一事实来源放在 `cached_values.py`，由 extractor 调用
-- `schemas/workbook_inventory.schema.json` 已重新导出
-- `tests/test_cached_value.py`（4 例：无缓存 / 有缓存 / 常量 / 计数不重复）
-- 修正 `inventory/README.md` 描述与代码一致
+### What to do
 
-## 怎么检查
+Retain the formula text, cached result, and a flag indicating whether the cache exists for the same formula cell. Recalculation, cache freshness, and numerical comparison belong to [#7](https://github.com/ferryhe/excel_to_act/issues/7); raw cache text, date systems, and formula-property fidelity belong to [#13](https://github.com/ferryhe/excel_to_act/issues/13).
 
-- [x] 对含公式的 fixture：`cell.formula` 非空 且 `cell.cached_value` 非空
-- [x] 对纯常量单元格：`cached_value is None` 且不报错
-- [x] 工作簿从未被 Excel 重算存盘时：`cached_value_available=False`，产出 `UnsupportedFeature(severity=warning)` 而非抛异常
-- [x] 覆盖计数不因双次加载而重复计数（同一格仍计 1）
-- [x] `pytest` 与 `ruff check .` 通过
+### Delivered work and implementation boundaries
 
-**实现备注**：openpyxl 写出的公式单元格是 `<f>…</f><v></v>`，无法直接产出"带缓存值"的样本。测试用 `inject_cached_values()` 回填 `<v>`，即可得到等价 Excel 存盘效果的工作簿。
+- [src/excel_to_act/ingest/cached_values.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/ingest/cached_values.py): reads the data-only values and merges them by sheet and coordinate.
+- [src/excel_to_act/inventory/extractor.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/inventory/extractor.py): merges cached values, does not mark constants as formula caches, and records one warning when formulas throughout the workbook have no cache.
+- [CellInventory](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/schemas/artifacts.py) and [schemas/workbook_inventory.schema.json](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/schemas/workbook_inventory.schema.json): `cached_value`, `cached_value_available`.
+- [tests/test_cached_value.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/tests/test_cached_value.py): tests for cached values, missing caches, constants, and avoiding duplicate counts across two loads.
+- The inventory README is aligned with the implementation.
 
----
+The original requirement to read caches in `openpyxl_reader.py` was changed to use `cached_values.py` as the single source of truth: the manifest does not contain cells, so reading them all again in the reader would add I/O without providing a place to store the results.
 
-<!-- ISSUE: bug(inventory): 覆盖不变量为恒等式，discovered 需由 OOXML 独立枚举 -->
+### How to verify
 
-## 做什么
+- [x] A formula cell with a cache retains both `formula` and `cached_value`, with `available=True`.
+- [x] A constant cell has `cached_value=None` and `available=False`.
+- [x] When formulas throughout a workbook have no stored results, `available=False` and a `missing_cached_values` warning is recorded.
+- [x] Loading the same cell twice does not count it twice.
+- [x] PR #16: all 5 cache-specific tests and all 26 tests passed; Ruff, compileall, and `excel-to-act --help` passed.
+- [x] Automated tests cover 0, False, and the empty string all having `available=True`; typed-string `<v/>` can be distinguished from uncached untyped `<v/>`.
+- [x] PR #15's core implementation was merged into main (`b7270f5`); the fields and basic behavior remain consistent.
+- [x] GitHub Actions passed on Python 3.11, 3.12, and 3.13.
+- [x] The fields and behavior were reviewed after PR #16 was merged, and Issue #4 was closed.
 
-当前覆盖不变量**自证成立、无法证伪**：`extractor.py:100` 直接把 `discovered` 写成 `recognized + opaque` 之和，等式永远为真，检测不了"静默丢弃"，与项目核心约定（不支持特性必须记为 opaque）相悖。
-
-目标：让 `discovered_workbook_objects` 由 **独立于 openpyxl 的来源**（OOXML 包扫描）计算得出，使该等式具备 falsifiability。
-
-**不含：** 解析 VBA/图表/透视表内容（只枚举不解释）。
-
-## 提交物
-
-- `src/excel_to_act/inventory/extractor.py`（或新建 `inventory/opaque.py`）：`discovered` 改为由 `scan_ooxml_package` 的部件枚举 + sheet 级实际对象数独立计算
-- `src/excel_to_act/schemas/artifacts.py`：必要时为 `CoverageSummary` 增加"差异明细"字段
-- `tests/test_coverage_invariant.py`：**构造故意漏采的用例，断言等式不成立时报错**（回归测试）
-- 报告层输出 per-sheet 覆盖与差异明细（随 `report/markdown.py` 一并验收）
-
-## 怎么检查
-
-- [ ] 人为在 extractor 中跳过某类单元格 → 覆盖校验**必须失败**（证明可证伪）
-- [ ] 正常 fixture：`recognized + opaque == discovered` 且两边来源可追溯到不同代码路径
-- [ ] 每个 sheet 都能输出 recognized / opaque / discovered 三个数字
-- [ ] `pytest` 通过
+Cache presence is determined by `available`; automated regression tests now confirm that valid values such as 0, False, and the empty string are not treated as missing just because they are empty. This change completes boundary acceptance without changing the core ingestion implementation. Raw-text/type fidelity and missing-cache comparison policy are accepted under #13 and #7, respectively, and are not reimplemented in this Issue.
 
 ---
 
-<!-- ISSUE: feat(graph): 用 openpyxl.formula.tokenizer 替代正则 REF_RE -->
+<!-- ISSUE_NUMBER: 5 -->
+<!-- ISSUE: fix(coverage): unify object accounting and block downstream use when objects are missed -->
 
-## 做什么
+## Issue 5 fix(coverage): unify object accounting and block downstream use when objects are missed
 
-现状 `graph/builder.py:20` 用正则 `REF_RE` 解析公式引用，存在三类缺陷：
-1. 字符串常量内的伪地址被误判为引用
-2. 不识别结构化引用 `Table[Col]`
-3. 从不构造 `GraphNodeKind.name`（defined name）节点
+[GitHub Issue #5](https://github.com/ferryhe/excel_to_act/issues/5) · Open
 
-目标：改用 `openpyxl.formula.tokenizer`（openpyxl≥3.1 自带，**MIT、零新增依赖**）做词法解析；语法层（AST）如 tokenizer 不足再自研最小解析器。**明确禁止为引用解析引入 EUPL/GPL 依赖**（`formulas` 只能作 L3 oracle，`pycel` 只能参考思路、禁止引入代码）。
+### Current status and priority
 
-**不含：** 求值；函数语义分析。
+Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P0.
 
-## 提交物
+[src/excel_to_act/inventory/extractor.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/inventory/extractor.py) still calculates `discovered` from the number of `recognized` and all `unsupported` records, so the equation is always satisfied. [src/excel_to_act/verify/completeness.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/verify/completeness.py) independently checks sheets, cells, and some package parts, but `discovered` mixes different units of count.
 
-- 调研结论（写入 `docs/research/excel_tooling_survey.md` §8.5）：tokenizer 对 A1 / 跨表 / 结构化引用 / defined name 的覆盖结论
-- `src/excel_to_act/graph/builder.py`：替换正则实现
-- `src/excel_to_act/schemas/artifacts.py`：新增 defined-name 节点与结构化引用节点类型（如需）
-- `tests/test_graph_builder.py`：覆盖字符串常量、跨表、结构化引用、defined name、外部引用五类用例
-- 解析失败的公式降级为 `UnsupportedFeature`，不得抛异常
+Reproduced: a normal fixture has `recognized=25`, `opaque=2`, and independently discovered `discovered=21`, with an overall status of pass; deliberately removing a cell causes failure, but removing a conditional-formatting object and adjusting the original count still passes. The existing arithmetic info cannot simply be changed to an error, or normal samples would be reported incorrectly.
 
-## 怎么检查
+### What to do
 
-- [ ] `="A1"` 这类字符串常量**不产生**引用边
-- [ ] `=Table1[Col]` 产生结构化引用节点，而非误判为地址
-- [ ] `=SUM(MortRate)` 中 defined name 产生 `name` 节点
-- [ ] 跨表 `=Assumptions!B7` 正确解析 sheet 名
-- [ ] 无法解析的公式产出 `UnsupportedFeature`，不崩溃
-- [ ] `pytest` 通过
+Independently discover and account for outputs for the currently declared objects, with unified count units, stable identities, and clear boundaries for unresolved items. Do not reimplement the existing completeness module.
 
----
+### Deliverables and scope
 
-<!-- ISSUE: feat(validation): 新增 L3 oracle 校验层 -->
+- An accounting table for currently covered objects: sheets, non-empty cells, names, Tables, merged ranges, data validations, conditional formatting, comments, hyperlinks, existing layout objects, and the data tables, controls, and VBA parts in the current branch.
+- An independent OOXML discovery path and object identities; document logical-object coverage separately from package-part accounting, without counting a part and its recognized internal objects twice.
+- Count only real unresolved objects with `opaque=True` as opaque; warnings such as `missing_cached_values` are not objects, and multiple diagnostics must not count one object more than once.
+- Match corresponding outputs to source objects by identity; do not use global counts by type or consume arbitrary evidence as a substitute.
+- Reuse the existing CompletenessReport, report/handoff.py, and store, and output expected/actual/gaps for each sheet and object type.
+- On coverage imbalance, still save failure diagnostics and handoff; move CoverageSummary validation so a model exception does not abort before saving.
+- Export new fields to JSON Schema, explain how old artifacts are read back, and add necessary regression tests for missed objects.
 
-## 做什么
+Out of scope: interpreting VBA/chart/pivot content; a new report-template system.
 
-建立数值回归校验能力：用独立计算源重算工作簿，与自研解析结果对账。
+### How to verify
 
-三个 oracle（按优先级）：
-1. **缓存值对比**（零依赖首选）——**前置条件：需先完成 cached_value issue**
-2. `formulas`（EUPL，可选依赖、隔离进程）
-3. LibreOffice headless（MPL 2.0，进程外）
-4. `xlwings`（BSD-3，依赖 Excel COM，**仅本地，不进 CI**）
+- [ ] A normal fixture balances under unified accounting.
+- [ ] Deliberately skipping declared objects such as cells, names, conditional formatting, or Tables causes accounting to fail and identifies the source.
+- [ ] Missing parts, XML scan failures, and zero objects are handled separately; missing evidence cannot pass.
+- [ ] Non-opaque warnings do not change coverage, and multiple diagnostics do not count one object more than once.
+- [ ] Output the three counts and detailed differences per sheet and object type; identify the source of package-level opaque objects separately without inventing a sheet.
+- [ ] A real omission becomes an error, and the CLI returns nonzero after saving a failed handoff.
+- [ ] Schema, store read-back, existing tests, and Ruff pass.
 
-**不含：** 精算语义正确性判断；模型代码生成。
-
-## 提交物
-
-- `src/excel_to_act/validation/cached_value.py`、`formulas_oracle.py`、`libreoffice_oracle.py`
-- `src/excel_to_act/plugins/contracts.py`：新增 `OracleRunner` Protocol
-- `src/excel_to_act/schemas/artifacts.py`：新增 `ValidationReport`（含容差、差异明细、oracle 来源）
-- `docs/plans/pr_plan_phase1.md`：新增 PR-13
-- `tests/test_validation_oracle.py`
-
-## 怎么检查
-
-- [ ] 同一 fixture 至少两个 oracle 产出可横向对比的结果
-- [ ] 差异超容差 → 产出 `UnsupportedFeature` 而非静默通过
-- [ ] 未安装 `formulas` / LibreOffice 时降级为 warning，CI 仍绿
-- [ ] `ValidationReport` 可序列化并进入 `store`
-- [ ] `pytest` 通过（CI 为 ubuntu，不得依赖 Excel COM）
+Dependency: the minimal responsibility/object conventions in [#11](https://github.com/ferryhe/excel_to_act/issues/11); do not wait for the full architecture document or a nonexistent report/markdown.py.
 
 ---
 
-<!-- ISSUE: bug(ingest): 加密/损坏/.xlsb/.xls 输入抛出未捕获异常 -->
+<!-- ISSUE_NUMBER: 6 -->
+<!-- ISSUE: fix(graph): use tokenizer and minimal reference parsing to build reliable dependency edges -->
 
-## 做什么
+## Issue 6 fix(graph): use tokenizer and minimal reference parsing to build reliable dependency edges
 
-现状 `ingest/ooxml_package.py:51` 的 `zipfile.ZipFile(workbook_path)` 无异常保护：加密工作簿、损坏文件会抛出未捕获异常，直接违反项目"禁止静默失败、必须记录"约定。`.xlsb`/`.xls` 目前只走到 `file_type=error`。
+[GitHub Issue #6](https://github.com/ferryhe/excel_to_act/issues/6) · Open
 
-目标：任何读取失败都产出 `UnsupportedFeature(severity=error)`；并评估加密/二进制/旧格式的接入路径（`msoffcrypto-tool` / `pyxlsb` / LibreOffice 转换），结论写入 A1 §4.10。
+### Current status and priority
 
-**不含：** 真正实现解密与 .xlsb 解析（先给结论与降级路径）。
+Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P0.
 
-## 提交物
+[src/excel_to_act/graph/builder.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/graph/builder.py) still uses REF_RE/EXTERNAL_RE. Reproduced issues include strings incorrectly producing A1 edges, Tables being treated as external, names not producing name nodes, escaped-quote sheet names being truncated, and external references also producing false local edges.
 
-- `src/excel_to_act/ingest/ooxml_package.py`：`try/except` 包裹，产出 `UnsupportedFeature(severity=error)`
-- `docs/research/excel_tooling_survey.md` §4.10：`msoffcrypto-tool` 许可证与 API 稳定性、`pyxlsb` 公式/格式覆盖度结论
-- `tests/test_ingest_robustness.py`：加密/损坏/非 xlsx 三类输入用例
+GraphNodeKind.name already exists and is no longer listed as a type to add.
 
-## 怎么检查
+### What to do
 
-- [ ] 传入加密 xlsx：不抛出未捕获异常，产出 `severity=error` 的 `UnsupportedFeature`
-- [ ] 传入损坏/截断文件：同上
-- [ ] 传入 `.xlsb` / `.xls` / `.csv`：产出明确 error 记录，CLI 退出码可控
-- [ ] `pytest` 通过
+Use the tokenizer from the current openpyxl dependency to distinguish tokens, then minimally parse reference-type operands. The tokenizer does not parse Table columns, name scope, or external workbook identity, so add the necessary resolution for those cases.
 
----
+### Deliverables and scope
 
-<!-- ISSUE: chore(build): 拆分 pyproject extras 并增加许可证合规检查 -->
+- In graph/builder.py: parse reference tokens, handle quoted sheet names correctly, and preserve external identities.
+- Reuse existing cell/range/name/external nodes; represent structured references with range plus metadata where possible, and add a type only when they cannot otherwise be represented.
+- Collect workbook/sheet name scope and necessary Table-column facts along the real reference-resolution path; do not build a parallel graph.
+- Preserve source_location and unresolved records for references that cannot be located statically; parsing failures must not crash.
+- Keep orchestrator, VBA in the same node namespace, and the verify/formulas_linked call contract in sync.
+- Summarize tokenizer coverage in tests/test_graph_builder.py.
 
-## 做什么
+Out of scope: formula evaluation, a full AST, function semantics, and guesses about dynamic references. Reference parsing must not add EUPL/GPL dependencies.
 
-现状 `pyproject.toml` 的 `formula = ["formulas>=1.3", "xlcalculator>=0.5"]` 把 **EUPL 包** 与 **MIT 包** 捆绑在同一 extra，与"copyleft 隔离"结论相悖；且 extra 名 `formula` 与包名 `formulas` 不一致，易误用。
+### How to verify
 
-同时：`requires-python = ">=3.11"` 无上限，CI 核心依赖矩阵现测 3.11/3.12/3.13；仍需确认待引入的可选库在目标 Python 版本上可安装。
+- [ ] `="A1"` produces no reference edge and is not recorded as a parsing omission for a valid formula with zero references.
+- [ ] `=1+1` is a valid formula with zero dependencies; completeness does not report an error just because there are no outgoing edges.
+- [ ] `=Table1[Col]` produces a traceable structured reference and is not mistaken for an external file.
+- [ ] `=SUM(MortRate)` produces a name node, and same-name sheet shadowing works correctly.
+- [ ] `=Assumptions!B7` and `='O''Brien'!$B$2` preserve the complete sheet name.
+- [ ] `=[Book.xlsx]Inputs!A1` preserves external workbook identity and does not produce an equivalent false local cell edge.
+- [ ] References that cannot be parsed or located statically have clear diagnostics and original locations, without crashing.
+- [ ] Existing VBA integration and node namespaces remain consistent; tests and Ruff pass.
 
-**不含：** 具体库的版本升级策略（另有）。
-
-## 提交物
-
-- `pyproject.toml`：拆为 `oracle-formulas`（EUPL，显式 opt-in）与 `xlcalc`（MIT）；`requires-python` 收敛或显式声明支持矩阵
-- `.github/workflows/ci.yml`：新增许可证检查步骤（如 `pip-licenses`），对 EUPL/GPL 出现在**核心依赖**时失败
-- A1 §8.4 / §8.6：补 3.11/3.12 实测结果与传递依赖许可证结论
-
-## 怎么检查
-
-- [ ] `pip install -e '.[dev]'` 不引入 `formulas`
-- [ ] `pip install -e '.[oracle-formulas]'` 才引入 `formulas`
-- [ ] CI 在核心依赖出现 EUPL/GPL 时**失败**
-- [ ] 3.11 / 3.12 均可安装并导入 `formulas`、`xlcalculator`、`fastexcel`
-- [ ] `ruff check .` 与 `pytest` 通过
+Dependencies: the required source and field conventions in #11/#13; final integration uses #5 coverage checks. This item does not wait for views or a numerical oracle.
 
 ---
 
-<!-- ISSUE: docs(research): A2 Docling / markitdown 保真度评估 -->
+<!-- ISSUE_NUMBER: 7 -->
+<!-- ISSUE: feat(validation): compare cached baselines with one optional recalculation source -->
 
-## 做什么
+## Issue 7 feat(validation): compare cached baselines with one optional recalculation source
 
-回答一个问题：**文档解析器（Docling / markitdown / pandas 渲染）能否作为 Excel 保真采集底座？**
+[GitHub Issue #7](https://github.com/ferryhe/excel_to_act/issues/7) · Open
 
-已掌握的关键证据：`docling/backend/msexcel_backend.py` 使用 `load_workbook(data_only=True)`（公式全丢）、单元格文本用 `str(cell.value)`（number_format 丢失）、用 flood-fill 聚合非空单元格成表（精确坐标语义丢失）、不提取 defined names / tables / 数据验证 / 条件格式 / 透视 / VBA / 外部链接。
+### Current status and priority
 
-**不含：** 计算引擎评估（A1 已完成）；我们自己怎么做（B/C 类）。
+Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P1.
 
-## 提交物
+Cache ingestion and boundary regression for [#4](https://github.com/ferryhe/excel_to_act/issues/4) were merged into main in PR #15/#16 and accepted; validation/, OracleRunner, and ValidationReport have not yet been implemented. The project currently has no in-house formula-evaluation results; copying a cache and comparing it with the same cache does not count as independent numerical verification.
 
-- `docs/research/docling_fidelity_assessment.md`
-- **源码级证据表**：每条判定对应 docling 后端的具体行为/位置
-- **十项保真度逐项判定**：公式 / number_format / 坐标 / named range / Table / 数据验证 / 条件格式 / 透视 / VBA / 外部链接
-- 结论：能否进 L0；若不能，可放在哪一层（如仅用于给 LLM 的粗读）
+### What to do
 
-## 怎么检查
+Build the first real numerical-verification loop: use the workbook's saved cache as the baseline, add one actual recalculation source, and compare values by sheet/address.
 
-- [ ] 十项判定**每一项**都有源码证据，无"其他"兜底
-- [ ] 每条判定附可复现方式（版本 + 文件路径）
-- [ ] 结论是明确的"能/不能 + 放在哪层"，无模糊表述
-- [ ] 与 A1 §1 Out of scope 无内容重叠
+### Deliverables and scope
 
----
+- ValidationReport: source, coverage, result status, tolerance, and detailed differences; serializable and stored in the existing store/handoff.
+- A minimal coordinate-based comparison function and one optional recalculation adapter in validation/; the protocol covers only what actual calls require.
+- Clearly distinguish structural CompletenessReport from numerical ValidationReport; structural pass does not mean numerical pass.
+- First verify installation and small-sample capability of the existing oracle-formulas through #9; if it cannot support the initial fixture, choose LibreOffice and record why. Deliver only one verified backend in the first release.
+- Explain actual verification coverage when caches are missing, freshness is unknown, the backend is unavailable, or formulas are unsupported; do not present these cases as passing.
+- Align the original PR plan to this loop and add numerical-report read-back and real-comparison tests.
 
-<!-- ISSUE: docs(design): B1 L0–L3 分层架构与层间契约 -->
+Out of scope for the first release: a second recalculation backend, Excel COM, actuarial semantic correctness, and Python generation. Do not build every adapter in parallel without a clear coverage requirement.
 
-## 做什么
+### How to verify
 
-正式定义 L0 采集 / L1 视图 / L2 语义推理 / L3 校验四层，以及层间 artifact 契约。同时**给 `store` / `orchestrator` / `report` 明确归位**（当前四层 taxonomy 未覆盖它们）。
+- [ ] The same fixture has both a cached baseline and an actual recalculation result, with their distinct sources retained.
+- [ ] An intentionally introduced difference beyond tolerance fails and identifies the sheet, address, baseline, actual value, and tolerance.
+- [ ] Comparison rules are explicit for numbers, dates, booleans, and Excel error values.
+- [ ] Missing caches or an unavailable backend are marked as not run/incomplete, not as verified and passing.
+- [ ] Default CI verifies fallback behavior when the backend is not installed; a separate real integration check installs the backend and calculates the fixture, rather than skipping everything.
+- [ ] ValidationReport can be stored and read back, and handoff distinguishes structural from numerical status.
+- [ ] Tests and Ruff pass; CI does not depend on Excel COM.
 
-背景：该分层目前只出现在 A1 调研文档里，plan / PR / README 均无定义，A1 §7 仅为非规范性初稿。
-
-**不含：** 各层内部实现细节（归 C 类）；排期（归 D 类）。
-
-## 提交物
-
-- `docs/design/layered_architecture.md`
-- 分层图 + 每层职责/输入/输出/禁止事项
-- 层间 artifact 契约清单（复用 `schemas/artifacts.py` 现有类型，缺的补）
-- **文件级映射表**：每层对应哪些已存在 `src/` 文件、哪些待新建
-- 明确 `L1 视图` 与 `A3 编码方法` 的职责边界
-
-## 怎么检查
-
-- [ ] 仓库每个现有模块都能唯一归入某一层（含 store/orchestrator/report）
-- [ ] 跨层调用只走 `Artifact` 类型，无裸 dict
-- [ ] 映射表逐行给出绝对路径，标注已存在/待新建
-- [ ] 与 A1 §7 初稿一致或显式说明差异
+Dependencies: #4 cache fields and boundary acceptance (complete, PR #15/#16), #13 value-type and fidelity conventions, and #9 compatibility checks for the selected backend. Independent of #14 views; their order can be adjusted for the next milestone.
 
 ---
 
-<!-- ISSUE: docs(design): B2 Agent 读取契约 -->
+<!-- ISSUE_NUMBER: 8 -->
+<!-- ISSUE: fix(ingest): save diagnostics on read failure and let the CLI exit cleanly -->
 
-## 做什么
+## Issue 8 fix(ingest): save diagnostics on read failure and let the CLI exit cleanly
 
-写死"LLM/agent 如何读本项目产物"的硬约束。核心立场：**agent 读表 = 采样，不是解析**；因此 agent 只能读我们自己产出的确定性 artifact 投影，且输出必须可回填。
+[GitHub Issue #8](https://github.com/ferryhe/excel_to_act/issues/8) · Open
 
-**不含：** 具体 prompt 工程；模型选型。
+### Current status and priority
 
-## 提交物
+Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P0.
 
-- `docs/design/agent_reading_contract.md`
-- 硬规则清单，至少含：只能引用 `view_id` + 地址；输出必须带 `source_location`；遇 `opaque` 必须上报、禁止猜测；禁止凭空造数
-- 违规示例（正/反例）
-- **机器可校验的检查项**（可落成 pytest）
+[src/excel_to_act/ingest/ooxml_package.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/ingest/ooxml_package.py) does not guard ZIP reads against failure. The scanner already returns a file_type error for xlsb/xls/csv, but [src/excel_to_act/orchestrator/phase1.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/orchestrator/phase1.py) still unconditionally calls the extractor afterward.
 
-## 怎么检查
+Reproduced through the CLI: a malformed xlsx raises BadZipFile; xlsb/xls/csv raise InvalidFileException; no failure handoff is produced. Exit code 1 alone does not prove the error path is controlled. A real encrypted sample is still needed for acceptance; an ordinary malformed ZIP does not replace all encrypted-file checks.
 
-- [ ] 每条规则都能转成一个可断言检查（如输出 JSON 缺 `source_location` 即失败）
-- [ ] 至少 3 条正例、3 条反例
-- [ ] 与 B1 的层间契约无冲突
+### What to do
 
----
+Fix the complete read-failure path from reader/scanner → orchestrator → store/handoff → CLI.
 
-<!-- ISSUE: docs(design): B3 数字与公式保真规则 -->
+### Deliverables and scope
 
-## 做什么
+- reader/scanner catches expected file, ZIP, required-XML, and openpyxl read failures.
+- Stop the extractor and subsequent phases for an error manifest; record UnsupportedFeature(severity=error).
+- Reuse the existing error-record and artifact mechanisms, and define the minimal artifact set available for a failed run; do not fabricate a complete inventory or missing source data.
+- The CLI prints a readable failure reason, saves diagnostic locations, and returns a controlled nonzero exit code.
+- tests/test_ingest_robustness.py: end-to-end CLI checks and verification that downstream calls stop.
+- Keep conversion/decryption integration notes as a brief summary; they are not prerequisite research for fixing the current failure path.
 
-定义采集阶段"什么必须原样保留、什么允许转换"的规则，防止精度与公式语义在早期不可逆地丢失。
+Out of scope: actual decryption, xlsb/xls parsing, automatic conversion, generic retries, or an error framework.
 
-已知风险：Excel 浮点与 Python 不等价（xlcalculator/formulas 均有专门章节）；日期/百分比若提前格式化则不可恢复；数字应保留原始字符串 + `number_format`。
+### How to verify
 
-**不含：** 下游代码生成；求值。
+- [ ] Real encrypted xlsx: no uncaught read exception, an error record is saved, and the CLI exits nonzero.
+- [ ] Non-ZIP input, truncated ZIP, and ZIP with corrupted/missing required XML: same behavior.
+- [ ] xlsb/xls/csv: explicit file_type error; the extractor is not called afterward.
+- [ ] Failed runs retain locatable diagnostics and a failure handoff; missing artifacts are listed explicitly.
+- [ ] Tests prove that invalid input does not run downstream graph/classify and other stages.
+- [ ] Normal xlsx/xlsm paths and artifact read-back remain valid; tests and Ruff pass.
 
-## 提交物
-
-- `docs/design/fidelity_rules.md`
-- 规则清单：双次加载、原始字符串保留、`number_format` 必存、共享公式展开、日期不得提前格式化
-- **每条规则给出违反检测方式**（字段名 + 断言方式）与反例
-- 明确"允许转换"的白名单
-
-## 怎么检查
-
-- [ ] 每条规则对应一个可断言的字段检查
-- [ ] 至少覆盖：公式原文、缓存值、number_format、data_type、共享公式、日期
-- [ ] 与 `CellInventory` 实际字段一致（含本轮新增的 `cached_value`）
+This item can proceed independently; it does not wait for Docling, an oracle, or a complete architecture design.
 
 ---
 
-<!-- ISSUE: docs(design): C1 L1 视图编译器设计 -->
+<!-- ISSUE_NUMBER: 9 -->
+<!-- ISSUE: chore(build): check core dependency boundaries and compatibility of the selected oracle -->
 
-## 做什么
+## Issue 9 chore(build): check core dependency boundaries and compatibility of the selected oracle
 
-设计 `inventory.json + dependency_graph.json → LLM 友好视图` 的编译器。核心要求：**保留坐标、可反查、确定性、token 可控**。
+[GitHub Issue #9](https://github.com/ferryhe/excel_to_act/issues/9) · Open
 
-借鉴 SpreadsheetLLM / SheetCompressor 的倒排索引思路（相同公式/相同格式只存一次 + 地址列表），但**必须保留 source_location**（原方法会丢坐标，我们反向保留）。
+### Current status and priority
 
-**不含：** 编码/压缩算法选型（归 A3）；prompt 与调用策略（归 B2）。
+Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P1.
 
-## 提交物
+[pyproject.toml](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/pyproject.toml) already separates the vba, oracle-formulas, xlcalc, and report extras; [.github/workflows/ci.yml](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/.github/workflows/ci.yml) has tested core Python 3.11/3.12/3.13. These implemented parts were merged into main in PR #15. Optional-backend installation and core-dependency license-metadata checks have not yet been accepted.
 
-- `docs/design/views_l1_compiler.md`
-- 视图 schema：`view_id`、切片策略、倒排编码格式、token 预算模型
-- 接口签名（输入/输出类型，复用现有 `Artifact`）
-- 反查规则：视图中任一条 → `sheet!A1`
-- 确定性要求：同一输入两次编译产出字节一致
+### What to do
 
-## 怎么检查
+Address only the remaining dependency boundaries and the practical viability of the first recalculation backend for #7; do not split extras again.
 
-- [ ] 视图中任一条记录都能反查到 `sheet!A1`
-- [ ] 同一 fixture 两次编译产出字节一致
-- [ ] 给出 token 预算公式并对一个示例 sheet 给出估算值
-- [ ] 字段复用 `CellInventory` / `SourceLocation`，不另造平行契约
+### Deliverables and scope
 
----
+- Check core and transitive dependencies in a clean default runtime environment; do not include dev tools or explicitly opted-in oracle environments in the core assessment.
+- Fix the current core-dependency policy for acceptance under original #9: GPL, AGPL, and EUPL-family licenses must not enter the default runtime dependency closure; normalize license variants by identifier. This is a project dependency-selection policy; record it in a short ADR/note without claiming a legal obligation.
+- Automatically check license fields/expressions for the default-installed runtime dependency closure in CI, including actually resolved transitive dependencies; fail when any of the listed licenses are found. Validate the same CI check entry point with a known violating sample.
+- Reuse an existing metadata tool or a minimal script; define how to handle mixed licenses and missing/indeterminate metadata rather than silently reporting the check as passed.
+- The default installation does not include formulas; only explicit oracle-formulas opt-in introduces it.
+- Record the tested Python support matrix; do not arbitrarily add an upper limit just because future versions have not been tested.
+- Test installation, import, and fixture calculation for the backend selected by #7; import success alone does not prove calculation works.
+- Correct A1's descriptions of the old bundled extra, old CI matrix, and incomplete items.
 
-<!-- ISSUE: feat(inventory): 采集模拟运算表 dataTable（What-If 数据表） -->
+fastexcel is not currently used and is not an acceptance requirement for this Issue; an unselected backend does not block the first release. Do not expand this item into a general compliance system or legal conclusion about software distribution.
 
-## 做什么
+### How to verify
 
-采集 Excel 的**模拟运算表**（Data Table / What-If Analysis）：`<dataTable>` 元素位于 worksheet XML 内，含 `ref`、`rowInputCell`、`colInputCell`（一维/二维）。
+- [x] Extras are separated, core CI includes 3.11/3.12/3.13, and these changes were merged into main in PR #15.
+- [ ] A clean default installation does not include formulas; only explicit opt-in introduces it.
+- [ ] CI enforces a license gate on the default runtime dependency closure, including transitive dependencies, and fails for GPL/AGPL/EUPL matches; dev tools and explicitly opted-in oracle dependencies are excluded.
+- [ ] A known violating sample makes the CI check entry point fail; missing or indeterminate license metadata has a clear documented disposition and cannot silently pass.
+- [ ] A short decision record documents the policy's excluded license set, mixed-license handling, and metadata sources, consistent with the gate rules.
+- [ ] The selected backend installs, imports, and calculates the small #7 sample on supported declared versions.
+- [ ] Measured results, version ranges, and the A1 description are consistent.
+- [ ] CI, tests, and Ruff pass.
 
-这是**精算敏感性分析的核心结构**：一张表 = 一个输入变量的完整情景扫描。目前 openpyxl 静默丢弃该元素，且它不在 `OPAQUE_MARKERS` 内，因此**既不采集也不标 opaque，属静默丢失**，直接违反覆盖不变量。
-
-**不含：** 求解（那是求值）；对二维表展开成具体数值（交给 Step 4）。
-
-## 提交物
-
-- `src/excel_to_act/ingest/data_table.py`：直接读 `xl/worksheets/sheet*.xml` 抽取 `<f t="dataTable">`（openpyxl 无 API 且丢公式文本，必须走 XML）
-- `src/excel_to_act/schemas/artifacts.py`：`RangeInventory` 复用，kind 取 `data_table`，metadata 含 `row_input_cell` / `col_input_cell` / `two_dimensional` / `corner_cell` / `formula`
-- `src/excel_to_act/inventory/extractor.py`：合并进每个 sheet 的 `ranges`，并计入 `recognized`；同时修正角单元格被 `str(DataTableFormula)` 损坏的问题
-- `tests/test_data_table.py`：一维、二维、无表、openpyxl 行为留证四类用例
-- 更新 README §4 F 组状态（静默丢失 → 已采集）
-
-## 怎么检查
-
-- [x] 一维（仅 `r1`）与二维（`r1` + `r2`）分别被正确识别
-- [x] `r1`/`r2` 由 R1C1 转为 `$B$2` 形式并带 `source_location`
-- [x] 未使用模拟运算表的工作簿：不多产记录、不报错
-- [x] 该对象计入 `recognized`，不再静默丢失
-- [x] `pytest` 与 `ruff check .` 通过
-
-**实现备注**：模拟运算表**不是**独立 OOXML 元素，而是挂在角单元格上的 `<f t="dataTable" ref dt2D r1 r2>`。openpyxl 会读成 `DataTableFormula` 对象但**丢弃公式文本**，原 extractor 的 `str(cell.value)` 会把它变成对象 repr——属静默损坏，不只是丢失。故必须 XML 直读。顺带为 `ArrayFormula` 加了同类保护（文本保留，`ref`/spill 仍待补）。
+Dependency: choose the first-release backend together with #7; this does not depend on Agent views. Core dependency checks can proceed earlier.
 
 ---
 
-<!-- ISSUE: feat(inventory): 采集表单控件 linkedCell（ctrlProps + vmlDrawing） -->
+<!-- ISSUE_NUMBER: 10 -->
+<!-- ISSUE: docs(research): defer the Docling / markitdown fidelity assessment -->
 
-## 做什么
+## Issue 10 docs(research): defer the Docling / markitdown fidelity assessment
 
-采集**表单控件与单元格的绑定关系**：复选框、数值调节钮、滚动条、下拉框的 `linkedCell`（及 `fListFillRange`）。
+[GitHub Issue #10](https://github.com/ferryhe/excel_to_act/issues/10) · Closed: deferred; focused research incomplete
 
-老精算模型几乎都靠这些控件做**场景切换/参数调节**，控件本身就是"输入候选"的强信号。当前 `xl/ctrlProps/` 已补入 `OPAQUE_MARKERS`（只保证不丢），但 `vmlDrawing` 里的控件定义与 `linkedCell` 仍未解析。
+### Disposition
 
-**不含：** ActiveX 控件（走 OOXML 另一路径，先标记 opaque）；控件外观/位置。
+Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`.
 
-## 提交物
+This item is closed as deferred, not because the research is complete. The current approach uses openpyxl + OOXML, and there is no specific work item to integrate Docling/markitdown; the gaps in #5/#6/#8/#13 have direct fix paths, and a focused comparison does not block them.
 
-- `src/excel_to_act/ingest/form_controls.py`：解析 `xl/drawings/vmlDrawing*.vml` + `xl/ctrlProps/*.xml`，产出 `控件名 → linkedCell / 类型 / 取值范围`
-- `src/excel_to_act/schemas/artifacts.py`：新增 `FormControl`（或复用 `RangeInventory`，kind=`form_control`），含 `control_type`、`linked_cell`、`list_fill_range`
-- `src/excel_to_act/inventory/extractor.py`：挂到对应 sheet 并计入 `recognized`
-- `tests/test_form_controls.py`
-- 更新 README §4 F 组状态
+### Retained decision record
 
-## 怎么检查
+Include the existing selection rationale in the short architecture decision note for [#11](https://github.com/ferryhe/excel_to_act/issues/11), noting source versions and unverified items. The latest third-party versions have not been reassessed, so do not claim their fidelity has been disproven.
 
-- [ ] 构造含 `linkedCell` 的 vmlDrawing fixture，`linked_cell` 解析为 `sheet!A1`
-- [ ] `ctrlProps` 缺失时仍能由 vml 得出 linkedCell（反之亦然），不得崩溃
-- [ ] 控件计入 `recognized`，且 `linkedCell` 指向的单元格能被 `classify` 识别为 `input_candidate`
-- [ ] `pytest` 与 `ruff check .` 通过
+### Items removed from this cycle
 
----
+The dedicated docling_fidelity_assessment.md, comparison of three tool extensions, and ten-part source-evidence assessment are not conditions for this cycle's milestones. The original research acceptance was not carried out and must not be marked complete.
 
-<!-- ISSUE: feat(ingest): 提取 VBA 源码并抽取 VBA↔单元格依赖边 -->
+### Reopen criteria
 
-## 做什么
+Reopen when there is a clear need to integrate a document parser and a specific use case that current ingestion/view capabilities cannot support; then pin versions, inspect source, and validate fixtures against the dimensions required for that use case.
 
-两步：**先拿到源码，再抽依赖边**。
-
-1. 用 `oletools`(olevba) 从 `xl/vbaProject.bin` 提取 VBA 模块源码（模块名、类型、过程清单）。可选依赖 `vba`，BSD-3。
-2. 从源码中抽取 **VBA ↔ 单元格依赖边**。
-
-**为什么必须做第 2 步**：精算老模型普遍用 `Range("B7")` / `Names("Mort_qx")` 驱动计算，这类边在公式图里完全不可见，只扫公式会得到**断裂的依赖图**（`graph/builder.py` 目前完全不看 VBA）。
-
-**不含：** VBA 语义理解；XLM 宏与 DDE（另立）；执行 VBA。
-
-## 提交物
-
-- `src/excel_to_act/ingest/vba.py`：`extract_vba_project(path)` → 模块源码 + 过程清单；未安装 oletools 时降级为 `UnsupportedFeature(severity=warning)`，**不得 import 失败**
-- `src/excel_to_act/inventory/vba_links.py`：`extract_vba_cell_links(source)` → 候选边列表，每条带 `confidence` 与 `unresolved` 标记
-- `src/excel_to_act/graph/builder.py`：把边写入 `FormulaGraph`，**`GraphEdge.relationship = "vba_ref"`**
-- `src/excel_to_act/schemas/artifacts.py`：为 `GraphEdge` 增加 `confidence` 字段；新增 `GraphNodeKind.vba`；新增 `VbaModule` 模型并挂到 `WorkbookInventory.vba_modules`；**禁止新增平行图契约**
-- `src/excel_to_act/orchestrator/phase1.py`：在 graph build 之后调 `extract_vba_project` + `extract_vba_cell_links` + `build_vba_edges`，合并进同一 `FormulaGraph`，并把 `vba_modules` 写回 inventory；未装 oletools 时追加 `vba_extraction_skipped` warning
-- `tests/test_vba.py`
-- 更新 README §4 G 组状态
-
-## 怎么检查
-
-- [x] 含 VBA 的 `.xlsm`：产出模块源码，过程名可列（逻辑已测；真实二进制样本待补充到 `examples/fixtures`）
-- [x] 未装 oletools：`vba_extraction_skipped` warning，CI（仅 `.[dev]`）**仍绿**
-- [x] `Range("B7")`、`Range("Inputs!$B$2")`、`Names("Mort_qx")`、`Cells(2,3)` 四类引用被抽出，带 `confidence`（`Range` 带 sheet 0.9 / 不带 0.6，`Names`/`Cells` 低分 + `unresolved`）
-- [x] 抽出的边写入 `dependency_graph.json`，`relationship == "vba_ref"`，节点 id 与公式图**同一命名空间**（新增 `vba:` 源节点）
-- [x] 无法静态确定的引用（`"B" & i`、经变量间接寻址）标记 `confidence` 低 + `unresolved`，**不假装确定**；`Cells` 不产边
-- [x] `pytest` 与 `ruff check .` 通过
-
-**实现备注**：`extract_vba_project` 用 `oletools.olevba.VBA_Parser().extract_macros()`；oletools 为可选依赖，缺失时只降级不崩。字面量匹配只能覆盖 `Range("A1")` / `Names("x")` / `Cells(r,c)` 三类，含字符串拼接或间接寻址的引用仍会留在 `unresolved`，交确认步骤处理。真实 `.xlsm` 端到端样本（需含 `vbaProject.bin`）尚无，待加入 `examples/fixtures` 后补一个集成测试。
+Related: [#3](https://github.com/ferryhe/excel_to_act/issues/3), project overview; [#11](https://github.com/ferryhe/excel_to_act/issues/11), current ingestion approach.
 
 ---
 
-<!-- ISSUE: feat(verify): Step 1 收尾：完备性检查 + handoff 契约输出 -->
+<!-- ISSUE_NUMBER: 11 -->
+<!-- ISSUE: docs(design): align the existing pipeline, processing layers, and artifact boundaries -->
 
-## 做什么
+## Issue 11 docs(design): align the existing pipeline, processing layers, and artifact boundaries
 
-转换完成后，agent **必须**对整个输出做完备性检查，然后产出 handoff 作为 Step 1 的唯一出口。
+[GitHub Issue #11](https://github.com/ferryhe/excel_to_act/issues/11) · Open
 
-关键约束：完备性检查**不能复用** `WorkbookInventory.coverage`——其 `discovered` 是 `recognized + opaque` 的恒等式（issue #5），恒为真，证明不了任何事。必须**从包里独立重算对象全集**（worksheet XML 数非空单元格 + 枚举包部件），再与产出比对。
+### Current status and priority
 
-**不含：** 语义正确性检查（那是 Step 3）；跨 run 的回归比对。
+Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P1; define the minimum boundary conventions required by #5/#13 first.
 
-## 提交物
+Existing modules have been implemented, but L0–L3 have no normative definitions. Align the actual responsibilities with the target workflow; do not move directories or add wrapper layers to impose layering.
 
-- `src/excel_to_act/verify/completeness.py`（新增）：`verify_completeness()` 产出 `CompletenessReport`，含 6 项检查
-- `src/excel_to_act/report/handoff.py`（新增）：`build_handoff()` + `render_handoff_markdown()`，产出 `Handoff`
-- `src/excel_to_act/schemas/artifacts.py`：`CompletenessCheck` / `CompletenessReport` / `CompletenessStatus` / `HandoffArtifactRef` / `Handoff`；`RunMetadata.completeness_status`
-- `src/excel_to_act/store/local_store.py`：`write_text()`、`append_artifacts()`；`completeness.json` / `handoff.json` 纳入校验与索引
-- `src/excel_to_act/orchestrator/phase1.py`：graph 之后跑 verify，最后写 handoff（handoff 需等其他产物路径确定）
-- `src/excel_to_act/interfaces/cli.py`：打印 completeness 状态与 handoff 路径；`fail` → **退出码 1**
-- `schemas/completeness_report.schema.json`、`schemas/handoff.schema.json`
-- `tests/test_completeness_handoff.py`
-- README §4 新增「Step 1 收尾：完备性检查与 handoff」
+### What to do
 
-## 怎么检查
+Create a short architecture document that defines the boundaries for fact ingestion, deterministic views, rule/semantic interpretation, and numerical verification, along with cross-layer shared services.
 
-- [x] `sheets_accounted`：每 sheet 有 `SheetInventory`（error）
-- [x] `cells_accounted`：每表单元格数与 worksheet XML 独立扫描一致（error）
-- [x] `content_parts_accounted`：部件已采集须**有产出证据**（`xl/tables/` ↔ `table` range），否则 error
-- [x] `formulas_linked`：每个公式格有出边或有 unparseable 记录（warning）
-- [x] `metadata_parts_accounted`（`docProps/`）与 `coverage_arithmetic` 记为 info，不改变状态
-- [x] `status=fail` 时 CLI 退出码 1
-- [x] `handoff.json` 列出全部产物（路径 / sha256 / 条数）+ `summary` 计数 + opaque 汇总 + next_actions
-- [x] `handoff.md` 是**人读的简短英文摘要**：工作簿速写（表/格/公式/缓存值/名称/表/合并区/dataTable/控件/VBA/图节点边）+ `At a glance` + `Blockers` + `Warnings` + `Artifacts` + `Unresolved` + `Next steps`；run 目录与 `<out>/` 根各一份
-- [x] opaque 汇总只统计 `opaque=True` 的项（`missing_cached_values` 这类 warning 不计入）
-- [x] `store.read_run()` 能回读并校验 `completeness.json` / `handoff.json`
-- [x] `pytest`（24 passed）与 `ruff check .` 通过
+### Deliverables and scope
 
-**说明**：`coverage_arithmetic` 当前会报 `recognized(25) + opaque(2) != discovered(21)`，这是**预期结果**——它正是 issue #5 暴露出来的真实现象，此前被恒等式掩盖。修 #5 时该检查应从 info 升为 error。
+- docs/design/layered_architecture.md: responsibilities, inputs, outputs, and prohibited behavior for each layer.
+- Use repository-relative paths in the file-level map and mark what is implemented versus planned.
+- store, orchestrator, interfaces, and shared schemas are cross-layer services; report can render multiple phases and should not be forced into one processing layer.
+- verify/completeness is a structural check at the decomposition boundary, distinct from the numerical verification in #7.
+- List actual cross-phase Artifacts; do not introduce unused models merely to avoid a local metadata dictionary or achieve “no bare dicts.”
+- Record the difference between rule classifications/confirmations already output by the orchestrator and the target semantic workflow in README Step 3; align classification enums and documentation goals with the actual contract.
+- Distinguish pre-generation workbook-baseline verification from post-generation code-equivalence comparison.
+- Record why document-parser integration is deferred under #10 and which evidence remains unverified.
+
+Out of scope: directory refactoring, empty tools/agents/skills scaffolding, full semantic implementation, generators, and compression-algorithm research.
+
+### How to verify
+
+- [ ] Each existing module has a clear primary responsibility; dependency directions for cross-layer services are listed.
+- [ ] The difference between the current call chain and the target workflow is clear; structural pass does not mean numerical pass.
+- [ ] Inputs and outputs are defined for #5 object coverage, #13 factual fields, #14 views, and #7 numerical reports.
+- [ ] The file map uses portable relative paths and accurately distinguishes existing and planned files.
+- [ ] Differences between runtime classification/prompt enums and documentation are explained; enums are not added indiscriminately.
+- [ ] Required rules match actual Artifacts, and differences are stated consistently in A1/README/PR plans.
+
+This item only aligns the architecture; it does not replace runtime acceptance for implementation Issues.
+
+---
+
+<!-- ISSUE_NUMBER: 12 -->
+<!-- ISSUE: docs(design): merge the Agent reading contract into #14 -->
+
+## Issue 12 docs(design): merge the Agent reading contract into #14
+
+[GitHub Issue #12](https://github.com/ferryhe/excel_to_act/issues/12) · Closed: merged into #14; not implemented
+
+### Disposition
+
+Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`.
+
+This item's requirements were merged into [#14](https://github.com/ferryhe/excel_to_act/issues/14), whose deliverables and acceptance criteria now include the following requirements; this item is no longer scheduled separately. It was closed because its work was merged, not because the Agent contract has been implemented.
+
+### Complete requirements transferred to #14
+
+- Define agent_reading_contract.md together with the view's view_id, stable record identifier, and source identity.
+- The Agent locates real upstream artifacts from handoff and reads permitted deterministic views/projections.
+- Output includes source_location; referenced views, source runs/versions, and records must all be valid.
+- Report opaque items as unresolved; do not guess at sources or results.
+- Factual values can be checked against their sources; clearly label deductions and conclusions that need verification. A schema cannot guarantee that reasoning is correct.
+- Include at least three valid and three invalid output examples; missing sources, unknown view_id, wrong run/version, and invalid record references must fail.
+- Reverse lookup for cells/ranges returns the complete sheet/address; workbook, VBA, and package parts use real object_id/ooxml_part values, never fabricated A1 references.
+
+### Acceptance ownership
+
+All of the above are accepted together under #14. This Issue retains its historical context and navigation entry; update #14 if rules need to change, so the two contracts do not drift independently.
+
+---
+
+<!-- ISSUE_NUMBER: 13 -->
+<!-- ISSUE: fix(ingest): preserve raw values and formula properties and apply fidelity rules -->
+
+## Issue 13 fix(ingest): preserve raw values and formula properties and apply fidelity rules
+
+[GitHub Issue #13](https://github.com/ferryhe/excel_to_act/issues/13) · Open
+
+### Current status and priority
+
+Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P0.
+
+Formula text, cache fields, number_format, and parsed data_type are currently available; raw value text, raw type, and date serial are not saved. Reproduced: the source XML date value 45292 becomes the string 2024-01-01 00:00:00 in inventory, with type n changed to d; the original numeric text is converted through float, and the artifact has no field to carry the original text.
+
+Loading twice only separates formulas from cached values; it does not automatically satisfy all fidelity rules.
+
+### What to do
+
+Clarify the original documentation task as “field-level rules + minimal fidelity improvements to the current ingestion path.” Keep raw evidence alongside convenient parsed values to create an implementation task that can be accepted directly.
+
+### Deliverables and scope
+
+- docs/design/fidelity_rules.md: actual fields, permitted conversions, counterexamples, and checks for each rule, distinguishing satisfied rules from gaps.
+- Add the necessary fields to the existing CellInventory/manifest/SourceLocation: raw value text, raw cache text, raw OOXML type, date system, and raw type, properties, and range for shared/array formulas. Fix exact field names and compatibility behavior in the rules.
+- Distinguish original text from expanded shared-formula results; array-formula text is currently retained, but do not claim that ref/spill information is fully saved.
+- Preserve the meaning of error values, percentage number_format, and cache availability; a displayed date does not replace the source number.
+- Align JSON Schema with existing store read-back and add a minimal fidelity regression fixture.
+
+Out of scope: a Decimal evaluator, Excel recalculation, Python generation, format rendering, and full dynamic-array evaluation. Do not reimplement the ordinary cache ingestion completed in #4.
+
+### How to verify
+
+- [ ] Every rule has an actual field and a runnable assertion; a rule cannot be marked satisfied without a field to carry it.
+- [ ] Dates retain their source serial, source type, and date system; the displayed value does not overwrite the raw value.
+- [ ] Original numeric text and number_format are traceable; the value is not reduced to a float alone.
+- [ ] Original formula text, shared/array types and ranges, and permitted expansion conversions are traceable.
+- [ ] Raw cached text is distinguished from parsed values; 0/False/empty string are not mistaken for missing values.
+- [ ] New fields are exported to Schema, and old artifact read-back behavior is explained and verified.
+- [ ] Consistent with existing ordinary cache ingestion and coverage accounting; tests and Ruff pass.
+
+Dependencies: the required source conventions from #11; align with #5 by object responsibility. Completing this Issue provides the factual basis for reliable views in #14 and value-type comparison in #7.
+
+---
+
+<!-- ISSUE_NUMBER: 14 -->
+<!-- ISSUE: feat(views): deterministic slice views and verifiable Agent references -->
+
+## Issue 14 feat(views): deterministic slice views and verifiable Agent references
+
+[GitHub Issue #14](https://github.com/ferryhe/excel_to_act/issues/14) · Open
+
+### Current status and priority
+
+Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P1.
+
+The view contract and compiler have not yet been implemented. The original docs task required actually running two compilations; this item is explicitly changed to “short design + minimal executable view” and incorporates the reading/write-back contract from [#12](https://github.com/ferryhe/excel_to_act/issues/12).
+
+### What to do
+
+Generate deterministic views from the inventory/graph referenced by handoff, retaining sources, supporting reverse lookup, and enforcing a budget boundary; validate references in Agent output.
+
+### Deliverables and scope
+
+- docs/design/views_l1_compiler.md and agent_reading_contract.md: jointly define the interface, view_id, stable record identifier, source-artifact identity, and SourceLocation.
+- Reuse the view contract for Artifact/CellInventory/SourceLocation and a minimal executable compilation path that slices by sheet/region.
+- Locate inputs from handoff and verify the sources and identities of the upstream artifacts actually used; Agents read only permitted deterministic projections and do not guess about opaque items.
+- The first release uses ordered slices and budget splitting; specify whether budgets are estimated or precisely counted with a fixed tokenizer, and define behavior for a single over-budget item without silently truncating it.
+- Use the real graph from #6 for dependency regions; unresolved references remain marked unresolved.
+- Validate Agent output: view/source run or version/record references exist, factual values match their sources, and deductions and conclusions needing verification are clearly labeled.
+- Include at least three valid and three invalid output examples, along with runnable determinism and source-lookup tests.
+
+Defer deduplication of identical formulas/formats until needed; do not implement relative-formula normalization or a full compressor, wait for separate A3 research, or include model calls, prompt tuning, or Python generation.
+
+### How to verify
+
+- [ ] Two compilations with the same input and configuration produce identical bytes.
+- [ ] Each cell/range record can be traced back to the full sheet/address; workbook, VBA, and package parts trace to real object_id/ooxml_part values, with no fabricated A1.
+- [ ] All records remain traceable after budget splitting; over-budget cases neither lose records nor fabricate sources.
+- [ ] At least one cross-sheet dependency sample has no false local edge or incorrect reference.
+- [ ] Runnable validation covers at least three valid and three invalid Agent outputs.
+- [ ] Missing source_location, unknown view_id, wrong run/version, and invalid record references all fail; opaque items are reported explicitly.
+- [ ] Reuse existing Artifact, align Schema and upstream source identity, and pass tests and Ruff.
+
+Dependencies: #11 minimal inter-layer conventions, the trusted-fact contracts in #5/#13, and reference-graph acceptance in #6. A single-sheet slicing prototype can proceed earlier, but reliable dependency slicing cannot be declared complete until dependencies are met. Numerical verification in #7 is independent of this item.
+
+---
+
+## Local implementation records
+
+The entries below were previously labeled #15–#18 and are now local task identifiers. They are not GitHub Issue numbers; GitHub #15 is [PR #15](https://github.com/ferryhe/excel_to_act/pull/15). Preserve the boundary between completed and incomplete work, and do not create duplicate Issues for existing implementations.
+
+### LOCAL-DATA-TABLE What-If Data Tables
+
+The current branch has ingest/data_table.py: it reads `<f t="dataTable">` directly from the top-left cell, retains text, ref, r1/r2, row/column input direction, and one-/two-variable information, and writes and counts it in the sheet as RangeInventory(kind=data_table). The latest commit, c86fa55, fixes interpretation of one-variable row/column inputs. Tests cover no table, one-variable row/column, two-variable, and original openpyxl behavior.
+
+What-If Data Table evaluation is not included. Unified fidelity for raw formula properties and array ranges belongs in #13; object coverage accounting belongs in #5. Implementation evidence: ingest/data_table.py, inventory/extractor.py, and tests/test_data_table.py in PR #15.
+
+### LOCAL-FORM-CONTROLS VML control bindings
+
+The current branch has ingest/form_controls.py, which reads FmlaLink, FmlaRange, and FmlaMacro from vmlDrawing, excludes Note/Pict, and writes form_control ranges and metadata; package relationship target parsing and VML samples are covered by tests.
+
+Boundary: independent parsing/fallback for ctrlProps and dedicated input classification for linkedCell do not meet all originally intended acceptance criteria; ActiveX remains opaque. This records only VML binding capability and does not claim that “all form-control acceptance criteria are complete.” Track whether to extend these capabilities based on actual workbook needs. Implementation evidence: ingest/form_controls.py and tests/test_form_controls.py in PR #15.
+
+### LOCAL-VBA VBA source and candidate references
+
+The current branch has an optional oletools extractor, VbaModule, candidate references, and vba_ref edges in FormulaGraph, all using the same node namespace. References that cannot be determined statically retain a low-confidence/unresolved boundary; a warning is recorded when the dependency is not installed. Existing tests include candidate references and the fallback path.
+
+An end-to-end sample using a real xlsm containing vbaProject.bin is still needed; mock tests do not count as acceptance of real extraction. VBA is not executed, and this does not cover all macro semantics or XLM/DDE. Implementation evidence: ingest/vba.py, inventory/vba_links.py, orchestrator/phase1.py, and tests/test_vba.py in PR #15.
+
+### LOCAL-HANDOFF independent checks and handoff artifacts
+
+The current branch has verify/completeness.py, CompletenessReport, Handoff, report/handoff.py, store writes, and a CLI failure exit path. It outputs completeness.json, handoff.json, and a short English handoff.md; the run directory and root alias can be read back. Existing tests cover basic artifacts, missing sheets, and CLI failure.
+
+Structural checks are not numerical verification; #5 still needs to fix object accounting and omissions of non-cell objects. coverage_arithmetic is currently info, and changing its severity alone does not complete #5. #8 covers failed runs for input files that fail during reading. Implementation evidence: PR #15 and the related files in verify, report, store, orchestrator, and CLI.

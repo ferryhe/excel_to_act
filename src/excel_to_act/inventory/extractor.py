@@ -7,6 +7,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell
+from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
 from excel_to_act.ingest.cached_values import read_cached_values
@@ -165,6 +166,27 @@ class OpenpyxlInventoryExtractor:
                     idx = wb.sheetnames.index(sheet_name) if sheet_name in wb.sheetnames else None
                     workbook_ranges.append(RangeInventory(source_location=_loc(workbook_path, "defined_name", sheet_name, idx, address, name), name=name, address=address, kind="defined_name", metadata={"scope": "workbook"}))
                     recognized += 1
+            for ws in wb.worksheets:
+                for name, defined_name in ws.defined_names.items():
+                    try:
+                        destinations = list(defined_name.destinations)
+                    except Exception:
+                        destinations = []
+                    if not destinations:
+                        address = str(getattr(defined_name, "attr_text", name))
+                        destinations = [(ws.title, address)]
+                    for destination_sheet, address in destinations:
+                        idx = wb.sheetnames.index(destination_sheet) if destination_sheet in wb.sheetnames else None
+                        workbook_ranges.append(
+                            RangeInventory(
+                                source_location=_loc(workbook_path, "defined_name", destination_sheet, idx, address, name),
+                                name=name,
+                                address=address,
+                                kind="defined_name",
+                                metadata={"scope": ws.title, "sheet": ws.title},
+                            )
+                        )
+                        recognized += 1
         finally:
             wb.close()
         if formula_cells and cached_hits == 0:
@@ -191,7 +213,19 @@ class OpenpyxlInventoryExtractor:
                 sheet.layout_objects.append(RangeInventory(source_location=_loc(workbook_path, "row_layout", ws.title, index, str(row_idx), f"row:{row_idx}"), address=str(row_idx), kind="row_layout", metadata={"hidden": bool(dim.hidden), "height": dim.height}))
         for col, dim in ws.column_dimensions.items():
             if dim.hidden or dim.width:
-                sheet.layout_objects.append(RangeInventory(source_location=_loc(workbook_path, "column_layout", ws.title, index, col, f"col:{col}"), address=col, kind="column_layout", metadata={"hidden": bool(dim.hidden), "width": dim.width}))
+                start = dim.min or column_index_from_string(col)
+                end = dim.max or start
+                first = get_column_letter(start)
+                last = get_column_letter(end)
+                address = f"{first}:{last}" if start != end else first
+                sheet.layout_objects.append(
+                    RangeInventory(
+                        source_location=_loc(workbook_path, "column_layout", ws.title, index, address, f"col:{address}"),
+                        address=address,
+                        kind="column_layout",
+                        metadata={"hidden": bool(dim.hidden), "width": dim.width, "min": start, "max": end},
+                    )
+                )
         if ws.freeze_panes:
             sheet.layout_objects.append(RangeInventory(source_location=_loc(workbook_path, "freeze_panes", ws.title, index, str(ws.freeze_panes), "freeze_panes"), address=str(ws.freeze_panes), kind="freeze_panes"))
         for dv in getattr(ws.data_validations, "dataValidation", []):

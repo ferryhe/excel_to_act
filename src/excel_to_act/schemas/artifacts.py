@@ -30,6 +30,7 @@ class SourceLocation(BaseModel):
     object_type: str
     object_id: str | None = None
     ooxml_part: str | None = None
+    source_identity: str | None = None
 
     @model_validator(mode="after")
     def validate_location(self) -> "SourceLocation":
@@ -94,6 +95,7 @@ class CellKind(str, Enum):
 
 class CellInventory(BaseModel):
     source_location: SourceLocation
+    source_identity: str | None = None
     address: str
     row: int = Field(ge=1)
     column: int = Field(ge=1)
@@ -108,6 +110,16 @@ class CellInventory(BaseModel):
     cached_value: str | int | float | bool | None = None
     # True only for formula cells whose cached result was actually read.
     cached_value_available: bool = False
+    # Exact OOXML values are additive to the legacy normalized projection.
+    raw_value_text: str | None = None
+    raw_formula_text: str | None = None
+    raw_formula_attributes: dict[str, str] = Field(default_factory=dict)
+    formula_present: bool | None = None
+    ooxml_cell_type: str | None = None
+    cached_text: str | None = None
+    cached_text_present: bool | None = None
+    workbook_date_system: str | None = None
+    date_serial_text: str | None = None
 
 
 class RangeInventory(BaseModel):
@@ -116,6 +128,7 @@ class RangeInventory(BaseModel):
     address: str
     kind: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    source_identity: str | None = None
 
 
 class SheetInventory(BaseModel):
@@ -125,6 +138,7 @@ class SheetInventory(BaseModel):
     max_row: int = Field(ge=0)
     max_column: int = Field(ge=0)
     state: str = "visible"
+    source_identity: str | None = None
     cells: list[CellInventory] = Field(default_factory=list)
     ranges: list[RangeInventory] = Field(default_factory=list)
     layout_objects: list[RangeInventory] = Field(default_factory=list)
