@@ -227,7 +227,7 @@ excel-to-act --help
 - Create: `src/excel_to_act/inventory/opaque.py`
 - Test: `tests/test_inventory_coverage.py`
 
-**当前偏差（plan ↔ 代码）:** 这两个模块尚未建立。已落地实现为：layout 逻辑内联在 `inventory/extractor.py` 的 `_layout()`；opaque 记录在 `ingest/ooxml_package.py` 的 `OPAQUE_MARKERS` + `scan_ooxml_package()`。本任务应把这两处**重构/转发**到上述模块，而不是另写一份，避免二次漂移。
+**Current plan/code divergence:** These two modules have not been created. The implemented behavior is: layout logic is inline in `inventory/extractor.py`'s `_layout()`; opaque records are in `ingest/ooxml_package.py`'s `OPAQUE_MARKERS` + `scan_ooxml_package()`. This task should **refactor/forward** these two locations into the modules above, rather than write a second implementation and allow further drift.
 
 **Acceptance:** Every non-empty fixture cell and known workbook-level object is represented or explicitly marked unsupported/opaque. Tests must assert the coverage invariant: `recognized_inventory_objects + unsupported_or_opaque_objects = discovered_workbook_objects`.
 
@@ -293,20 +293,20 @@ excel-to-act --help
 
 **Acceptance:** The report identifies unsupported features, module coverage, per-sheet unclassified/opaque counts, and confirmation checklist items.
 
-## 与 README 流水线的映射
+## Mapping to the README pipeline
 
-README 把长期路线切成 Step 0–5。本 plan 的 Phase 1 **只覆盖 Step 0–3**（ingest → inventory → graph → classify → confirm → store → report）。README 的 Step 4（生成 Python）是本 plan 「Non-goals」明确排除项；Step 5（多 oracle 对账）未排期，仅在本 plan 「Existing tools」里预留 LibreOffice/xlwings 位置。
+The README divides the long-term roadmap into Steps 0–5. This plan's Phase 1 **covers only Steps 0–3** (ingest → inventory → graph → classify → confirm → store → report). The README's Step 4 (Python generation) is explicitly excluded by this plan's "Non-goals" section; Step 5 (reconciliation across multiple oracles) is unscheduled, with only LibreOffice/xlwings reserved in this plan's "Existing tools" section.
 
-### 产物布局现状 vs Step 1 目标
+### Current artifact layout vs. the Step 1 target
 
-- **现状（PR-11 验收布局）**：CLI 为 `excel-to-act inspect <workbook> --out <dir>`（不支持目录入参），产物是 `<out>/workbooks/<sha256>/<run_id>/` 下的扁平 JSON：`workbook_manifest.json` / `inventory.json` / `dependency_graph.json` / `module_classification.json` / `confirmation_template.json` / `run_metadata.json`，外加 `<workbook>/artifact_index.json`。无 Markdown 产物（PR-12 未开工）。
-- **Step 1 目标布局**：见 README §3.2 —— 按内容类型分目录、每类双出 md + json、新增 `coverage` 与 `handoff` 独立契约。命名空间继续用 `<sha256>/<run_id>/`，**不使用文件名 slug**（同名不同内容会串、改名会断链）。
+- **Current layout (PR-11 acceptance layout):** The CLI command is `excel-to-act inspect <workbook> --out <dir>` (directory input is unsupported). Artifacts are flat JSON files under `<out>/workbooks/<sha256>/<run_id>/`: `workbook_manifest.json` / `inventory.json` / `dependency_graph.json` / `module_classification.json` / `confirmation_template.json` / `run_metadata.json`, plus `<workbook>/artifact_index.json`. There are no Markdown artifacts (PR-12 has not started).
+- **Step 1 target layout:** See README §3.2 — directories by content type, both md + json for each type, and separate contracts for `coverage` and `handoff`. Keep `<sha256>/<run_id>/` as the namespace; **do not use a filename slug** (different content with the same name can collide, and renaming breaks links).
 
-### 已确认的硬约束偏差
+### Confirmed hard-constraint gaps
 
-- **覆盖不变量当前未真正生效**：`inventory/extractor.py` 把 `CoverageSummary.discovered_workbook_objects` 直接写成 `recognized + opaque`，是恒等式，任何测试都恒真。需独立统计 `discovered`（issue #5，P0）。
-- **`OPAQUE_MARKERS` 已补齐**：原 8 个 token，现 18 个，补入 `xl/model/`、`_xmlsignatures/`、`calcChain.xml`、`/ctrlProps/`、`/slicers/`、`/timelines/`、`/macrosheets/`、`/customXml/`、`volatileDependencies.xml`、`/webExtensions/`。此前这些部件既不采集也不标 opaque，属静默丢失。
-- **加密/损坏文件会抛未捕获异常**：`scan_ooxml_package()` 的 `ZipFile()` 无异常保护，违反「报 error、不 panic」（issue #8，P1）。
+- **The coverage invariant is not currently enforced:** `inventory/extractor.py` sets `CoverageSummary.discovered_workbook_objects` directly to `recognized + opaque`, which is an identity and therefore always passes. `discovered` must be counted independently (issue #5, P0).
+- **`OPAQUE_MARKERS` has been completed:** it grew from 8 to 18 tokens, adding `xl/model/`, `_xmlsignatures/`, `calcChain.xml`, `/ctrlProps/`, `/slicers/`, `/timelines/`, `/macrosheets/`, `/customXml/`, `volatileDependencies.xml`, and `/webExtensions/`. These parts were previously neither collected nor marked opaque, so they were silently dropped.
+- **Encrypted/damaged files raise uncaught exceptions:** `ZipFile()` in `scan_ooxml_package()` has no exception handling, violating the "report an error, do not panic" requirement (issue #8, P1).
 
 ## PR planning note
 
