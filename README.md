@@ -8,7 +8,7 @@ Excel-to-actuarial-model tooling：**CLI + API + agent-ready**，可按 skill �
 recognized_inventory_objects + unsupported_or_opaque_objects = discovered_workbook_objects
 ```
 
-> ⚠️ 注意：上述不变量**当前尚未真正生效**——`inventory/extractor.py:100` 把 `discovered` 直接写成 `recognized + opaque`，是恒等式；且一批部件既未采集也未标 opaque（见 §4 的"静默丢失"）。修复见 `docs/issues/backlog.md` issue #5 与 §4 I。
+> ⚠️ 范围说明：上述全局不变量**在旧 `inspect` 流程中尚未真正生效**——`inventory/extractor.py:100` 把 `discovered` 直接写成 `recognized + opaque`，是恒等式；且一批部件既未采集也未标 opaque（见 §4 的"静默丢失"）。当前人工 Step 1 `step1 convert` 会独立复核本页声明的支持对象和 OOXML 部件范围；它不代表所有 Excel 功能都已语义解析。旧流程缺口仍见 `docs/issues/backlog.md` issue #5 与 §4 I。
 
 ---
 
@@ -16,7 +16,7 @@ recognized_inventory_objects + unsupported_or_opaque_objects = discovered_workbo
 
 ```mermaid
 flowchart TD
-    IN["input/ · 目录<br/>目标 CLI: --input<br/>当前 CLI: inspect &lt;workbook&gt; --out"]
+    IN["input/ · 原始目录<br/>当前 Step 1: step1 convert &lt;dir&gt; --out<br/>legacy: inspect &lt;workbook&gt; --out"]
     S0["Step 0 · Intake &amp; Identify<br/>识别格式 / 加密 / 包完整性"]
     S1["Step 1 · Lossless Decomposition<br/>按内容类型全覆盖分类提取"]
     O1[("output/step1_decomposition/<br/>按种类 md + json")]
@@ -37,9 +37,39 @@ flowchart TD
     style O1 fill:#eef7ff,stroke:#1565c0
 ```
 
-**落地状态**：Step 0–2 已部分落地（`ingest/` `inventory/` `graph/` `classify/` `confirm/` `store/` `orchestrator/` `interfaces/`；Step 2 的 `artifact_index.json` 已由 `store/local_store.py` 产出）。Step 3 属 plan 的 Phase 1 范围、已部分落地（`classify/`）。Step 1 的 JSON 与 Markdown handoff 已实现；**Step 4–5 未开工**。
+**落地状态**：Step 0–2 已部分落地（人工 Step 1 位于 `steps/step1/`；共享模块位于 `ingest/` `inventory/` `graph/` `classify/` `confirm/` `store/` `orchestrator/` `interfaces/`；Step 2 的 `artifact_index.json` 已由 `store/local_store.py` 产出）。Step 3 属 plan 的 Phase 1 范围、已部分落地（`classify/`）。Step 1 的 JSON 与 Markdown handoff 已实现；**Step 4–5 未开工**。
 
-**当前建造目标：Step 1 的无损分解扩展**（见 §4 的缺口清单）。
+上图展示完整目标路线，包含尚未完成的步骤；当前人工入口是 `excel-to-act step1 convert <raw-directory> --out <output-directory>`，旧 `inspect` 仍用于单工作簿 Phase 1 流程。
+
+### 当前可用：人工 Step 1 → 人工 Step 2
+
+新的 `step1` 命令接收原始目录，递归记录每个文件；`.xlsx` / `.xlsm` 进入转换，其它格式、损坏或无法读取的文件会保留为失败条目。每个输入按源 SHA-256、相对路径键和运行 ID 分开存放，批次 handoff 汇总全部输入，不使用“最后一个文件”的根目录别名。
+
+若输出目录位于输入目录之内，目录扫描会排除该输出子树，并在批次 `discovery` 信息中记录排除路径；输入目录与输出目录完全相同时会明确报错。
+
+```powershell
+excel-to-act step1 tools                         # JSON 工具目录
+excel-to-act step1 agent                         # 可复用的 host-agent 定义
+excel-to-act step1 convert .\raw --out .\output # 第一步：事实提取与检查
+excel-to-act step1 check --run <run-dir>         # 重新读取当前源文件并检查候选产物
+excel-to-act step1 coverage --run <run-dir>      # 分别检查逻辑对象与 OOXML 部件
+excel-to-act step1 fidelity --run <run-dir>      # 比较原始 XML 字段与标准化事实
+excel-to-act step1 finalize --run <run-dir>      # 通过新检查后发布最终转换目录
+```
+
+默认门槛是 100% 逻辑对象可追溯、OOXML 部件逐字节保存、已支持事实精确一致。未知或未解析部件仍会保存；默认策略把它们报告为 `partial`，并只在其它检查通过后允许进入 Step 2。可以用 `--no-allow-opaque` 禁止这种交接。手动设置较低的 `--fidelity-min` 会明确产生 partial 结果；它不能绕过缺失的支持对象、损坏 XML、源文件变化或校验错误。Step 1 不计算公式、不判断精算含义；人确认 Step 1 handoff 后，Step 2 才开始建立索引并决定后续解释工作。`inspect <workbook> --out <dir>` 保持原来的单工作簿 Phase 1 行为。
+
+包部件的解析比例和 opaque 比例使用同一单位（所有非目录 OOXML ZIP 部件），并与逻辑对象覆盖率分开：`parsed_coverage_ratio` 是已关联到 inventory 身份的支持逻辑对象比例，`parsed_package_parts_ratio` 是 fresh scan 中已读取且非 opaque 的部件比例，`opaque_rate` 是 opaque 部件比例。`--parsed-package-min` 和 `--opaque-max` 都接受 `[0,1]`，默认分别为 `0` 和 `1`，允许显式的 opaque `partial` 交接；提高前者或降低后者可以独立收紧包部件要求。`--no-allow-opaque` 无条件禁止 opaque 部件，任何数值门槛都不能覆盖缺失对象、源读取/校验错误或字节保存失败。
+
+每个源文件的质量结果和工具响应都带有 `metrics_state`。`measured` 表示已成功 fresh scan；`unavailable` 表示当前源文件无法读取或校验，源派生的分母、计数、比例和保真差异会写成 JSON `null`，不会用旧报告或候选 ledger 代替当前测量。只有成功扫描后实测得到的零才写为数字 `0`；未能测量始终阻止放行，即使配置门槛为零也不能 finalize 或晋升。
+
+`raw_value_text`、原始公式文本/属性、缓存文本和日期序列是源文件原文证据；下游若要求精确数值文本，应读取 `raw_value_text`。标准化数值会转换为整数或浮点数，长小数可能有浮点近似；日期按工作簿的 1900/1904 日期系统转换。公式缓存只表示文件中保存的结果，缺失缓存保持为缺失，转换过程不会重新计算公式。
+
+字符串的标准化值拼接 OOXML 正文 `<t>` 与富文本 `<r><t>`，不把 `<rPh>` 注音或容器排版空白并入单元格文字；原始工作表和共享字符串部件仍按原字节保留并校验。
+
+每批生成 `batches/<batch-id>/batch_handoff.{json,md}`，每个源文件有独立候选目录，其中包括 `source_facts.json`、`logical_objects.json`、`package_parts.json`、`quality.json` 和双格式 handoff。通过 `finalize` 的候选复制到唯一的 `final/` 目录；被阻断的候选仍有 handoff 和可操作的下一步建议。
+
+**后续建造目标：Step 1 的无损分解扩展**（见 §4 的缺口清单）；目录式转换、独立覆盖/保真检查与双格式 handoff 已可通过上面的 `step1` 命令使用。
 
 ### 与 `phase1_excel_decomposition_plan.md` 的映射
 
@@ -99,7 +129,7 @@ flowchart LR
     PKG --> OPA --> COV
 ```
 
-`verify_coverage` **尚不存在**：`CoverageSummary.discovered` 目前是 `recognized + opaque` 的恒等式，只有等 issue #5 落地后 `coverage` 三数才有意义。
+旧 `inspect` 流程的 `verify_coverage` **尚不存在**：该流程的 `CoverageSummary.discovered` 是 `recognized + opaque` 的恒等式，不能作为独立覆盖率。当前 `step1 coverage` 命令使用 OOXML 源清单和输出身份单独核对逻辑对象与包部件。
 
 ---
 
@@ -107,7 +137,7 @@ flowchart LR
 
 ### 3.1 当前实现
 
-CLI 是 `excel-to-act inspect <workbook> --out <dir>`，且 `dir_okay=False`——**当前不接受目录入参**。每次运行写出七个数据 JSON、`run_metadata.json` 和供人阅读的 `handoff.md`：
+旧单工作簿 `inspect` CLI 是 `excel-to-act inspect <workbook> --out <dir>`，且 `dir_okay=False`——该命令不接受目录入参；目录批次由上文新增的 `excel-to-act step1 convert` 处理。每次 `inspect` 运行写出七个数据 JSON、`run_metadata.json` 和供人阅读的 `handoff.md`：
 
 ```text
 <out>/workbooks/<workbook_sha256>/<run_id>/
@@ -132,7 +162,7 @@ CLI 是 `excel-to-act inspect <workbook> --out <dir>`，且 `dir_okay=False`—�
 - `--input` 支持**目录**（批量）
 - 命名空间沿用 `<workbook_sha256>/<run_id>/`，**不用 slug**：slug 由文件名派生，同名不同内容会串、改名会断链
 - 每一类同时产出 `.md`（人读）与 `.json`（机器读）
-- `Handoff` 契约已实现并写出 JSON/Markdown；`CoverageSummary` 仍嵌在 `WorkbookInventory` 中，独立 coverage 产物仍是目标布局的一部分
+- 旧 `inspect` 流程的 `Handoff` 契约已实现并写出 JSON/Markdown；其 `CoverageSummary` 仍嵌在 `WorkbookInventory` 中，独立 coverage 产物属于旧目标布局。当前目录式 `step1` 使用本节所述独立检查与批次 handoff。
 
 ```text
 output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
@@ -153,8 +183,8 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
   14_vba/                       模块源码 + 过程清单 + 静态调用关系
   15_xlm_macros/                Excel 4.0 宏与 DDE
   99_opaque/                    图表二进制、Power Pivot、OLE、签名等
-  coverage.{md,json}            recognized / opaque / discovered（待新契约）
-  handoff.{md,json}             交接文件：下一步 agent 的入口（待新契约）
+  coverage.{md,json}            旧 inspect 目标布局；当前 step1 coverage 另有独立逻辑对象/部件账本
+  handoff.{md,json}             旧 inspect 目标布局；当前 step1 已写出双格式 handoff
 ```
 
 `handoff.json` 是唯一被下游消费的契约：列出每类产物的路径、条数、schema 版本、以及 `opaque` 摘要。
@@ -213,7 +243,7 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 | 文档属性 | `docProps/*.xml` | **缺失**：应采集，不是标 opaque（可解析） |
 | 自定义 XML / Power Query `DataMashup` | `customXml/` | opaque（token 已补，见 I 组）；M 代码本身未解析 |
 | 数字签名 | `_xmlsignatures/` | opaque（token 已补，见 I 组） |
-| 加密 / 损坏文件 | `EncryptedPackage` | **已确认违反硬约束**：`ingest/ooxml_package.py:51` 的 `ZipFile()` 无异常保护，会抛未捕获异常（issue #8，P1）。要求：报 error，不 panic |
+| 加密 / 损坏文件 | `EncryptedPackage` | **已确认违反硬约束**：`ingest/ooxml_package.py:51` 的 `ZipFile()` 无异常保护，会抛未捕获异常（issue #8，P0）。要求：报 error，不 panic |
 
 ### B. 工作簿结构层
 
@@ -233,7 +263,7 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 | 值 / 公式 / 错误值（`#N/A`、`#REF!`） | 已采集（错误值以字面量存） |
 | number_format、data_type、style_id | 已采集 |
 | 空单元格 | **未采集**：`extractor.py:55` 直接 `continue`；`CellKind.blank` 是死枚举（要么采集，要么删枚举） |
-| 缓存值（`data_only=True`） | **已采集**（issue #4 已完成）：`cached_value` + `cached_value_available`；整簿无缓存值时产出 `missing_cached_values` warning。对账 oracle 的基石 |
+| 缓存值（`data_only=True`） | **已采集并验收**（[PR #15](https://github.com/ferryhe/excel_to_act/pull/15) 与 [PR #16](https://github.com/ferryhe/excel_to_act/pull/16) 已合入；[Issue #4](https://github.com/ferryhe/excel_to_act/issues/4) 已关闭）：`cached_value` + `cached_value_available`；整簿无缓存值时产出 `missing_cached_values` warning。对账 oracle 的基石 |
 | `cell.formula_attributes` | **静默丢失**：shared formula 的 `si`/`ref`、array formula 的 `t=array`/`ref`、动态数组 spill。注：公式**展开**由 openpyxl 完成，不是缺口；数组公式的**文本**现已保留（不再被 `str()` 成对象 repr），但 `ref` 与 spill 范围仍缺 |
 | 富文本 runs、phonetic | **静默丢失** |
 
@@ -267,8 +297,8 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 | 图表（含 `SERIES()` 引用） | opaque（`/charts/` 在内） |
 | 图片 / 形状 / 文本框的单元格链接 | opaque（`/drawings/`、`/media/` 在内） |
 | OLE 嵌入对象 | opaque（`/embeddings/` 在内） |
-| **表单控件 `linkedCell`**（`vmlDrawing` + `ctrlProps`） | **已采集**（issue #16 已完成）：来自 `xl/drawings/vmlDrawing*.vml` 的 `ClientData`；`linked_cell` 解析为 `Sheet!A1` 并计入 `recognized`；注释型 `ClientData(Note)` 已排除 |
-| **模拟运算表 `dataTable`** | **已采集**（issue #15 已完成）：存于单元格 `<f t="dataTable" ref r1 r2>`，openpyxl 会**丢掉公式文本**且 `str(cell.value)` 会损坏该格，故走 XML 直读；产出 `data_table` 范围对象 + 输入格 |
+| **表单控件 `linkedCell`**（`vmlDrawing` + `ctrlProps`） | **当前分支已采集 VML 绑定**（本地任务 `LOCAL-FORM-CONTROLS`，见 [PR #15](https://github.com/ferryhe/excel_to_act/pull/15)）：来自 `xl/drawings/vmlDrawing*.vml` 的 `ClientData`；`linked_cell` 解析为 `Sheet!A1` 并计入 `recognized`；注释型 `ClientData(Note)` 已排除 |
+| **模拟运算表 `dataTable`** | **当前分支已采集**（本地任务 `LOCAL-DATA-TABLE`，见 [PR #15](https://github.com/ferryhe/excel_to_act/pull/15)）：存于单元格 `<f t="dataTable" ref r1 r2>`，openpyxl 会**丢掉公式文本**且 `str(cell.value)` 会损坏该格，故走 XML 直读；产出 `data_table` 范围对象 + 输入格 |
 
 ### G. 代码与自动化层
 
@@ -276,7 +306,7 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 
 | 内容 | 源 | 工具 | 状态 |
 |---|---|---|---|
-| **VBA 模块源码** | `xl/vbaProject.bin` | 依赖库 `oletools`(olevba) `>=0.60.2`，BSD-3（核实于 2026-10-02，PyPI 最新 0.60.2 / 2024-07-02） | **已采集**（issue #17 已完成）：`extract_vba_project` 产出模块源码 + 过程名；未装 oletools 则降级 warning，不崩 |
+| **VBA 模块源码** | `xl/vbaProject.bin` | 依赖库 `oletools`(olevba) `>=0.60.2`，BSD-3（核实于 2026-10-02，PyPI 最新 0.60.2 / 2024-07-02） | **当前分支已实现提取路径**（本地任务 `LOCAL-VBA`，见 [PR #15](https://github.com/ferryhe/excel_to_act/pull/15)）：`extract_vba_project` 产出模块源码 + 过程名；未装 oletools 则降级 warning，不崩 |
 | **VBA ↔ 单元格 依赖边** | 上一步源码 | 自研 `extract_vba_cell_links` → `build_vba_edges` | **已采集**：`FormulaGraph` 追加 `relationship="vba_ref"` 边，与公式图同一节点命名空间（新增 `GraphNodeKind.vba` 与 `GraphEdge.confidence`） |
 | **Excel 4.0 宏（XLM）** | `xl/macrosheets/` | 依赖库 oletools `olevba`（XLM 走另一入口，需可选依赖 `XLMMacroDeobfuscator`） | **静默丢失** |
 | **DDE 链接** | — | 依赖库 oletools `msodde` | **静默丢失** |
@@ -340,7 +370,33 @@ Power Pivot 数据模型、透视缓存二进制、图表渲染、嵌入媒体�
 
 ---
 
-## 6. 目录安排
+## 6. 当前代码布局与目录路线图
+
+当前 Step 1 的工作流、只用于 Step 1 的 OOXML 源扫描器和随安装包分发的 agent 定义放在同一个业务步骤包中：
+
+```text
+src/excel_to_act/
+  steps/
+    __init__.py
+    step1/
+      __init__.py
+      workflow.py
+      source_scan.py
+      agent.md
+  interfaces/                 CLI 入口，复用 Step 1 工作流
+  ingest/                     共享文件读取与 OOXML 部件能力
+  inventory/ verify/ graph/   共享 inventory 与检查/图能力
+  classify/ confirm/          共享分类与确认能力
+  schemas/ store/ report/     共享数据契约、存储与报告能力
+  plugins/ orchestrator/      共享工具契约/旧 Phase 1 编排
+tests/
+```
+
+每个已实现的人工业务步骤在 `steps/<step>/` 中拥有自己的 agent 定义，并可按职责拆成多个实现文件；Step 1 将转换工作流与源扫描器分在两个 Python 文件中。步骤包直接复用现有共享模块，不复制 shared capability，也不为尚未实现的步骤创建空包。
+
+### 先前提出的目标布局（仅供路线图参考）
+
+下方目录草图及说明保留先前的路线图内容，描述的是未来提案，不是当前源代码树。
 
 ```text
 excel_to_act/

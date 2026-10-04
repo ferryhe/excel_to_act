@@ -165,6 +165,19 @@ class OpenpyxlInventoryExtractor:
                     idx = wb.sheetnames.index(sheet_name) if sheet_name in wb.sheetnames else None
                     workbook_ranges.append(RangeInventory(source_location=_loc(workbook_path, "defined_name", sheet_name, idx, address, name), name=name, address=address, kind="defined_name", metadata={"scope": "workbook"}))
                     recognized += 1
+            for ws in wb.worksheets:
+                for name, defined_name in ws.defined_names.items():
+                    address = str(getattr(defined_name, "attr_text", name))
+                    workbook_ranges.append(
+                        RangeInventory(
+                            source_location=_loc(workbook_path, "defined_name", ws.title, wb.sheetnames.index(ws.title), address, name),
+                            name=name,
+                            address=address,
+                            kind="defined_name",
+                            metadata={"scope": ws.title, "sheet": ws.title},
+                        )
+                    )
+                    recognized += 1
         finally:
             wb.close()
         if formula_cells and cached_hits == 0:
