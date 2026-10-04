@@ -12,6 +12,7 @@ from xml.etree import ElementTree as ET
 from openpyxl.cell.text import Text
 from openpyxl.formula.translate import Translator
 from openpyxl.styles.numbers import BUILTIN_FORMATS, is_date_format
+from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import CALENDAR_MAC_1904, CALENDAR_WINDOWS_1900, from_excel
 
 from excel_to_act.ingest.data_table import resolve_package_part
@@ -216,6 +217,7 @@ def scan_step1_source(path: Path) -> dict[str, Any]:
         cells: list[dict[str, Any]] = []
         objects: list[dict[str, Any]] = []
         errors: list[str] = []
+        supported_vml_parts: set[str] = set()
 
         def add_object(kind: str, identity: str, part: str, **details: Any) -> None:
             objects.append(
@@ -368,11 +370,27 @@ def scan_step1_source(path: Path) -> dict[str, Any]:
                     if hidden or height is not None:
                         add_object("row_layout", object_identity(kind, part, row_num), part, sheet=name, address=row_num)
                 elif kind == "col":
-                    start = element.attrib.get("min", "")
+                    raw_min = element.attrib.get("min", "")
+                    raw_max = element.attrib.get("max", raw_min)
+                    start_index = int(raw_min)
+                    end_index = int(raw_max)
+                    start = get_column_letter(start_index)
+                    end = get_column_letter(end_index)
+                    address = f"{start}:{end}" if end_index != start_index else start
                     hidden = element.attrib.get("hidden") in {"1", "true"}
                     width = element.attrib.get("width") if element.attrib.get("customWidth") in {"1", "true"} else None
                     if hidden or width is not None:
-                        add_object("column_layout", object_identity(kind, part, start), part, sheet=name, address=start)
+                        add_object(
+                            "column_layout",
+                            object_identity(kind, part, raw_min, raw_max),
+                            part,
+                            sheet=name,
+                            address=address,
+                            min=raw_min,
+                            max=raw_max,
+                            width=width,
+                            hidden=hidden,
+                        )
                 elif kind == "pane" and element.attrib.get("state") in {"frozen", "frozenSplit"}:
                     ref = element.attrib.get("topLeftCell", "")
                     add_object("freeze_panes", object_identity(kind, part, ref), part, sheet=name, address=ref)
@@ -401,10 +419,30 @@ def scan_step1_source(path: Path) -> dict[str, Any]:
                     vml_root = _required_xml(zf, rel["part"])
                     parsed_parts.add(rel["part"])
                     parents = {child: parent for parent in vml_root.iter() for child in parent}
-                    for control_index, client_data in enumerate(x for x in vml_root.iter() if _local(x.tag) == "ClientData"):
+                    shapes = [element for element in vml_root.iter() if _local(element.tag) == "shape"]
+                    client_data_nodes = [element for element in vml_root.iter() if _local(element.tag) == "ClientData"]
+                    vml_object_tags = {"shape", "rect", "roundrect", "oval", "line", "polyline", "curve", "arc", "image", "group"}
+                    vml_objects = [
+                        element
+                        for element in vml_root.iter()
+                        if _local(element.tag) in vml_object_tags
+                    ]
+                    vml_supported = bool(shapes) and len(vml_objects) == len(shapes)
+                    clients_in_shapes = 0
+                    for shape in shapes:
+                        shape_clients = [element for element in shape.iter() if _local(element.tag) == "ClientData"]
+                        clients_in_shapes += len(shape_clients)
+                        if len(shape_clients) != 1:
+                            vml_supported = False
+                    if clients_in_shapes != len(client_data_nodes):
+                        vml_supported = False
+                    for control_index, client_data in enumerate(client_data_nodes):
                         control_type = client_data.attrib.get("ObjectType", "")
                         props = {_local(child.tag): (child.text or "").strip() for child in client_data}
-                        if control_type in {"Note", "Pict"} or not any(props.get(key) for key in ("FmlaLink", "FmlaRange", "FmlaMacro")):
+                        has_binding = any(props.get(key) for key in ("FmlaLink", "FmlaRange", "FmlaMacro"))
+                        if not control_type or control_type in {"Note", "Pict"} or not has_binding:
+                            vml_supported = False
+                        if control_type in {"Note", "Pict"} or not has_binding:
                             continue
                         node = client_data
                         control_id = None
@@ -415,6 +453,8 @@ def scan_step1_source(path: Path) -> dict[str, Any]:
                             node = parents.get(node)
                         control_id = control_id or control_type
                         add_object("form_control", object_identity("form_control", rel["part"], str(control_index)), rel["part"], sheet=name, control_id=control_id, control_type=control_type, linked_cell=props.get("FmlaLink"), list_fill_range=props.get("FmlaRange"), macro=props.get("FmlaMacro"))
+                    if vml_supported:
+                        supported_vml_parts.add(rel["part"])
 
         # Workbook and sheet-scoped defined names are distinct declarations.
         defined_names = next((item for item in workbook.iter() if _local(item.tag) == "definedNames"), None)
@@ -448,8 +488,13 @@ def scan_step1_source(path: Path) -> dict[str, Any]:
             name = info.filename
             marker = next((description for token, description in OPAQUE_MARKERS.items() if token in name), None)
             parsed = name in parsed_parts
-            supported_comment_vml = name.lower().endswith(".vml") and name in parsed_parts
-            opaque_reason = marker if marker and not supported_comment_vml else ("unrecognized package part" if not parsed else None)
+            is_parsed_vml = name.lower().endswith(".vml") and parsed
+            if is_parsed_vml and name not in supported_vml_parts:
+                opaque_reason = "VML drawing contains unsupported or mixed content"
+            elif marker and not (is_parsed_vml and name in supported_vml_parts):
+                opaque_reason = marker
+            else:
+                opaque_reason = "unrecognized package part" if not parsed else None
             part_hashes[name] = {
                 "size": info.file_size,
                 "sha256": hashlib.sha256(zf.read(name)).hexdigest(),

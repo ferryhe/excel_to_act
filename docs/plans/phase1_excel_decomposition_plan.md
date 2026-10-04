@@ -299,8 +299,9 @@ The README divides the long-term roadmap into Steps 0–5. This plan's Phase 1 *
 
 ### Current artifact layout vs. the Step 1 target
 
-- **Current layout (PR-11 acceptance layout):** The CLI command is `excel-to-act inspect <workbook> --out <dir>` (directory input is unsupported). Artifacts are flat JSON files under `<out>/workbooks/<sha256>/<run_id>/`: `workbook_manifest.json` / `inventory.json` / `dependency_graph.json` / `module_classification.json` / `confirmation_template.json` / `run_metadata.json`, plus `<workbook>/artifact_index.json`. There are no Markdown artifacts (PR-12 has not started).
-- **Step 1 target layout:** See README §3.2 — directories by content type, both md + json for each type, and separate contracts for `coverage` and `handoff`. Keep `<sha256>/<run_id>/` as the namespace; **do not use a filename slug** (different content with the same name can collide, and renaming breaks links).
+- **Current legacy `inspect` layout:** The CLI command is `excel-to-act inspect <workbook> --out <dir>` and remains single-workbook. It writes flat artifacts under `<out>/workbooks/<sha256>/<run_id>/`, including `workbook_manifest.json`, `inventory.json`, `dependency_graph.json`, `module_classification.json`, `confirmation_template.json`, `completeness.json`, `handoff.json`, `handoff.md`, and `run_metadata.json`, plus artifact-index files and latest-run aliases.
+- **Current human Step 1 layout:** `excel-to-act step1 convert <directory> --out <dir>` is a separate directory-based workflow. Each source run writes `source.json`, `workbook_manifest.json`, `inventory.json`, `source_facts.json`, `logical_objects.json`, `package_parts.json`, `quality.json`, and `handoff.json` / `handoff.md`; original source evidence and copied package-part bytes are stored alongside them. The batch writes its own JSON and Markdown handoff. See README §3.1.
+- **Step 1 target layout:** See README §3.2 — directories by content type, both Markdown and JSON for each type, and separate contracts for `coverage` and `handoff`. This remains a future layout. Keep `<sha256>/<run_id>/` as the namespace; **do not use a filename slug** (different content with the same name can collide, and renaming breaks links).
 
 ### Confirmed hard-constraint gaps
 

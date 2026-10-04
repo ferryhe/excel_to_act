@@ -237,8 +237,8 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 | 标记 | 含义 |
 |---|---|
 | `已采集` | 已进 `inventory.json` |
-| `opaque` | 有记录、无解析（进 `unsupported_features`，符合不变量） |
-| **静默丢失** | 既未采集也未标记 —— **违反硬约束，必须补**（见 I 组） |
+| `opaque` | 明确记录为未解析或不支持；Step 1 还会逐字节保存包部件 |
+| **静默丢失** | 既未采集也未明确标记为 opaque —— 违反硬约束 |
 
 ### A. 包与文件层
 
@@ -258,9 +258,9 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 | sheet 名称/顺序/可见性/维度 | 已采集 |
 | `calcMode`（manual/auto） | 已采集（`WorkbookManifest.calc_mode`） |
 | `calcPr` 其余（iterate / iterateCount / iterateDelta / calcId / fullCalcOnLoad） | **静默丢失** —— 循环迭代设置，直接关系循环引用怎么解 |
-| `xl/calcChain.xml`（最后计算顺序） | **静默丢失** |
-| defined names | 已采集，**仅工作簿级**；sheet 级名称（`ws.defined_names`）与 `hidden` 标志未采集 |
-| LAMBDA / 名称里定义的自定义函数 | 已采集名称本体，**未做 LAMBDA 判定**，也未解析名称公式里的引用 |
+| `xl/calcChain.xml`（最后计算顺序） | Step 1 会记录为 opaque 并逐字节保存；不会解析计算顺序 |
+| defined names | 工作簿级和工作表级名称都会采集；区域目标会展开为不带工作表前缀的 A1 地址（每个区域一行），inventory 元数据保留声明作用域。Step 1 源清单按声明计数并保留原始名称文本。`hidden` 标志未采集 |
+| LAMBDA / 名称里定义的自定义函数 | Step 1 会保留原始名称文本，但**尚未判定 LAMBDA**，也未解析名称公式里的引用 |
 
 ### C. 单元格内容层
 
@@ -270,7 +270,7 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 | number_format、data_type、style_id | 已采集 |
 | 空单元格 | **未采集**：`extractor.py:55` 直接 `continue`；`CellKind.blank` 是死枚举（要么采集，要么删枚举） |
 | 缓存值（`data_only=True`） | **已采集并验收**（[PR #15](https://github.com/ferryhe/excel_to_act/pull/15) 与 [PR #16](https://github.com/ferryhe/excel_to_act/pull/16) 已合入；[Issue #4](https://github.com/ferryhe/excel_to_act/issues/4) 已关闭）：`cached_value` + `cached_value_available`；整簿无缓存值时产出 `missing_cached_values` warning。对账 oracle 的基石 |
-| `cell.formula_attributes` | **静默丢失**：shared formula 的 `si`/`ref`、array formula 的 `t=array`/`ref`、动态数组 spill。注：公式**展开**由 openpyxl 完成，不是缺口；数组公式的**文本**现已保留（不再被 `str()` 成对象 repr），但 `ref` 与 spill 范围仍缺 |
+| `cell.formula_attributes` | Step 1 会在 `source_facts.json` 和 `CellInventory` 中保存原始公式文本与完整 `<f>` 属性，包括 shared、array 和 `dataTable` 属性。旧 `inspect` 不填充这些原始公式事实；可空的存在性和日期字段仍为未知。保存属性不等于解释动态数组 spill 行为 |
 | 富文本 runs、phonetic | **静默丢失** |
 
 ### D. 样式与呈现层（识别 input/output 的关键信号）
@@ -293,8 +293,8 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 | Excel Tables（ListObjects） | 已采集 `ref`+`name`；**列定义、totalsRow、排序/筛选态未采集** |
 | 透视表定义 + 缓存记录 | opaque（`/pivot` 在 `OPAQUE_MARKERS` 内） |
 | `xl/connections.xml` | opaque（`/connections` 在内） |
-| 切片器 / 时间线（`xl/slicers/`、`xl/timelines/`） | **静默丢失** |
-| Power Query `DataMashup` | **静默丢失** |
+| 切片器 / 时间线（`xl/slicers/`、`xl/timelines/`） | Step 1 会记录为 opaque 并逐字节保存；尚未解析其语义内容 |
+| Power Query `DataMashup` | Step 1 会将 `customXml/` 部件记录为 opaque 并逐字节保存；M 代码未解析 |
 
 ### F. 图形与控件层
 
@@ -303,8 +303,8 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 | 图表（含 `SERIES()` 引用） | opaque（`/charts/` 在内） |
 | 图片 / 形状 / 文本框的单元格链接 | opaque（`/drawings/`、`/media/` 在内） |
 | OLE 嵌入对象 | opaque（`/embeddings/` 在内） |
-| **表单控件 `linkedCell`**（`vmlDrawing` + `ctrlProps`） | **当前分支已采集 VML 绑定**（本地任务 `LOCAL-FORM-CONTROLS`，见 [PR #15](https://github.com/ferryhe/excel_to_act/pull/15)）：来自 `xl/drawings/vmlDrawing*.vml` 的 `ClientData`；`linked_cell` 解析为 `Sheet!A1` 并计入 `recognized`；注释型 `ClientData(Note)` 已排除 |
-| **模拟运算表 `dataTable`** | **当前分支已采集**（本地任务 `LOCAL-DATA-TABLE`，见 [PR #15](https://github.com/ferryhe/excel_to_act/pull/15)）：存于单元格 `<f t="dataTable" ref r1 r2>`，openpyxl 会**丢掉公式文本**且 `str(cell.value)` 会损坏该格，故走 XML 直读；产出 `data_table` 范围对象 + 输入格 |
+| **表单控件 `linkedCell`**（`vmlDrawing` + `ctrlProps`） | Step 1 会从 `xl/drawings/vmlDrawing*.vml` 提取有绑定的 `ClientData`。只有每个 shape 都有一个受支持且已绑定的 `ClientData` 时，该 VML 部件才算非 opaque；Note/Pict、未绑定或缺少 `ClientData`，以及其它 VML 图形对象会使整个部件标为 opaque。混合部件中的受支持绑定仍会提取，原部件会逐字节保存 |
+| **模拟运算表 `dataTable`** | Step 1 会从 worksheet XML 直接读取 `<f t="dataTable" ref r1 r2>`，并生成 `data_table` 范围对象和输入格事实。它保存源属性，但不会计算公式或重新计算模拟运算结果 |
 
 ### G. 代码与自动化层
 
@@ -314,10 +314,10 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 |---|---|---|---|
 | **VBA 模块源码** | `xl/vbaProject.bin` | 依赖库 `oletools`(olevba) `>=0.60.2`，BSD-3（核实于 2026-10-02，PyPI 最新 0.60.2 / 2024-07-02） | **当前分支已实现提取路径**（本地任务 `LOCAL-VBA`，见 [PR #15](https://github.com/ferryhe/excel_to_act/pull/15)）：`extract_vba_project` 产出模块源码 + 过程名；未装 oletools 则降级 warning，不崩 |
 | **VBA ↔ 单元格 依赖边** | 上一步源码 | 自研 `extract_vba_cell_links` → `build_vba_edges` | **已采集**：`FormulaGraph` 追加 `relationship="vba_ref"` 边，与公式图同一节点命名空间（新增 `GraphNodeKind.vba` 与 `GraphEdge.confidence`） |
-| **Excel 4.0 宏（XLM）** | `xl/macrosheets/` | 依赖库 oletools `olevba`（XLM 走另一入口，需可选依赖 `XLMMacroDeobfuscator`） | **静默丢失** |
+| **Excel 4.0 宏（XLM）** | `xl/macrosheets/` | 依赖库 oletools `olevba`（XLM 走另一入口，需可选依赖 `XLMMacroDeobfuscator`） | Step 1 会记录对应包部件为 opaque 并逐字节保存；不会提取宏内容 |
 | **DDE 链接** | — | 依赖库 oletools `msodde` | **静默丢失** |
 | **LAMBDA / 自定义名称函数** | defined names | 自研 `extract_names` | 名称已采集，判定缺失 |
-| **RTD / 加载项** | `volatileDependencies.xml`、`webExtensions/` | 自研 `scan_package` | **静默丢失** |
+| **RTD / 加载项** | `volatileDependencies.xml`、`webExtensions/` | 自研 `scan_package` | Step 1 会记录对应包部件为 opaque 并逐字节保存；不会解释加载项行为 |
 
 **为什么 VBA 必须提取源码**：精算老模型普遍用 `Range("B7")` / `Names("Mort_qx")` 驱动计算，这类依赖边在公式图里完全不可见，只扫公式会得到一张**断裂的依赖图**（`graph/builder.py` 目前完全不看 VBA）。
 
@@ -332,13 +332,13 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 |---|---|
 | 批注 | 已采集 |
 | 数据验证下拉来源 | 已采集 `formula1`，未解析成区域 |
-| 模拟运算表 | 见 F 组（**静默丢失**） |
+| 模拟运算表 | Step 1 按 F 组所述采集；不会重新计算结果 |
 | 分组/大纲、Excel 场景管理器 | **静默丢失** |
 | Solver / Goal Seek（存于 `Solver_*` 隐藏名称 + VBA） | **静默丢失** |
 
-### I. 当前**静默丢失**的部件总表（最高优先级，直接违反不变量）
+### I. 被记录为 opaque 的包部件
 
-`OPAQUE_MARKERS` 原有 8 个 token。以下部件不在其列，因此既不采集也不标 opaque，直接消失。**已补齐 token**（`ingest/ooxml_package.py`），现共 18 个：
+`OPAQUE_MARKERS` 现在包含以下部件。Step 1 会将它们记录为 opaque 并保存其字节；这些标记不表示已经做了语义解析。它们不是当前的静默丢失项：
 
 ```text
 xl/model/                     Power Pivot 数据模型（ABF 二进制）
@@ -352,14 +352,13 @@ xl/volatileDependencies.xml   RTD
 webExtensions/                Office 加载项
 ```
 
-另有两项**不应**标 opaque，而应直接采集：
+文档属性应直接采集，而不应标为 opaque：
 
 ```text
 docProps/*.xml                文档属性（可解析）
-<dataTable>                   模拟运算表（在 worksheet XML 内，openpyxl 丢弃）
 ```
 
-**后续动作**：标 opaque 只保证"不丢"，不保证"可用"。按 A–H 各组把高价值项（缓存值、`dataTable`、`ctrlProps`、VBA）从 opaque 逐个升级为已采集。
+模拟运算表已如 F 组所述从 worksheet XML 采集。标记为 opaque 只保证保存，不保证可用。后续可继续补充 A–H 中剩余的语义解析。Step 1 已读取公式缓存值和受支持的 VML 控件绑定。
 
 ### J. 不可解析（记为 opaque，不尝试解释）
 

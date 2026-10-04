@@ -237,8 +237,8 @@ The top of `handoff.md` sketches the workbook (sheets / cells / formula cells / 
 | Label | Meaning |
 |---|---|
 | `collected` | Present in `inventory.json` |
-| `opaque` | Recorded but unparsed (in `unsupported_features`, satisfying the invariant) |
-| **silent omission** | Neither collected nor marked — **violates the hard constraint and must be addressed** (see group I) |
+| `opaque` | Explicitly recorded as unparsed or unsupported; Step 1 also preserves package bytes |
+| **silent omission** | Neither collected nor explicitly classified as opaque — violates the hard constraint |
 
 ### A. Package and file layer
 
@@ -258,9 +258,9 @@ The top of `handoff.md` sketches the workbook (sheets / cells / formula cells / 
 | Sheet name/order/visibility/dimensions | Collected |
 | `calcMode` (manual/auto) | Collected (`WorkbookManifest.calc_mode`) |
 | Other `calcPr` fields (iterate / iterateCount / iterateDelta / calcId / fullCalcOnLoad) | **Silent omission** — iterative settings directly determine how circular references are solved |
-| `xl/calcChain.xml` (last calculation order) | **Silent omission** |
-| Defined names | Collected **at workbook scope only**; sheet-level names (`ws.defined_names`) and the `hidden` flag are not collected |
-| LAMBDA / custom functions defined in names | Name bodies are collected, but **LAMBDA detection is missing**, as is reference parsing within name formulas |
+| `xl/calcChain.xml` (last calculation order) | Opaque package part recorded and byte-preserved by Step 1; calculation order is not interpreted |
+| Defined names | Workbook- and sheet-scoped declarations are collected; range destinations expand to bare A1 addresses (one inventory row per area) while inventory metadata retains declaration scope. Step 1's source census counts each declaration once and keeps its raw name text. The `hidden` flag is not collected |
+| LAMBDA / custom functions defined in names | Step 1 preserves raw name text, but **LAMBDA detection is missing**, as is reference parsing within name formulas |
 
 ### C. Cell content layer
 
@@ -270,7 +270,7 @@ The top of `handoff.md` sketches the workbook (sheets / cells / formula cells / 
 | number_format, data_type, style_id | Collected |
 | Blank cells | **Not collected**: `extractor.py:55` immediately executes `continue`; `CellKind.blank` is unused (either collect blanks or remove the enum value) |
 | Cached values (`data_only=True`) | **Collected and accepted** ([PR #15](https://github.com/ferryhe/excel_to_act/pull/15) and [PR #16](https://github.com/ferryhe/excel_to_act/pull/16) are merged; [Issue #4](https://github.com/ferryhe/excel_to_act/issues/4) is closed): `cached_value` + `cached_value_available`; `missing_cached_values` warning when the whole workbook lacks cached results. Foundation for a reconciliation oracle |
-| `cell.formula_attributes` | **Silent omission**: shared-formula `si`/`ref`, array-formula `t=array`/`ref`, dynamic-array spill. Formula **expansion** is handled by openpyxl and is not a gap; array-formula **text** is now preserved instead of becoming an object repr via `str()`, but `ref` and spill ranges are still missing |
+| `cell.formula_attributes` | Step 1 preserves raw formula text and the complete `<f>` attribute map in `source_facts.json` and `CellInventory`, including shared, array, and `dataTable` attributes. Legacy `inspect` does not populate these raw formula facts; nullable presence and date fields remain unknown. Preserving the attributes does not interpret dynamic-array spill behavior |
 | Rich-text runs, phonetic text | **Silent omission** |
 
 ### D. Styles and presentation layer (key signals for identifying inputs/outputs)
@@ -293,8 +293,8 @@ The top of `handoff.md` sketches the workbook (sheets / cells / formula cells / 
 | Excel Tables (ListObjects) | `ref`+`name` collected; **column definitions, totalsRow, sort/filter states are not collected** |
 | Pivot definitions + cached records | Opaque (`/pivot` is in `OPAQUE_MARKERS`) |
 | `xl/connections.xml` | Opaque (`/connections` is included) |
-| Slicers / timelines (`xl/slicers/`, `xl/timelines/`) | **Silent omission** |
-| Power Query `DataMashup` | **Silent omission** |
+| Slicers / timelines (`xl/slicers/`, `xl/timelines/`) | Recorded as opaque and byte-preserved by Step 1; semantic content is unparsed |
+| Power Query `DataMashup` | `customXml/` parts are recorded as opaque and byte-preserved by Step 1; M code is unparsed |
 
 ### F. Graphics and controls layer
 
@@ -303,8 +303,8 @@ The top of `handoff.md` sketches the workbook (sheets / cells / formula cells / 
 | Charts (including `SERIES()` references) | Opaque (`/charts/` is included) |
 | Images / shapes / text-box cell links | Opaque (`/drawings/`, `/media/` are included) |
 | Embedded OLE objects | Opaque (`/embeddings/` is included) |
-| **Form-control `linkedCell`** (`vmlDrawing` + `ctrlProps`) | **VML bindings collected on the current branch** (local task `LOCAL-FORM-CONTROLS`; see [PR #15](https://github.com/ferryhe/excel_to_act/pull/15)): from `ClientData` in `xl/drawings/vmlDrawing*.vml`; `linked_cell` is resolved to `Sheet!A1` and counted in `recognized`; comment-type `ClientData(Note)` is excluded |
-| **What-if data tables `dataTable`** | **Collected on the current branch** (local task `LOCAL-DATA-TABLE`; see [PR #15](https://github.com/ferryhe/excel_to_act/pull/15)): stored in cell `<f t="dataTable" ref r1 r2>`; openpyxl **drops formula text** and `str(cell.value)` damages the cell, so XML is read directly; produces a `data_table` range object + input cells |
+| **Form-control `linkedCell`** (`vmlDrawing` + `ctrlProps`) | Step 1 extracts bound `ClientData` links from `xl/drawings/vmlDrawing*.vml`. A VML part is non-opaque only when every shape has one supported bound `ClientData`; Note/Pict, unbound or missing `ClientData`, and other VML shape objects make the whole part opaque. Supported bindings in a mixed part are still extracted, and the original part is byte-preserved |
+| **What-if data tables `dataTable`** | Step 1 reads `<f t="dataTable" ref r1 r2>` directly from worksheet XML and emits a `data_table` range object plus input-cell facts. It preserves source attributes; formulas and table results are not evaluated or recalculated |
 
 ### G. Code and automation layer
 
@@ -314,10 +314,10 @@ The `Tool` column distinguishes dependency libraries from in-house parsers.
 |---|---|---|---|
 | **VBA module source** | `xl/vbaProject.bin` | Dependency `oletools` (olevba) `>=0.60.2`, BSD-3 (verified 2026-10-02; latest PyPI version 0.60.2 / 2024-07-02) | **Extraction path implemented on the current branch** (local task `LOCAL-VBA`; see [PR #15](https://github.com/ferryhe/excel_to_act/pull/15)): `extract_vba_project` produces module source + procedure names; missing oletools degrades to a warning without crashing |
 | **VBA ↔ cell dependency edges** | Source from the previous step | In-house `extract_vba_cell_links` → `build_vba_edges` | **Collected**: `FormulaGraph` adds `relationship="vba_ref"` edges in the formula graph's node namespace (new `GraphNodeKind.vba` and `GraphEdge.confidence`) |
-| **Excel 4.0 macros (XLM)** | `xl/macrosheets/` | Dependency oletools `olevba` (XLM uses another entry point and needs the optional `XLMMacroDeobfuscator` dependency) | **Silent omission** |
+| **Excel 4.0 macros (XLM)** | `xl/macrosheets/` | Dependency oletools `olevba` (XLM uses another entry point and needs the optional `XLMMacroDeobfuscator` dependency) | Opaque package part recorded and byte-preserved by Step 1; macro content is not extracted |
 | **DDE links** | — | Dependency oletools `msodde` | **Silent omission** |
 | **LAMBDA / custom named functions** | Defined names | In-house `extract_names` | Names collected; detection missing |
-| **RTD / add-ins** | `volatileDependencies.xml`, `webExtensions/` | In-house `scan_package` | **Silent omission** |
+| **RTD / add-ins** | `volatileDependencies.xml`, `webExtensions/` | In-house `scan_package` | Opaque package parts recorded and byte-preserved by Step 1; add-in behavior is not interpreted |
 
 **Why VBA source must be extracted**: legacy actuarial models commonly drive calculations through `Range("B7")` / `Names("Mort_qx")`. These dependencies are invisible in a formula-only graph, producing a **disconnected dependency graph** (`graph/builder.py` currently does not inspect VBA).
 
@@ -332,13 +332,13 @@ Implementation constraints (fixed to avoid rework):
 |---|---|
 | Comments | Collected |
 | Data-validation dropdown sources | `formula1` collected; not resolved to ranges |
-| What-if data tables | See group F (**silent omission**) |
+| What-if data tables | Collected by Step 1 as described in group F; results are not recalculated |
 | Grouping/outlines, Excel Scenario Manager | **Silent omission** |
 | Solver / Goal Seek (stored in `Solver_*` hidden names + VBA) | **Silent omission** |
 
-### I. Current **silent omissions** by part (highest priority; directly violate the invariant)
+### I. Package parts recorded as opaque
 
-`OPAQUE_MARKERS` originally contained 8 markers. The following parts were absent, so they were neither collected nor marked opaque and silently disappeared. **Markers have been added** in `ingest/ooxml_package.py`, bringing the total to 18:
+`OPAQUE_MARKERS` now includes the following parts. Step 1 records them as opaque and preserves their bytes; the markers do not imply semantic parsing. They are not current silent omissions:
 
 ```text
 xl/model/                     Power Pivot data model (ABF binary)
@@ -352,14 +352,13 @@ xl/volatileDependencies.xml   RTD
 webExtensions/                Office add-ins
 ```
 
-Two additional items **should be collected directly**, rather than marked opaque:
+Document properties should be collected directly rather than marked opaque:
 
 ```text
 docProps/*.xml                Document properties (parseable)
-<dataTable>                   What-if data tables (in worksheet XML, dropped by openpyxl)
 ```
 
-**Next action**: marking content opaque guarantees preservation, but does not guarantee usability. Upgrade high-value items in groups A–H (cached values, `dataTable`, `ctrlProps`, VBA) from opaque to collected, one by one.
+What-if data tables are already collected from worksheet XML as described in group F. Opaque recording guarantees preservation, but does not guarantee usability. Continue implementing the remaining semantic gaps in groups A–H as needed. Step 1 already reads cached formula results and supported VML control bindings.
 
 ### J. Unparseable content (record as opaque without interpretation)
 

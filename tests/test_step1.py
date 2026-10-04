@@ -163,6 +163,62 @@ def _append_relationship(path: Path, rels_part: str, attributes: dict[str, str])
     _rewrite_package(path, replacements={rels_part: ET.tostring(root, encoding="utf-8", xml_declaration=True)})
 
 
+def _make_vml_book(path: Path, vml_xml: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook = Workbook()
+    workbook.active.title = "Controls"
+    workbook.active["B2"] = 1
+    workbook.save(path)
+    workbook.close()
+    with zipfile.ZipFile(path) as package:
+        content_types = ET.fromstring(package.read("[Content_Types].xml"))
+    if not any(item.attrib.get("Extension") == "vml" for item in content_types):
+        ET.SubElement(
+            content_types,
+            "{http://schemas.openxmlformats.org/package/2006/content-types}Default",
+            {"Extension": "vml", "ContentType": "application/vnd.openxmlformats-officedocument.vmlDrawing"},
+        )
+    relationships = ET.Element(PKG_REL + "Relationships")
+    ET.SubElement(
+        relationships,
+        PKG_REL + "Relationship",
+        {
+            "Id": "rIdVml",
+            "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing",
+            "Target": "../drawings/vmlDrawing1.vml",
+        },
+    )
+    _rewrite_package(
+        path,
+        replacements={
+            "[Content_Types].xml": ET.tostring(content_types, encoding="utf-8", xml_declaration=True),
+        },
+        additions={
+            "xl/worksheets/_rels/sheet1.xml.rels": ET.tostring(relationships, encoding="utf-8", xml_declaration=True),
+            "xl/drawings/vmlDrawing1.vml": vml_xml,
+        },
+    )
+    return path
+
+
+def _vml_control(object_type: str = "Checkbox", binding: str = "<x:FmlaLink>Controls!$B$2</x:FmlaLink>") -> bytes:
+    return (
+        '<v:shape id="_x0000_s1025"><x:ClientData ObjectType="'
+        + object_type
+        + '">'
+        + binding
+        + "</x:ClientData></v:shape>"
+    ).encode("utf-8")
+
+
+def _vml_drawing(*shapes: bytes) -> bytes:
+    return (
+        '<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:x="urn:schemas-microsoft-com:office:excel">'.encode()
+        + b"".join(shapes)
+        + b"</xml>"
+    )
+
+
 def _make_typed_date_book(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
@@ -408,7 +464,7 @@ def test_unreadable_source_hash_is_one_failed_batch_entry_and_check_is_structure
     readable = next(entry for entry in batch["entries"] if entry["relative_path"] == "b-readable.xlsx")
     assert failed["sha256"] is None and failed["status"] == "fail"
     assert failed["diagnostics"][0]["code"] == "source_hash_failed"
-    assert readable["status"] == "pass"
+    assert readable["status"] == "partial"
     assert readable["metrics_state"] == "measured"
     assert failed["metrics_state"] == "unavailable"
     assert failed["metrics"]["logical_objects_total"] is None
@@ -430,14 +486,14 @@ def test_unreadable_source_hash_is_one_failed_batch_entry_and_check_is_structure
             unreadable_after_convert = execute_tool("step1.check", readable_run)
     assert unreadable_check["status"] == "fail"
     assert any(item["code"] == "source_hash_unavailable" for item in unreadable_check["diagnostics"])
-    assert readable_check["status"] == "pass"
+    assert readable_check["status"] == "partial"
     assert unreadable_after_convert["status"] == "fail"
     assert any(item["code"] == "source_hash_unreadable" for item in unreadable_after_convert["diagnostics"])
 
 
 def test_raw_facts_normalized_fidelity_and_persisted_recovery(tmp_path: Path) -> None:
     source, run, converted = _convert_single(tmp_path)
-    assert converted["status"] == "pass"
+    assert converted["status"] == "partial"
     facts = _read(run / "source_facts.json")
     assert facts["date_system"] == "1904"
     cells = {(cell["sheet"], cell["address"]): cell for cell in facts["cells"]}
@@ -470,7 +526,7 @@ def test_raw_facts_normalized_fidelity_and_persisted_recovery(tmp_path: Path) ->
     assert {(item["name"], item["metadata"]["scope"]) for item in names} == {
         ("Rate", "workbook"), ("Rate", "Facts")
     }
-    assert execute_tool("step1.check", run)["status"] == "pass"
+    assert execute_tool("step1.check", run)["status"] == "partial"
     cell = next(cell for cell in inventory["sheets"][0]["cells"] if cell["address"] == "B2")
     cell["value"] = 7
     _write(run / "inventory.json", inventory)
@@ -481,10 +537,10 @@ def test_raw_facts_normalized_fidelity_and_persisted_recovery(tmp_path: Path) ->
     assert any(item["code"] == "normalized_fidelity_mismatch" for item in broken["diagnostics"])
 
     repaired = execute_tool("inventory.extract", run)
-    assert repaired["status"] == "pass"
+    assert repaired["status"] == "partial"
     assert repaired["attempt"] == 1
     assert _read(run / "attempt_history.json")["attempts"][0]["improved"] is True
-    assert execute_tool("step1.check", run)["status"] == "pass"
+    assert execute_tool("step1.check", run)["status"] == "partial"
 
 
 def test_legacy_inventory_source_facts_remain_unknown_until_step1_measures(tmp_path: Path) -> None:
@@ -546,7 +602,7 @@ def test_shared_string_index_zero_and_mixed_batch_failure_are_handled_truthfully
     output = tmp_path / "converted"
     result = convert_directory(raw, output)
     entries = {entry["relative_path"]: entry for entry in result["entries"]}
-    assert entries["valid.xlsx"]["status"] == "pass"
+    assert entries["valid.xlsx"]["status"] == "partial"
     assert entries["invalid.xlsx"]["status"] == "fail"
     assert entries["invalid.xlsx"]["metrics_state"] == "unavailable"
     bad_run = output / entries["invalid.xlsx"]["run_path"]
@@ -650,7 +706,7 @@ def test_visible_shared_and_inline_text_ignores_phonetics_and_preserves_raw_xml(
     original_shared, original_sheet = _add_phonetic_string_cases(source)
     converted = convert_directory(source.parent, tmp_path / "converted")
     run = tmp_path / "converted" / converted["entries"][0]["run_path"]
-    assert converted["status"] == "pass"
+    assert converted["status"] == "partial"
 
     facts = _read(run / "source_facts.json")
     values = {cell["address"]: cell for cell in facts["cells"]}
@@ -682,14 +738,14 @@ def test_visible_shared_and_inline_text_ignores_phonetics_and_preserves_raw_xml(
     assert broken["status"] == "fail"
     assert broken["metrics_state"] == "measured"
     assert any(item["code"] == "normalized_fidelity_mismatch" for item in broken["diagnostics"])
-    assert execute_tool("inventory.extract", run)["status"] == "pass"
+    assert execute_tool("inventory.extract", run)["status"] == "partial"
     assert finalize_run(run)["final_output"]
 
 
 def test_missing_object_opaque_part_and_fresh_finalization_gate(tmp_path: Path) -> None:
     source, run, converted = _convert_single(tmp_path, custom_part=True)
     assert converted["status"] == "partial"
-    assert converted["entries"][0]["metrics"]["opaque_parts"] == 1
+    assert converted["entries"][0]["metrics"]["opaque_parts"] == 2
     quality = execute_tool("step1.check", run)
     assert "data_table" in quality["coverage_scope"]["logical_object_kinds"]
     assert "style-only blank cells do not" in quality["coverage_scope"]["cell_unit"]
@@ -765,7 +821,7 @@ def test_final_link_is_retained_only_for_hash_valid_promoted_payloads(tmp_path: 
         _write(promotion_path, promotion)
 
     checked = execute_tool("step1.check", run)
-    assert checked["status"] == "pass"
+    assert checked["status"] == "partial"
     assert _read(run / "handoff.json")["final_output"] is None
     assert output.exists()  # An invalid link is cleared; the previous final folder is preserved.
 
@@ -780,7 +836,7 @@ def test_final_link_survives_an_unrecorded_sidecar_in_final_directory(tmp_path: 
 
     checked = execute_tool("step1.check", run)
 
-    assert checked["status"] == "pass"
+    assert checked["status"] == "partial"
     assert _read(run / "handoff.json")["final_output"] == final["final_output"]
     assert note.read_text(encoding="utf-8") == "Review annotation\n"
 
@@ -793,7 +849,7 @@ def test_final_link_survives_output_relocation_when_payload_hashes_match(tmp_pat
     moved_run = moved_output / converted["entries"][0]["run_path"]
 
     checked = execute_tool("step1.check", moved_run)
-    assert checked["status"] == "pass"
+    assert checked["status"] == "partial"
     assert _read(moved_run / "handoff.json")["final_output"] == final["final_output"]
 
 
@@ -863,6 +919,159 @@ def test_legacy_manifest_counts_workbook_and_sheet_scoped_name_declarations(tmp_
 
     manifest = OpenpyxlWorkbookReader().read_manifest(source)
     assert manifest.named_ranges_count == 4
+
+
+def test_step1_expands_local_defined_name_destinations_without_duplicate_identities(tmp_path: Path) -> None:
+    workbook = Workbook()
+    facts = workbook.active
+    facts.title = "Facts"
+    facts["A1"] = 1
+    other = workbook.create_sheet("Other Data")
+    other["C2"] = 2
+    workbook.defined_names.add(DefinedName("GlobalMulti", attr_text="'Facts'!$A$1,'Other Data'!$C$2"))
+    facts.defined_names.add(DefinedName("Shared", attr_text="'Facts'!$A$1"))
+    other.defined_names.add(DefinedName("Shared", attr_text="'Other Data'!$C$2"))
+    facts.defined_names.add(DefinedName("LocalMulti", attr_text="'Facts'!$A$1,'Other Data'!$C$2"))
+    facts.defined_names.add(DefinedName("LocalCross", attr_text="'Other Data'!$C$2"))
+    facts.defined_names.add(DefinedName("LocalConstant", attr_text="=42"))
+    source = tmp_path / "local-names.xlsx"
+    workbook.save(source)
+    workbook.close()
+
+    manifest = OpenpyxlWorkbookReader().read_manifest(source)
+    scan = scan_step1_source(source)
+    assert manifest.named_ranges_count == 6
+    declarations = [item for item in scan["objects"] if item["kind"] == "defined_name"]
+    assert len(declarations) == 6
+    assert {item["details"]["formula"] for item in declarations} == {
+        "'Facts'!$A$1,'Other Data'!$C$2",
+        "'Facts'!$A$1",
+        "'Other Data'!$C$2",
+        "=42",
+    }
+
+    converted = convert_directory(source.parent, tmp_path / "converted")
+    run = tmp_path / "converted" / converted["entries"][0]["run_path"]
+    inventory = _read(run / "inventory.json")
+    names = [item for item in inventory["workbook_ranges"] if item["kind"] == "defined_name"]
+    local = {
+        (item["name"], item["metadata"]["scope"], item["source_location"]["sheet_name"], item["address"])
+        for item in names
+        if item["metadata"]["scope"] != "workbook"
+    }
+    assert local == {
+        ("Shared", "Facts", "Facts", "$A$1"),
+        ("Shared", "Other Data", "Other Data", "$C$2"),
+        ("LocalMulti", "Facts", "Facts", "$A$1"),
+        ("LocalMulti", "Facts", "Other Data", "$C$2"),
+        ("LocalCross", "Facts", "Other Data", "$C$2"),
+        ("LocalConstant", "Facts", "Facts", "=42"),
+    }
+    assert len({item["source_identity"] for item in names if item["source_identity"]}) == 6
+    raw_declarations = [item for item in _read(run / "logical_objects.json") if item["kind"] == "defined_name"]
+    assert {(item["details"]["scope"], item["details"]["name"], item["details"]["formula"]) for item in raw_declarations} == {
+        ("workbook", "GlobalMulti", "'Facts'!$A$1,'Other Data'!$C$2"),
+        ("Facts", "Shared", "'Facts'!$A$1"),
+        ("Other Data", "Shared", "'Other Data'!$C$2"),
+        ("Facts", "LocalMulti", "'Facts'!$A$1,'Other Data'!$C$2"),
+        ("Facts", "LocalCross", "'Other Data'!$C$2"),
+        ("Facts", "LocalConstant", "=42"),
+    }
+    assert execute_tool("step1.check", run)["status"] == "pass"
+    assert finalize_run(run)["ready_for_next_step"] is True
+
+
+@pytest.mark.parametrize(
+    ("column", "end_column", "expected_address"),
+    [(7, 7, "G"), (7, 9, "G:I")],
+)
+def test_step1_column_layout_uses_full_excel_span_once_and_finalizes(
+    tmp_path: Path, column: int, end_column: int, expected_address: str
+) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Facts"
+    sheet["A1"] = 1
+    dimension = sheet.column_dimensions["G"]
+    dimension.min = column
+    dimension.max = end_column
+    dimension.width = 13
+    dimension.hidden = True
+    source = tmp_path / f"column-{column}-{end_column}.xlsx"
+    workbook.save(source)
+    workbook.close()
+
+    converted = convert_directory(source.parent, tmp_path / "converted")
+    run = tmp_path / "converted" / converted["entries"][0]["run_path"]
+    inventory = _read(run / "inventory.json")
+    column_scan = scan_step1_source(source)
+    source_columns = [item for item in column_scan["objects"] if item["kind"] == "column_layout"]
+    assert len(source_columns) == 1
+    assert source_columns[0]["details"]["address"] == expected_address
+    assert source_columns[0]["details"]["min"] == str(column)
+    assert source_columns[0]["details"]["max"] == str(end_column)
+    assert source_columns[0]["details"]["width"] == "13"
+    assert source_columns[0]["details"]["hidden"] is True
+    columns = [
+        item
+        for item in [*inventory["sheets"][0]["layout_objects"], *inventory["sheets"][0]["ranges"]]
+        if item["kind"] == "column_layout"
+    ]
+    assert len(columns) == 1
+    assert columns[0]["address"] == expected_address
+    assert columns[0]["metadata"]["hidden"] is True
+    assert columns[0]["metadata"]["width"] == 13
+    assert columns[0]["metadata"]["min"] == column
+    assert columns[0]["metadata"]["max"] == end_column
+    assert columns[0]["source_identity"]
+    assert execute_tool("step1.check", run)["status"] == "pass"
+    assert finalize_run(run)["ready_for_next_step"] is True
+
+
+@pytest.mark.parametrize(
+    ("shapes", "expected_controls", "opaque"),
+    [
+        ((_vml_control(),), 1, False),
+        ((_vml_control("Note"),), 0, True),
+        ((_vml_control("Pict"),), 0, True),
+        ((_vml_control(binding=""),), 0, True),
+        ((b'<v:shape id="_x0000_s1025"/>',), 0, True),
+        ((_vml_control(), _vml_control("Note")), 1, True),
+        ((_vml_control(), b'<v:rect id="_x0000_s1026"/>'), 1, True),
+    ],
+)
+def test_step1_vml_is_opaque_when_any_shape_is_unsupported(
+    tmp_path: Path, shapes: tuple[bytes, ...], expected_controls: int, opaque: bool
+) -> None:
+    source = _make_vml_book(tmp_path / "raw" / "vml.xlsx", _vml_drawing(*shapes))
+    source_scan = scan_step1_source(source)
+    part = source_scan["parts"]["xl/drawings/vmlDrawing1.vml"]
+    assert part["parsed"] is True
+    assert part["opaque"] is opaque
+    controls = [item for item in source_scan["objects"] if item["kind"] == "form_control"]
+    assert len(controls) == expected_controls
+
+    output = tmp_path / "converted"
+    converted = convert_directory(source.parent, output)
+    run = output / converted["entries"][0]["run_path"]
+    package_part = next(item for item in _read(run / "package_parts.json") if item["name"] == "xl/drawings/vmlDrawing1.vml")
+    assert package_part["opaque"] is opaque
+    check = execute_tool("step1.check", run)
+    assert check["metrics"]["parsed_package_parts"] == sum(
+        name in source_scan["parsed_parts"] and not info["opaque"] for name, info in source_scan["parts"].items()
+    )
+    if opaque:
+        assert check["status"] == "partial"
+        assert any(item["code"] == "opaque_parts_preserved" for item in check["diagnostics"])
+        assert (run / package_part["preserved_path"]).read_bytes() == _vml_drawing(*shapes)
+        strict_output = tmp_path / "strict"
+        strict = convert_directory(source.parent, strict_output, allow_opaque=False)
+        strict_run = strict_output / strict["entries"][0]["run_path"]
+        assert finalize_run(strict_run)["final_output"] is None
+        assert any(item["code"] == "opaque_parts_blocked" for item in execute_tool("step1.check", strict_run)["diagnostics"])
+    else:
+        assert check["status"] == "pass"
+        assert finalize_run(run)["ready_for_next_step"] is True
 
 
 def test_identityless_projection_multiset_and_parent_ownership_are_checked(tmp_path: Path) -> None:
@@ -936,7 +1145,7 @@ def test_canonical_source_and_inventory_comparisons_distinguish_false_from_zero(
     mismatch = next(item for item in checked["metrics"]["fidelity_deviations"] if item["identity"] == zero["source_identity"])
     assert mismatch["fields"]["value"] == {"expected": 0, "actual": False}
     assert finalize_run(run)["final_output"] is None
-    assert execute_tool("inventory.extract", run)["status"] == "pass"
+    assert execute_tool("inventory.extract", run)["status"] == "partial"
 
     inventory = _read(run / "inventory.json")
     cached = next(cell for cell in inventory["sheets"][0]["cells"] if cell["address"] == "D2")
@@ -947,7 +1156,7 @@ def test_canonical_source_and_inventory_comparisons_distinguish_false_from_zero(
     assert checked["status"] == "fail"
     mismatch = next(item for item in checked["metrics"]["fidelity_deviations"] if item["identity"] == cached["source_identity"])
     assert mismatch["fields"]["cached_value"] == {"expected": 0, "actual": False}
-    assert execute_tool("inventory.extract", run)["status"] == "pass"
+    assert execute_tool("inventory.extract", run)["status"] == "partial"
 
     batch = convert_directory(source.parent, tmp_path / "facts-converted")
     run = tmp_path / "facts-converted" / batch["entries"][0]["run_path"]
@@ -959,7 +1168,7 @@ def test_canonical_source_and_inventory_comparisons_distinguish_false_from_zero(
     assert checked["status"] == "fail"
     assert any(item["code"] == "raw_source_facts_mismatch" for item in checked["diagnostics"])
     assert checked["next_tool"]["name"] == "source_facts.refresh"
-    assert execute_tool("source_facts.refresh", run)["status"] == "pass"
+    assert execute_tool("source_facts.refresh", run)["status"] == "partial"
 
     ledger = _read(run / "logical_objects.json")
     sheet_entry = next(item for item in ledger if item["kind"] == "sheet")
@@ -969,8 +1178,8 @@ def test_canonical_source_and_inventory_comparisons_distinguish_false_from_zero(
     assert checked["status"] == "fail"
     assert any(item["code"] == "logical_ledger_mismatch" for item in checked["diagnostics"])
     assert checked["next_tool"]["name"] == "source_facts.refresh"
-    assert execute_tool("source_facts.refresh", run)["status"] == "pass"
-    assert execute_tool("step1.check", run)["status"] == "pass"
+    assert execute_tool("source_facts.refresh", run)["status"] == "partial"
+    assert execute_tool("step1.check", run)["status"] == "partial"
 
 
 def test_unvisited_relationship_parts_are_opaque_and_preserved(tmp_path: Path) -> None:
@@ -1045,7 +1254,7 @@ def test_missing_internal_relationship_targets_fail_mixed_batch_and_never_finali
     entries = {entry["relative_path"]: entry for entry in batch["entries"]}
     assert batch["status"] == "fail"
     assert batch["metrics"]["input_count"] == 5
-    assert entries["valid.xlsx"]["status"] == "pass"
+    assert entries["valid.xlsx"]["status"] == "partial"
     for filename, rels_part, _ in cases:
         entry = entries[filename]
         assert entry["status"] == "fail"
@@ -1138,7 +1347,7 @@ def test_out_of_range_local_defined_name_fails_but_valid_scopes_remain(tmp_path:
     assert _read(invalid_run / "handoff.json")["ready_for_next_step"] is False
     assert finalize_run(invalid_run)["final_output"] is None
 
-    assert entries["valid-scopes.xlsx"]["status"] == "pass"
+    assert entries["valid-scopes.xlsx"]["status"] == "partial"
     valid_run = tmp_path / "converted" / entries["valid-scopes.xlsx"]["run_path"]
     valid_names = [item for item in _read(valid_run / "inventory.json")["workbook_ranges"] if item["kind"] == "defined_name"]
     assert {(item["name"], item["metadata"]["scope"]) for item in valid_names} == {
@@ -1161,8 +1370,8 @@ def test_package_part_location_mismatch_is_repaired_and_gated(tmp_path: Path) ->
     assert any(item["code"] == "package_parts_mismatch" for item in checked["diagnostics"])
     refused = finalize_run(run)
     assert refused["status"] == "fail" and refused["final_output"] is None
-    assert execute_tool("package.preserve", run)["status"] == "pass"
-    assert execute_tool("step1.check", run)["status"] == "pass"
+    assert execute_tool("package.preserve", run)["status"] == "partial"
+    assert execute_tool("step1.check", run)["status"] == "partial"
     repaired = next(part for part in _read(package_path) if part["name"] == "docProps/app.xml")
     assert repaired["source_location"] == {
         "ooxml_part": "docProps/app.xml",
@@ -1426,9 +1635,9 @@ def test_duplicate_candidate_identities_block_finalize_and_offer_real_repairs(tm
         assert not list((run.parents[5] / "final").rglob("promotion.json"))
 
         repaired = runner.invoke(app, ["step1", "tool", repair_tool, "--run", str(run)])
-        assert repaired.exit_code == 0 and json.loads(repaired.output)["status"] == "pass"
+        assert repaired.exit_code == 0 and json.loads(repaired.output)["status"] == "partial"
         checked_again = runner.invoke(app, ["step1", "check", "--run", str(run)])
-        assert checked_again.exit_code == 0 and json.loads(checked_again.output)["status"] == "pass"
+        assert checked_again.exit_code == 0 and json.loads(checked_again.output)["status"] == "partial"
 
 
 def test_invalid_candidate_collection_shapes_offer_real_repairs(tmp_path: Path) -> None:
@@ -1450,8 +1659,8 @@ def test_invalid_candidate_collection_shapes_offer_real_repairs(tmp_path: Path) 
         assert not list((run.parents[5] / "final").rglob("promotion.json"))
 
         repaired = execute_tool(repair_tool, run)
-        assert repaired["status"] == "pass"
-        assert execute_tool("step1.check", run)["status"] == "pass"
+        assert repaired["status"] == "partial"
+        assert execute_tool("step1.check", run)["status"] == "partial"
 
 
 def test_malformed_source_facts_candidate_returns_json_and_is_not_promoted(tmp_path: Path) -> None:
@@ -1604,7 +1813,7 @@ def test_manifest_repair_success_is_recorded_as_a_cumulative_attempt(tmp_path: P
 
     repaired = execute_tool("manifest.read", run)
     history = _read(run / "attempt_history.json")
-    assert repaired["status"] == "pass"
+    assert repaired["status"] == "partial"
     assert repaired["attempt"] == 1 and repaired["attempt_limit"] == 3
     assert history["attempts"][0]["tool"] == "manifest.read"
     assert history["attempts"][0]["improved"] is True
@@ -1699,7 +1908,7 @@ def test_one_no_progress_attempt_still_allows_manifest_repair(tmp_path: Path) ->
     assert failed["status"] == "error" and failed["attempt"] == 1
     assert checked["recovery_stopped"] is False
     assert checked["retryable"] is True and checked["next_tool"]["name"] == "manifest.read"
-    assert repaired["status"] == "pass" and repaired["attempt"] == 2
+    assert repaired["status"] == "partial" and repaired["attempt"] == 2
     assert history["attempts"][0]["no_progress_count"] == 1
     assert history["attempts"][1]["improved"] is True
     assert history["attempts"][1]["no_progress_count"] == 0
