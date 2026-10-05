@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from excel_to_act.schemas import Step2ArtifactRef, Step2Index, Step2IndexEntry
+from excel_to_act.schemas import SCHEMA_VERSION, Step2ArtifactRef, Step2Index, Step2IndexEntry
+from excel_to_act.store.local_store import _MODEL_BY_FILE
 
 _INDEX_NAME = "index.json"
 _SUMMARY_NAME = "INDEX.md"
@@ -16,6 +17,22 @@ _DEFAULT_OUT = Path("output/step2_index")
 
 def _diagnostic(code: str, message: str, *, source_id: str | None = None) -> dict[str, Any]:
     return {"code": code, "severity": "error", "message": message, "source_id": source_id}
+
+
+def _artifact_ref_diagnostic(
+    code: str,
+    message: str,
+    source_id: str,
+    ref: Any = None,
+) -> dict[str, Any]:
+    diagnostic = _diagnostic(code, message, source_id=source_id)
+    diagnostic["category"] = "step2_artifact_reference"
+    if isinstance(ref, dict):
+        if isinstance(ref.get("name"), str):
+            diagnostic["artifact"] = ref["name"]
+        if isinstance(ref.get("path"), str):
+            diagnostic["path"] = ref["path"]
+    return diagnostic
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -115,26 +132,34 @@ def _artifact_refs(
 ) -> list[Step2ArtifactRef]:
     refs = handoff.get("artifacts", [])
     if not isinstance(refs, list):
-        diagnostics.append(_diagnostic("artifact_refs_invalid", "Source handoff artifacts must be a list.", source_id=source_id))
+        diagnostics.append(_artifact_ref_diagnostic("artifact_refs_invalid", "Source handoff artifacts must be a list.", source_id))
         return []
     base = handoff.get("artifact_paths_relative_to") or handoff.get("run_path")
     if refs and not isinstance(base, str):
-        diagnostics.append(_diagnostic("artifact_base_missing", "Source handoff has artifacts but no artifact_paths_relative_to or run_path.", source_id=source_id))
+        diagnostics.extend(
+            _artifact_ref_diagnostic(
+                "artifact_base_missing",
+                "Source handoff has artifacts but no artifact_paths_relative_to or run_path.",
+                source_id,
+                ref,
+            )
+            for ref in refs
+        )
         return []
 
     result: list[Step2ArtifactRef] = []
     for ref in refs:
         if not isinstance(ref, dict):
-            diagnostics.append(_diagnostic("artifact_ref_invalid", "Artifact reference must be an object.", source_id=source_id))
+            diagnostics.append(_artifact_ref_diagnostic("artifact_ref_invalid", "Artifact reference must be an object.", source_id))
             continue
         name, path, digest = ref.get("name"), ref.get("path"), ref.get("sha256")
         if not all(isinstance(item, str) and item for item in (name, path, digest)):
-            diagnostics.append(_diagnostic("artifact_ref_incomplete", "Artifact reference needs string name, path, and sha256 fields.", source_id=source_id))
+            diagnostics.append(_artifact_ref_diagnostic("artifact_ref_incomplete", "Artifact reference needs string name, path, and sha256 fields.", source_id, ref))
             continue
         try:
             normalized = _artifact_path(root, base, path)
         except ValueError as exc:
-            diagnostics.append(_diagnostic("artifact_path_invalid", str(exc), source_id=source_id))
+            diagnostics.append(_artifact_ref_diagnostic("artifact_path_invalid", str(exc), source_id, ref))
             continue
         result.append(Step2ArtifactRef(name=name, path=normalized, sha256=digest))
     return result
@@ -157,6 +182,9 @@ def _entry_from_handoff(
     if not diagnostics:
         diagnostics = _items(fallback.get("diagnostics"))
     artifacts = _artifact_refs(root, handoff, source_id, diagnostics)
+    for item in diagnostics:
+        if item.get("category") == "step2_artifact_reference":
+            item["source_path"] = source_path
     ready = handoff.get("ready_for_next_step", fallback.get("ready_for_next_step", False)) is True
     metrics = handoff.get("metrics") if isinstance(handoff.get("metrics"), dict) else fallback.get("metrics", {})
     thresholds = handoff.get("thresholds") if isinstance(handoff.get("thresholds"), dict) else {}
@@ -304,6 +332,208 @@ def _error_result(handoff: Path, code: str, message: str) -> dict[str, Any]:
     }
 
 
+_ARTIFACT_REBUILDERS = {
+    "workbook_manifest.json": "manifest.read",
+    "inventory.json": "inventory.extract",
+    "dependency_graph.json": "graph.build",
+    "module_classification.json": "classify.rules",
+    "confirmation_template.json": "confirmation.build",
+    "handoff.json": "report.handoff",
+}
+
+
+def _first_source_location(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        location = value.get("source_location")
+        if isinstance(location, dict):
+            return location
+        for item in value.values():
+            found = _first_source_location(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _first_source_location(item)
+            if found:
+                return found
+    return None
+
+
+def validate_saved_index(index_path: Path, step1_root: Path) -> dict[str, Any]:
+    """Check a saved index and every referenced artifact using Step 1 contracts."""
+    root = step1_root.expanduser().resolve()
+    result = {
+        "tool": "step2.index.validate",
+        "status": "pass",
+        "source": {"index": str(index_path)},
+        "run_id": None,
+        "artifacts": [],
+        "metrics": {"entries_checked": 0, "artifacts_checked": 0, "input_handoff_checked": 0},
+        "diagnostics": [],
+        "retryable": False,
+        "next_tool": None,
+    }
+
+    def report(code: str, message: str, entry: Any, ref: Any, payload: Any = None) -> None:
+        name = getattr(ref, "name", "unknown")
+        candidate = _ARTIFACT_REBUILDERS.get(name) or _ARTIFACT_REBUILDERS.get(Path(getattr(ref, "path", "")).name)
+        diagnostic = _diagnostic(code, message, source_id=getattr(entry, "source_id", None))
+        diagnostic.update({
+            "source_path": getattr(entry, "source_path", None),
+            "artifact": name,
+            "path": getattr(ref, "path", None),
+        })
+        location = _first_source_location(payload)
+        if location:
+            diagnostic["source_location"] = location
+        if candidate and code in {"artifact_missing", "artifact_checksum_mismatch", "artifact_json_invalid", "artifact_schema_invalid", "artifact_identity_mismatch"}:
+            diagnostic["next_tool"] = candidate
+        result["diagnostics"].append(diagnostic)
+
+    try:
+        if not root.is_dir():
+            raise ValueError(f"Step 1 output root does not exist: {root}")
+        index = Step2Index.model_validate(_read_json(index_path.expanduser().resolve()))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        result["status"] = "blocked"
+        result["diagnostics"].append(_diagnostic("index_invalid", f"Cannot load saved Step 2 index: {exc}"))
+        return result
+
+    result["source"] = {"index": str(index_path.expanduser().resolve())}
+    result["run_id"] = index.batch_id
+    result["metrics"]["entries_checked"] = len(index.entries)
+
+    for entry in index.entries:
+        for item in entry.diagnostics:
+            if item.get("category") == "step2_artifact_reference":
+                result["diagnostics"].append({**item, "source_id": entry.source_id, "source_path": entry.source_path})
+
+    def input_handoff_error(code: str, message: str) -> None:
+        diagnostic = _diagnostic(code, message)
+        diagnostic.update({"artifact": "input_handoff", "path": index.input_handoff_path})
+        if len(index.entries) == 1:
+            diagnostic.update({"source_id": index.entries[0].source_id, "source_path": index.entries[0].source_path})
+        result["diagnostics"].append(diagnostic)
+
+    input_handoff = Path(index.input_handoff_path)
+    if input_handoff.is_absolute():
+        input_handoff_error("input_handoff_path_invalid", "Index input_handoff_path must be relative to --step1-root.")
+    else:
+        resolved_handoff = (root / input_handoff).resolve()
+        try:
+            relative_handoff = resolved_handoff.relative_to(root)
+        except ValueError:
+            input_handoff_error("input_handoff_path_invalid", "Index input_handoff_path resolves outside --step1-root.")
+        else:
+            if not resolved_handoff.is_file():
+                input_handoff_error("input_handoff_missing", f"Index input handoff does not exist: {relative_handoff.as_posix()}")
+            elif _hash_file(resolved_handoff) != index.input_handoff_sha256:
+                input_handoff_error("input_handoff_checksum_mismatch", f"SHA-256 does not match for input handoff {relative_handoff.as_posix()}.")
+            else:
+                try:
+                    _read_json(resolved_handoff)
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    input_handoff_error("input_handoff_json_invalid", f"Invalid JSON in input handoff {relative_handoff.as_posix()}: {exc}")
+                else:
+                    result["metrics"]["input_handoff_checked"] = 1
+    rebuilders: set[str] = set()
+    for entry in index.entries:
+        for ref in entry.artifacts:
+            result["metrics"]["artifacts_checked"] += 1
+            path = Path(ref.path)
+            if path.is_absolute():
+                report("artifact_path_invalid", "Artifact path must be relative to --step1-root.", entry, ref)
+                continue
+            resolved = (root / path).resolve()
+            try:
+                relative = resolved.relative_to(root)
+            except ValueError:
+                report("artifact_path_invalid", "Artifact path resolves outside --step1-root.", entry, ref)
+                continue
+            if not resolved.is_file():
+                report("artifact_missing", f"Referenced artifact does not exist: {relative.as_posix()}", entry, ref)
+                continue
+            if _hash_file(resolved) != ref.sha256:
+                payload = None
+                if resolved.suffix.lower() == ".json":
+                    try:
+                        payload = _read_json(resolved)
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        pass
+                report("artifact_checksum_mismatch", f"SHA-256 does not match for {relative.as_posix()}.", entry, ref, payload)
+                continue
+            if resolved.suffix.lower() != ".json":
+                continue
+            try:
+                payload = _read_json(resolved)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                report("artifact_json_invalid", f"Invalid JSON in {relative.as_posix()}: {exc}", entry, ref)
+                continue
+            artifact_name = Path(ref.name).name
+            model = _MODEL_BY_FILE.get(artifact_name) or _MODEL_BY_FILE.get(resolved.name)
+            handoff_reference = artifact_name == "handoff.json" or resolved.name == "handoff.json"
+            current_handoff = handoff_reference and isinstance(payload, dict) and payload.get("schema_version") == "step1.v1"
+            legacy_handoff = handoff_reference and isinstance(payload, dict) and payload.get("schema_version") == SCHEMA_VERSION and payload.get("artifact_type") == "handoff"
+            if handoff_reference and current_handoff:
+                try:
+                    _validate_source_handoff(payload)
+                except ValueError as exc:
+                    report("artifact_schema_invalid", f"Invalid step1.v1 handoff schema: {exc}", entry, ref, payload)
+                    continue
+            elif handoff_reference and not legacy_handoff:
+                report("artifact_schema_invalid", f"{ref.name} must use step1.v1 or the Phase 1 handoff contract.", entry, ref, payload)
+                continue
+            elif model:
+                try:
+                    model.model_validate(payload)
+                except ValueError as exc:
+                    report("artifact_schema_invalid", f"Invalid {ref.name} schema: {exc}", entry, ref, payload)
+                    continue
+            if isinstance(payload, dict):
+                checks: list[tuple[Any, Any, str]] = []
+                if artifact_name == "workbook_manifest.json" or resolved.name == "workbook_manifest.json":
+                    checks.append((payload.get("sha256"), entry.source_sha256, "source SHA-256"))
+                elif artifact_name == "source.json" or resolved.name == "source.json":
+                    checks.extend([
+                        (payload.get("sha256"), entry.source_sha256, "source SHA-256"),
+                        (payload.get("relative_path"), entry.source_path, "source path"),
+                        (payload.get("run_id"), entry.run_id, "run ID"),
+                    ])
+                elif artifact_name == "quality.json" or resolved.name == "quality.json":
+                    checks.append((payload.get("source_sha256"), entry.source_sha256, "source SHA-256"))
+                    checks.append((payload.get("run_id"), entry.run_id, "run ID"))
+                elif current_handoff:
+                    source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+                    checks.extend([
+                        (source.get("path"), entry.source_path, "source path"),
+                        (source.get("sha256"), entry.source_sha256, "source SHA-256"),
+                        (payload.get("run_id"), entry.run_id, "run ID"),
+                    ])
+                elif model:
+                    if "workbook_sha256" in model.model_fields:
+                        checks.append((payload.get("workbook_sha256"), entry.source_sha256, "source SHA-256"))
+                    if "run_id" in model.model_fields:
+                        checks.append((payload.get("run_id"), entry.run_id, "run ID"))
+                for actual, expected, label in checks:
+                    if isinstance(actual, str) and expected is not None and actual != expected:
+                        report(
+                            "artifact_identity_mismatch",
+                            f"Artifact {label} {actual!r} does not match source entry {expected!r}.",
+                            entry,
+                            ref,
+                            payload,
+                        )
+
+    for item in result["diagnostics"]:
+        if item.get("next_tool"):
+            rebuilders.add(item["next_tool"])
+    if result["diagnostics"]:
+        result["status"] = "blocked"
+        if len(rebuilders) == 1 and all(item.get("next_tool") for item in result["diagnostics"]):
+            result["next_tool"] = rebuilders.pop()
+    return result
+
+
 def build_index(handoff_path: Path, step1_root: Path, out_dir: Path = _DEFAULT_OUT) -> dict[str, Any]:
     """Index one ``step1.v1`` or ``step1.batch.v1`` handoff without copying artifacts."""
     root = step1_root.expanduser().resolve()
@@ -346,24 +576,29 @@ def build_index(handoff_path: Path, step1_root: Path, out_dir: Path = _DEFAULT_O
             diagnostics=index_diagnostics,
             metrics=metrics,
         )
-        index_file, summary_file = _write_index(out_dir.expanduser().resolve(), index)
+        out_dir = out_dir.expanduser().resolve()
+        index_file, summary_file = _write_index(out_dir, index)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return _error_result(handoff_path, "handoff_invalid", f"Cannot build Step 2 index: {exc}")
 
-    return {
+    validation = validate_saved_index(index_file, root)
+    index.validation_status = validation["status"]
+    index.diagnostics.extend(item for item in validation["diagnostics"] if item.get("category") != "step2_artifact_reference")
+    _write_index(out_dir, index)
+    validation.update({
         "tool": "step2.index",
-        "status": status,
+        "status": "blocked" if validation["status"] == "blocked" else status,
         "source": {"handoff": input_relative, "sha256": index.input_handoff_sha256},
-        "run_id": index.batch_id,
         "artifacts": [
             {"name": _INDEX_NAME, "path": str(index_file), "sha256": _hash_file(index_file)},
             {"name": _SUMMARY_NAME, "path": str(summary_file), "sha256": _hash_file(summary_file)},
         ],
-        "metrics": metrics,
-        "diagnostics": index_diagnostics + [item for entry in entries for item in entry.diagnostics],
-        "retryable": False,
-        "next_tool": None,
-    }
+        "metrics": {**metrics, **validation["metrics"]},
+        "diagnostics": index_diagnostics + [item for entry in entries for item in entry.diagnostics] + [
+            item for item in validation["diagnostics"] if item.get("category") != "step2_artifact_reference"
+        ],
+    })
+    return validation
 
 
 _TOOLS: list[dict[str, Any]] = [
@@ -379,6 +614,13 @@ _TOOLS: list[dict[str, Any]] = [
         "command": "step2 index --handoff PATH --step1-root DIR [--out DIR]",
         "inputs": {"entries": "resolved Step 1 source entries", "out": "index output directory"},
         "outputs": ["index.json", "INDEX.md", "per-entry quality context and diagnostics"],
+        "next": [],
+    },
+    {
+        "name": "step2.index.validate",
+        "command": "step2 validate --index PATH --step1-root DIR",
+        "inputs": {"index": "saved Step 2 index.json", "step1_root": "Step 1 output root"},
+        "outputs": ["saved-index integrity status and diagnostics"],
         "next": [],
     },
 ]

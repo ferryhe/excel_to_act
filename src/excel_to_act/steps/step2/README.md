@@ -5,10 +5,11 @@ Step 2 reads current Step 1 handoffs (`step1.v1` or `step1.batch.v1`) and writes
 ```text
 excel-to-act step2 tools
 excel-to-act step2 index --handoff PATH --step1-root DIR [--out DIR]
+excel-to-act step2 validate --index PATH --step1-root DIR
 ```
 
-`step2 tools` lists the initial resolver and index-builder actions. `step2 index` writes deterministic `index.json` and `INDEX.md` to `output/step2_index/` by default. Use `--out` to choose another directory. A valid input with one or more entries exits successfully with index status `partial`; an invalid root handoff, invalid Step 1 root, or empty batch is blocked and exits nonzero. Missing per-source handoffs remain in a usable batch index with error diagnostics.
+`step2 tools` lists the resolver, index builder, and saved-index validator. `step2 index` writes deterministic `index.json` and `INDEX.md` to `output/step2_index/` by default, validates its references, and exits nonzero when integrity checks fail. The index's `status` describes the Step 1 entries; `validation_status` describes saved-index integrity. `step2 validate` checks the input handoff reference and each artifact path, checksum, JSON, and known schema. Unknown JSON content is parsed but left schema-opaque. Diagnostics name the source entry and artifact and include a source location when the artifact carries one.
 
 `--handoff` may be absolute or relative to the current directory or `--step1-root`, but must resolve inside the Step 1 root. Batch entry `handoff_path` values resolve from that root. Artifact paths resolve from `artifact_paths_relative_to`, falling back to `run_path`; a single source handoff uses the same bases. References are stored relative to the Step 1 root. `final_output` is kept as metadata and does not change artifact path resolution.
 
-The first release checks handoff shape and path inputs while building. `validation_status` remains `not_run`; artifact existence, checksum, and full saved-index integrity validation belong to STEP2-02.
+Paths are resolved under `--step1-root`; absolute and escaping paths are blocked. Known JSON artifacts use the existing Step 1 contract checks or Pydantic models. The validator recommends a `next_tool` only when the Step 1 catalogue names a producer for that artifact.

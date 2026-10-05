@@ -8,7 +8,7 @@ import json
 import typer
 
 from excel_to_act.orchestrator.phase1 import Phase1Orchestrator
-from excel_to_act.steps.step2.workflow import build_index, tool_catalog as step2_tool_catalog
+from excel_to_act.steps.step2.workflow import build_index, tool_catalog as step2_tool_catalog, validate_saved_index
 from excel_to_act.steps.step1.workflow import agent_definition, auto_recover, convert_directory, execute_tool, finalize_run, tool_catalog
 
 app = typer.Typer(help="Excel to actuarial model decomposition toolkit")
@@ -63,6 +63,19 @@ def step2_index(
     """Build a deterministic index from a current Step 1 handoff."""
 
     result = build_index(handoff, step1_root, out)
+    _emit_json(result)
+    if result["status"] == "blocked":
+        raise typer.Exit(code=1)
+
+
+@step2_app.command("validate")
+def step2_validate(
+    index: Path = typer.Option(..., "--index", help="Saved Step 2 index.json to validate"),
+    step1_root: Path = typer.Option(..., "--step1-root", help="Step 1 output root for resolving referenced paths"),
+) -> None:
+    """Validate a saved Step 2 index and its referenced Step 1 artifacts."""
+
+    result = validate_saved_index(index, step1_root)
     _emit_json(result)
     if result["status"] == "blocked":
         raise typer.Exit(code=1)
