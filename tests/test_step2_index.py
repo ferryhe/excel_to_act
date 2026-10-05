@@ -51,6 +51,167 @@ def source_metadata() -> dict:
     }
 
 
+def test_null_attempt_diagnostic_returns_preserved_state_invalid(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    handoff = root / "handoff.json"
+    write_json(handoff, source_handoff(artifacts=[]))
+    build_index(handoff, root, out)
+    state_file = out / "state.json"
+    state = json.loads(state_file.read_text())
+    state["attempts"][0]["result"]["diagnostics"] = [None]
+    write_json(state_file, state)
+    before = state_file.read_bytes()
+    result = build_index(handoff, root, out)
+    assert result["status"] == "blocked"
+    assert result["stop_reason"] == "state_invalid"
+    assert result["diagnostics"][0]["code"] == "state_invalid"
+    assert state_file.read_bytes() == before
+
+
+@pytest.mark.parametrize("name", ["step2.index.build", "step2.handoff.resolve", "step2.index.validate"])
+def test_corrected_required_argument_dispatches_without_spending_invalid_attempt(tmp_path: Path, name: str) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    handoff = root / "handoff.json"
+    write_json(handoff, source_handoff(artifacts=[]))
+    result = execute_tool(name, step1_root=root, out_dir=out)
+    assert result["status"] == "blocked"
+    assert result["stop_reason"] == "non_retryable_failure"
+    assert result["attempt"] == 0
+    assert not (out / "state.json").exists()
+    if name == "step2.index.validate":
+        built = tmp_path / "built"
+        build_index(handoff, root, built)
+        index = out / "index.json"
+        write_json(index, json.loads((built / "index.json").read_text()))
+        corrected = execute_tool(name, step1_root=root, index_path=index)
+    else:
+        corrected = execute_tool(name, step1_root=root, handoff_path=handoff, out_dir=out)
+    assert corrected["status"] in {"pass", "partial"}
+    assert corrected["stop_reason"] is None
+    assert corrected["attempt"] == 1
+    assert len(json.loads((out / "state.json").read_text())["attempts"]) == 1
+
+
+def test_corrected_handoff_path_retries_with_shared_budget(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    bad, valid = root / "bad.json", root / "valid.json"
+    write_json(bad, {"schema_version": "unsupported"})
+    write_json(valid, source_handoff(artifacts=[]))
+    failed = build_index(bad, root, out)
+    assert failed["stop_reason"] == "non_retryable_failure"
+    assert build_index(bad, root, out)["attempt"] == 1
+    corrected = build_index(valid, root, out)
+    assert corrected["status"] == "partial"
+    assert corrected["stop_reason"] is None
+    assert corrected["attempt"] == 2
+    history = json.loads((out / "state.json").read_text())["attempts"]
+    assert len(history) == 2
+    assert history[0]["result"] == failed
+
+
+def test_reservation_output_file_returns_structured_failure_without_dispatch(tmp_path: Path, monkeypatch) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "occupied"
+    handoff = root / "handoff.json"
+    write_json(handoff, source_handoff(artifacts=[]))
+    out.write_text("occupied", encoding="utf-8")
+    original, calls = workflow._build_index, []
+
+    def build(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(workflow, "_build_index", build)
+    result = build_index(handoff, root, out)
+    assert result["status"] == "blocked"
+    assert result["stop_reason"] == "non_retryable_failure"
+    assert result["diagnostics"][0]["code"] == "state_write_failed"
+    assert result["attempt"] == 0
+    assert calls == []
+    assert out.read_text() == "occupied"
+    corrected = build_index(handoff, root, tmp_path / "valid-index")
+    assert corrected["attempt"] == 1
+    assert calls == [True]
+
+
+def test_reservation_failure_preserves_previous_failure_evidence(tmp_path: Path, monkeypatch) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    handoff = root / "handoff.json"
+    write_json(handoff, source_handoff())
+    failed = build_index(handoff, root, out)
+    assert failed["diagnostics"][0]["code"] == "artifact_missing"
+    before = (out / "state.json").read_bytes()
+
+    def cannot_reserve(*args, **kwargs):
+        raise OSError("reservation unavailable")
+
+    monkeypatch.setattr(workflow, "_write_state", cannot_reserve)
+    result = execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=handoff, out_dir=out)
+    assert result["status"] == "blocked"
+    assert result["stop_reason"] == "non_retryable_failure"
+    assert result["attempt"] == 1
+    assert result["artifacts"] == failed["artifacts"]
+    assert result["metrics"] == failed["metrics"]
+    assert result["diagnostics"][:-1] == failed["diagnostics"]
+    assert result["diagnostics"][-1]["code"] == "state_write_failed"
+    assert (out / "state.json").read_bytes() == before
+
+
+def test_standalone_validation_tracks_current_passing_entry_progress(tmp_path: Path) -> None:
+    root, built, out = tmp_path / "step1", tmp_path / "built", tmp_path / "index"
+    handoff = root / "handoff.json"
+    write_json(handoff, source_handoff(artifacts=[]))
+    build_index(handoff, root, built)
+    saved = json.loads((built / "index.json").read_text())
+    index = out / "index.json"
+    for revision in range(1, 4):
+        saved["entries"][0]["metrics"]["revision"] = revision
+        write_json(index, saved)
+        result = validate_saved_index(index, root)
+        assert result["status"] == "pass"
+        assert result["diagnostics"] == []
+        assert result["attempt"] == revision
+        history = json.loads((out / "state.json").read_text())["attempts"]
+        assert history[-1]["improved"] is True
+        assert history[-1]["no_progress_count"] == 0
+    assert result["stop_reason"] == "attempt_limit_reached"
+    saved["entries"][0]["metrics"]["revision"] = 4
+    write_json(index, saved)
+    stopped = validate_saved_index(index, root)
+    assert stopped["status"] == "blocked"
+    assert stopped["stop_reason"] == "attempt_limit_reached"
+    assert stopped["attempt"] == 3
+    assert stopped["diagnostics"] == []
+    assert json.loads((out / "state.json").read_text())["entries"] == {}
+
+
+def test_standalone_validation_failures_do_not_count_changed_error_wording_as_progress(tmp_path: Path) -> None:
+    root, built, out = tmp_path / "step1", tmp_path / "built", tmp_path / "index"
+    handoff = root / "handoff.json"
+    write_json(handoff, source_handoff(artifacts=[]))
+    build_index(handoff, root, built)
+    saved = json.loads((built / "index.json").read_text())
+    index = out / "index.json"
+    write_json(index, saved)
+    assert validate_saved_index(index, root)["status"] == "pass"
+    failures = []
+    for number in (1, 2):
+        saved["entries"][0]["artifacts"] = [{"name": "inventory.json", "path": f"missing-{number}.json", "sha256": "missing"}]
+        write_json(index, saved)
+        result = validate_saved_index(index, root)
+        failures.append(result)
+        history = json.loads((out / "state.json").read_text())["attempts"]
+        assert history[-1]["improved"] is False
+        assert history[-1]["no_progress_count"] == number
+        assert result["diagnostics"][0]["code"] == "artifact_missing"
+    assert failures[1]["stop_reason"] == "no_progress"
+    assert failures[0]["diagnostics"] != failures[1]["diagnostics"]
+    assert json.loads((out / "state.json").read_text())["validated_entry_hashes"] == []
+
+
 def test_resume_reuses_only_validated_unchanged_entries(tmp_path: Path, monkeypatch) -> None:
     from excel_to_act.steps.step2 import workflow
 

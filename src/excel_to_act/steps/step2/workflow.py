@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -803,6 +804,8 @@ def _read_state(out_dir: Path, root: Path) -> dict[str, Any]:
             or state.get("step1_root") != str(root) or state.get("attempt_limit") != 3
             or not isinstance(state.get("attempts"), list)
             or not isinstance(state.get("entries"), dict) or not isinstance(state.get("output_hashes"), dict)
+            or not isinstance(state.get("validated_entry_hashes", []), list)
+            or any(not isinstance(value, str) for value in state.get("validated_entry_hashes", []))
             or not isinstance(state.get("validation_result", {}), dict)):
         raise ValueError("Invalid Step 2 state or a different Step 1 root; preserve state.json and use the matching index directory.")
     known = {tool["name"] for tool in _TOOLS}
@@ -813,6 +816,7 @@ def _read_state(out_dir: Path, root: Path) -> dict[str, Any]:
                 or attempt["no_progress_count"] < 0 or not isinstance(attempt.get("result"), dict)
                 or not isinstance(attempt.get("input_paths", {}), dict)
                 or not isinstance(attempt["result"].get("diagnostics"), list)
+                or any(not isinstance(item, dict) for item in attempt["result"]["diagnostics"])
                 or not isinstance(attempt["result"].get("metrics"), dict)):
             raise ValueError("Invalid Step 2 attempt history; preserve state.json.")
     if any(not isinstance(value, dict) for value in state["entries"].values()):
@@ -882,6 +886,9 @@ def execute_tool(
     except (OSError, ValueError) as exc:
         return _stopped(_error_result(out_dir, "state_invalid", str(exc)), name, "state_invalid", [])
     attempts = state["attempts"]
+    required = "index" if name == "step2.index.validate" else "handoff"
+    if (index_path if required == "index" else handoff_path) is None:
+        return _stopped(_error_result(out_dir, "handoff_invalid", f"{name} requires --{required}"), name, "non_retryable_failure", attempts)
     fingerprint = _action_input(name, root, handoff_path, index_path)
     base_fingerprint = fingerprint
     if (name == "step2.index.validate" and state.get("validation_input_sha256") == fingerprint
@@ -913,8 +920,8 @@ def execute_tool(
         paths = last.get("input_paths", {})
         failed_input_unchanged = last.get("base_input_sha256") == _action_input(
             last["tool"], root,
-            Path(paths["handoff"]) if paths.get("handoff") else None,
-            Path(paths["index"]) if paths.get("index") else None,
+            handoff_path if handoff_path is not None else Path(paths["handoff"]) if paths.get("handoff") else None,
+            index_path if index_path is not None else Path(paths["index"]) if paths.get("index") else None,
         )
     reason = (
         "attempt_limit_reached" if len(attempts) >= 3 else
@@ -925,6 +932,7 @@ def execute_tool(
     if reason:
         return _stopped(last["result"], name, reason, attempts)
     validated_before = {key: entry.get("output_sha256") for key, entry in state["entries"].items() if entry.get("validation_status") == "pass"}
+    validation_before = Counter(state.get("validated_entry_hashes", []))
     attempt = {"tool": name, "input_sha256": fingerprint, "base_input_sha256": base_fingerprint,
                "input_paths": {"handoff": str((handoff_path if handoff_path.is_absolute() or handoff_path.is_file() else root / handoff_path).resolve()) if handoff_path else None, "index": str(index_path.resolve()) if index_path else None},
                "evidence_sha256": last_completed.get("evidence_sha256"),
@@ -932,14 +940,26 @@ def execute_tool(
                "result": _error_result(out_dir, "attempt_interrupted", "Step 2 action started; no completed result was saved.")}
     # ponytail: host dispatches sequentially; add an output-directory lock if concurrent calls are required.
     attempts.append(attempt)
-    _write_state(out_dir, state)
+    try:
+        _write_state(out_dir, state)
+    except OSError as exc:
+        attempts.pop()
+        failure = _error_result(out_dir, "state_write_failed", f"Cannot reserve Step 2 attempt: {exc}")
+        if last:
+            failure = {**last["result"], "diagnostics": last["result"]["diagnostics"] + failure["diagnostics"]}
+        return _stopped(failure, name, "non_retryable_failure", attempts)
     try:
         if name == "step2.index.validate":
-            if index_path is None:
-                raise ValueError("step2.index.validate requires --index")
-            result = _validate_saved_index(index_path, root)
-        elif handoff_path is None:
-            raise ValueError(f"{name} requires --handoff")
+            validated_hashes = []
+
+            def validated_entry(_key: str, entry: Step2IndexEntry, valid: bool) -> None:
+                if valid and not any(
+                    item.get("code") in {"source_handoff_unavailable", "source_handoff_invalid", "source_handoff_mismatch"}
+                    for item in entry.diagnostics
+                ):
+                    validated_hashes.append(_hash_value(entry.model_dump(mode="json")))
+
+            result = _validate_saved_index(index_path, root, on_entry_validated=validated_entry)
         elif name == "step2.index.build":
             result = _build_index(handoff_path, root, out_dir, state, resume)
         else:
@@ -964,6 +984,11 @@ def execute_tool(
         validated = {key: entry.get("output_sha256") for key, entry in state["entries"].items() if entry.get("validation_status") == "pass"}
         evidence = _hash_value(validated)
         successful_progress = any(validated_before.get(key) != digest for key, digest in validated.items())
+        state["validated_entry_hashes"] = sorted(validated.values())
+    elif name == "step2.index.validate":
+        state["validated_entry_hashes"] = sorted(validated_hashes)
+        evidence = _hash_value(state["validated_entry_hashes"])
+        successful_progress = bool(Counter(validated_hashes) - validation_before)
     elif name == "step2.handoff.resolve":
         resolved = _resolved_entry_evidence(result, list(entry_states)) if "entries" in result else {}
         previous = last_completed.get("resolved_entries", {})
