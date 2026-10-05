@@ -336,6 +336,45 @@ class Handoff(Artifact):
     next_actions: list[str] = Field(default_factory=list)
 
 
+class Step2ArtifactRef(BaseModel):
+    name: str
+    path: str
+    sha256: str
+
+
+class Step2IndexEntry(BaseModel):
+    source_id: str
+    source_path: str | None = None
+    source_sha256: str | None = None
+    run_id: str | None = None
+    batch_id: str | None = None
+    run_path: str | None = None
+    handoff_path: str | None = None
+    status: str
+    ready_for_next_step: bool = False
+    metrics_state: str = "unavailable"
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    thresholds: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[Step2ArtifactRef] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+    next_actions: list[dict[str, Any]] = Field(default_factory=list)
+    final_output: str | None = None
+
+
+class Step2Index(BaseModel):
+    schema_version: Literal["step2.index.v1"] = "step2.index.v1"
+    step1_root: str
+    input_handoff_path: str
+    input_handoff_sha256: str
+    batch_id: str | None = None
+    status: Literal["pass", "partial", "blocked"] = "partial"
+    validation_status: Literal["not_run", "pass", "partial", "blocked"] = "not_run"
+    entries: list[Step2IndexEntry] = Field(default_factory=list)
+    diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: dict[str, int] = Field(default_factory=dict)
+
+
 class ArtifactMetadata(BaseModel):
     name: str
     path: str

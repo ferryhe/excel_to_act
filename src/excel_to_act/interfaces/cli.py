@@ -8,11 +8,14 @@ import json
 import typer
 
 from excel_to_act.orchestrator.phase1 import Phase1Orchestrator
+from excel_to_act.steps.step2.workflow import build_index, tool_catalog as step2_tool_catalog
 from excel_to_act.steps.step1.workflow import agent_definition, auto_recover, convert_directory, execute_tool, finalize_run, tool_catalog
 
 app = typer.Typer(help="Excel to actuarial model decomposition toolkit")
 step1_app = typer.Typer(help="Human Step1 raw-directory conversion and checked handoff")
+step2_app = typer.Typer(help="Index Step 1 handoffs for downstream agents")
 app.add_typer(step1_app, name="step1")
+app.add_typer(step2_app, name="step2")
 
 
 @app.callback()
@@ -42,6 +45,27 @@ def inspect(
 
 def _emit_json(result: dict) -> None:
     typer.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+
+@step2_app.command("tools")
+def step2_tools() -> None:
+    """Print the initial machine-readable Step 2 action catalogue."""
+
+    _emit_json(step2_tool_catalog())
+
+
+@step2_app.command("index")
+def step2_index(
+    handoff: Path = typer.Option(..., "--handoff", help="Step 1 source or batch handoff JSON"),
+    step1_root: Path = typer.Option(..., "--step1-root", help="Step 1 output root for resolving handoff and artifact paths"),
+    out: Path = typer.Option(Path("output/step2_index"), "--out", "-o", help="Step 2 index output directory"),
+) -> None:
+    """Build a deterministic index from a current Step 1 handoff."""
+
+    result = build_index(handoff, step1_root, out)
+    _emit_json(result)
+    if result["status"] == "blocked":
+        raise typer.Exit(code=1)
 
 
 @step1_app.command("tools")
