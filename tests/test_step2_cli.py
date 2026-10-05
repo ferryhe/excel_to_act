@@ -271,8 +271,10 @@ def test_step2_agent_prints_packaged_contract() -> None:
     assert "step2.index.validate" in result.stdout
     assert "downstream analysis" in result.stdout
     assert "`step2 index` returns `status`, `diagnostics`, `metrics`, `retryable`, and `next_tool`" in result.stdout
+    assert "Its `status` is index usability (`partial` for any non-empty built index) unless validation blocks it" in result.stdout
     assert "Standalone `step2 validate` returns validation integrity in its response `status`" in result.stdout
-    assert "`validation_status` is integrity status, top-level `status` is batch status" in result.stdout
+    assert "`entries[*].status` is each Step 1 source status" in result.stdout
+    assert "`validation_status` is validation integrity" in result.stdout
 
 
 def test_step2_tools_describe_all_actions_and_real_commands() -> None:
@@ -288,3 +290,5 @@ def test_step2_tools_describe_all_actions_and_real_commands() -> None:
     assert tools[0]["next"] == ["step2.index.build"]
     assert tools[1]["next"] == ["step2.index.validate"]
     assert tools[2]["next"] == []
+    assert any("state.json beside the index" in output for output in tools[2]["outputs"])
+    assert any("shared attempt/validation state" in output for output in tools[2]["outputs"])

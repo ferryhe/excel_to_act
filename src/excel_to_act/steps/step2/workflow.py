@@ -1040,7 +1040,7 @@ _TOOLS: list[dict[str, Any]] = [
         "name": "step2.index.validate",
         "command": "step2 tool step2.index.validate --index PATH --step1-root DIR",
         "inputs": {"index": "saved Step 2 index.json; its parent directory holds Step 2 state", "step1_root": "Step 1 output root"},
-        "outputs": ["saved-index integrity status and diagnostics", "structured status/metrics/retryable/next_tool"],
+        "outputs": ["saved-index integrity status and diagnostics", "structured status/metrics/retryable/next_tool", "state.json beside the index; actual dispatches persist shared attempt/validation state"],
         "next": [],
     },
 ]
