@@ -261,3 +261,30 @@ def test_step2_index_rejects_source_json_with_same_version_marker(tmp_path: Path
     assert result.exit_code != 0
     assert json.loads(result.stdout)["status"] == "blocked"
     assert "source" in json.loads(result.stdout)["diagnostics"][0]["message"]
+
+
+def test_step2_agent_prints_packaged_contract() -> None:
+    result = CliRunner().invoke(app, ["step2", "agent"])
+
+    assert result.exit_code == 0
+    assert "step2.index" in result.stdout
+    assert "step2.index.validate" in result.stdout
+    assert "downstream analysis" in result.stdout
+    assert "`step2 index` returns `status`, `diagnostics`, `metrics`, `retryable`, and `next_tool`" in result.stdout
+    assert "Standalone `step2 validate` returns validation integrity in its response `status`" in result.stdout
+    assert "`validation_status` is integrity status, top-level `status` is batch status" in result.stdout
+
+
+def test_step2_tools_describe_all_actions_and_real_commands() -> None:
+    result = CliRunner().invoke(app, ["step2", "tools"])
+
+    assert result.exit_code == 0
+    tools = json.loads(result.stdout)["tools"]
+    assert {item["name"] for item in tools} == {
+        "step2.handoff.resolve", "step2.index.build", "step2.index.validate",
+    }
+    assert all(item["command"].startswith("step2 tool ") for item in tools)
+    assert all(item.get("inputs") and item.get("outputs") and "next" in item for item in tools)
+    assert tools[0]["next"] == ["step2.index.build"]
+    assert tools[1]["next"] == ["step2.index.validate"]
+    assert tools[2]["next"] == []

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+from importlib.resources import files
 
 import typer
 
@@ -45,6 +46,13 @@ def inspect(
 
 def _emit_json(result: dict) -> None:
     typer.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+
+@step2_app.command("agent")
+def step2_agent() -> None:
+    """Print the packaged Step 2 host-agent contract."""
+
+    typer.echo(files("excel_to_act.steps.step2").joinpath("agent.md").read_text(encoding="utf-8"))
 
 
 @step2_app.command("tools")

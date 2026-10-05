@@ -3,13 +3,14 @@
 Step 2 reads current Step 1 handoffs (`step1.v1` or `step1.batch.v1`) and writes a navigation and quality index. It keeps every batch entry, including failed entries and entries whose per-source handoff is unavailable. It stores source identity, status, metrics, diagnostics, next actions, and references; artifact contents are not copied and no semantic conclusions are made.
 
 ```text
+excel-to-act step2 agent
 excel-to-act step2 tools
 excel-to-act step2 index --handoff PATH --step1-root DIR [--out DIR] [--resume]
 excel-to-act step2 validate --index PATH --step1-root DIR
 excel-to-act step2 tool NAME --step1-root DIR [--handoff PATH] [--index PATH] [--out DIR] [--resume]
 ```
 
-`step2 tools` lists the resolver, index builder, and saved-index validator. `step2 index` writes deterministic `index.json` and `INDEX.md` to `output/step2_index/` by default, validates its references, and exits nonzero when integrity checks fail. The index's `status` describes the Step 1 entries; `validation_status` describes saved-index integrity. `step2 validate` checks the input handoff reference and each artifact path, checksum, JSON, and known schema. Unknown JSON content is parsed but left schema-opaque. Diagnostics name the source entry and artifact and include a source location when the artifact carries one.
+`step2 agent` prints the packaged host-agent contract. `step2 tools` lists the resolver, index builder, and saved-index validator with their command inputs, outputs, and next actions. `step2 index` writes deterministic `index.json` and `INDEX.md` to `output/step2_index/` by default, validates its references, and exits nonzero when integrity checks fail. The index's `status` describes the Step 1 entries; `validation_status` describes saved-index integrity. `step2 validate` checks the input handoff reference and each artifact path, checksum, JSON, and known schema. Unknown JSON content is parsed but left schema-opaque. Diagnostics name the source entry and artifact and include a source location when the artifact carries one.
 
 `step2 tool NAME` dispatches exactly one named catalogue action. The resolver returns normalized entries without writing an index or validating artifacts; the builder writes and checks the index; the validator checks a saved index. The host chooses and repeats actions. No Step 1 repair tool or language model is called. Opaque metrics and diagnostics stay in the index, and `INDEX.md` shows existing correction actions together with a human/specialist review action when opaque content has no such action.
 

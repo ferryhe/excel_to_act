@@ -41,13 +41,26 @@ flowchart TD
     style O1 fill:#eef7ff,stroke:#1565c0
 ```
 
-**落地状态**：Step 0–2 已部分落地（人工 Step 1 位于 `steps/step1/`；共享模块位于 `ingest/` `inventory/` `graph/` `classify/` `confirm/` `store/` `orchestrator/` `interfaces/`；Step 2 的 `artifact_index.json` 已由 `store/local_store.py` 产出）。Step 3 属 plan 的 Phase 1 范围、已部分落地（`classify/`）。Step 1 的 JSON 与 Markdown handoff 已实现；**Step 4–5 未开工**。
+**落地状态**：Step 0–2 已部分落地（人工 Step 1 位于 `steps/step1/`；共享模块位于 `ingest/` `inventory/` `graph/` `classify/` `confirm/` `store/` `orchestrator/` `interfaces/`）。Step 2 另提供批次导航索引，默认写入 `output/step2_index/index.json` 和 `INDEX.md`；它与 `store/local_store.py` 生成的旧版单工作簿 `artifact_index.json` 是不同文件。Step 3 属 plan 的 Phase 1 范围、已部分落地（`classify/`）。Step 1 的 JSON 与 Markdown handoff 已实现；**Step 4–5 未开工**。
 
 上图展示完整目标路线，包含尚未完成的步骤；当前人工入口是 `excel-to-act step1 convert <raw-directory> --out <output-directory>`，旧 `inspect` 仍用于单工作簿 Phase 1 流程。
 
 ### 当前可用：人工 Step 1 → 人工 Step 2
 
 新的 `step1` 命令接收原始目录，递归记录每个文件；`.xlsx` / `.xlsm` 进入转换，其它格式、损坏或无法读取的文件会保留为失败条目。每个输入按源 SHA-256、相对路径键和运行 ID 分开存放，批次 handoff 汇总全部输入，不使用“最后一个文件”的根目录别名。
+
+Step 2 会为该 handoff 及其单源引用建立索引：
+
+```text
+excel-to-act step2 agent
+excel-to-act step2 tools
+excel-to-act step2 index --handoff PATH --step1-root DIR [--out DIR] [--resume]
+excel-to-act step2 validate --index output/step2_index/index.json --step1-root DIR
+output/step2_index/index.json
+output/step2_index/INDEX.md
+```
+
+Step 2 批次索引与下文旧版单工作簿 `artifact_index.json` 不同。
 
 若输出目录位于输入目录之内，目录扫描会排除该输出子树，并在批次 `discovery` 信息中记录排除路径；输入目录与输出目录完全相同时会明确报错。
 
