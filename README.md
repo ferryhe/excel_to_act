@@ -41,13 +41,26 @@ flowchart TD
     style O1 fill:#eef7ff,stroke:#1565c0
 ```
 
-**Implementation status**: Steps 0–2 are partly implemented (human Step 1 lives in `steps/step1/`; shared modules live in `ingest/`, `inventory/`, `graph/`, `classify/`, `confirm/`, `store/`, `orchestrator/`, and `interfaces/`; Step 2's `artifact_index.json` is already produced by `store/local_store.py`). Step 3 is within the plan's Phase 1 scope and partly implemented in `classify/`. Step 1's JSON and Markdown handoffs are implemented; **Steps 4–5 have not started**.
+**Implementation status**: Steps 0–2 are partly implemented (human Step 1 lives in `steps/step1/`; shared modules live in `ingest/`, `inventory/`, `graph/`, `classify/`, `confirm/`, `store/`, `orchestrator/`, and `interfaces/`). Step 2 also provides a batch navigation index at `output/step2_index/index.json` and `INDEX.md`; this is separate from the legacy per-workbook `artifact_index.json` produced by `store/local_store.py`. Step 3 is within the plan's Phase 1 scope and partly implemented in `classify/`. Step 1's JSON and Markdown handoffs are implemented; **Steps 4–5 have not started**.
 
 The diagram shows the complete target route, including unfinished steps. The current human entry point is `excel-to-act step1 convert <raw-directory> --out <output-directory>`. Legacy `inspect` remains available for the single-workbook Phase 1 workflow.
 
 ### Available now: human Step 1 → human Step 2
 
 The new `step1` command accepts a raw directory and recursively records every file. `.xlsx` / `.xlsm` files enter conversion; other formats, damaged files, and unreadable files remain as failed entries. Each input is stored separately by source SHA-256, relative-path key, and run ID. The batch handoff summarizes every input without a root alias for the "last file".
+
+Step 2 indexes that handoff and its per-source references:
+
+```text
+excel-to-act step2 agent
+excel-to-act step2 tools
+excel-to-act step2 index --handoff PATH --step1-root DIR [--out DIR] [--resume]
+excel-to-act step2 validate --index output/step2_index/index.json --step1-root DIR
+output/step2_index/index.json
+output/step2_index/INDEX.md
+```
+
+The Step 2 batch index is distinct from the legacy per-workbook `artifact_index.json` shown below.
 
 If the output directory is inside the input directory, discovery excludes that output subtree and records the excluded path in the batch's `discovery` information. Identical input and output directories produce an explicit error.
 

@@ -45,6 +45,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "excel_to_act.steps.step1" = ["agent.md"]
+"excel_to_act.steps.step2" = ["agent.md"]
 
 [tool.ruff]
 line-length = 100
