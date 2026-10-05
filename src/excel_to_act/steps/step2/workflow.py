@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from excel_to_act.schemas import SCHEMA_VERSION, Step2ArtifactRef, Step2Index, Step2IndexEntry
+from excel_to_act.steps.step1.workflow import _run_source
 from excel_to_act.store.local_store import _MODEL_BY_FILE
 
 _INDEX_NAME = "index.json"
@@ -102,6 +103,14 @@ def _validate_source_handoff(value: Any) -> dict[str, Any]:
         raise ValueError("step1.v1 handoff must contain a string status")
     if not isinstance(value.get("artifacts"), list):
         raise ValueError("step1.v1 handoff must contain an artifacts list")
+    return value
+
+
+def _validate_batch_handoff(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or value.get("schema_version") != "step1.batch.v1":
+        raise ValueError("batch handoff must use schema_version step1.batch.v1")
+    if not isinstance(value.get("entries"), list):
+        raise ValueError("step1.batch.v1 handoff entries must be a list")
     return value
 
 
@@ -431,13 +440,60 @@ def validate_saved_index(index_path: Path, step1_root: Path) -> dict[str, Any]:
                 input_handoff_error("input_handoff_checksum_mismatch", f"SHA-256 does not match for input handoff {relative_handoff.as_posix()}.")
             else:
                 try:
-                    _read_json(resolved_handoff)
+                    payload = _read_json(resolved_handoff)
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     input_handoff_error("input_handoff_json_invalid", f"Invalid JSON in input handoff {relative_handoff.as_posix()}: {exc}")
                 else:
-                    result["metrics"]["input_handoff_checked"] = 1
+                    try:
+                        schema = payload.get("schema_version") if isinstance(payload, dict) else None
+                        if schema == "step1.v1":
+                            _validate_source_handoff(payload)
+                        elif schema == "step1.batch.v1":
+                            _validate_batch_handoff(payload)
+                        else:
+                            raise ValueError(f"unsupported handoff schema_version: {schema!r}")
+                    except ValueError as exc:
+                        input_handoff_error("input_handoff_schema_invalid", f"Invalid Step 1 handoff schema: {exc}")
+                    else:
+                        result["metrics"]["input_handoff_checked"] = 1
     rebuilders: set[str] = set()
     for entry in index.entries:
+        if entry.handoff_path and entry.handoff_path != index.input_handoff_path and not any(
+            item.get("code") in {"source_handoff_unavailable", "source_handoff_invalid", "source_handoff_mismatch"}
+            for item in entry.diagnostics
+        ):
+            handoff_ref = {"name": "source_handoff", "path": entry.handoff_path}
+
+            def handoff_error(code: str, message: str) -> None:
+                diagnostic = _diagnostic(code, message, source_id=entry.source_id)
+                diagnostic.update({"source_path": entry.source_path, "artifact": handoff_ref["name"], "path": handoff_ref["path"]})
+                result["diagnostics"].append(diagnostic)
+
+            source_handoff = Path(entry.handoff_path)
+            if source_handoff.is_absolute():
+                handoff_error("source_handoff_path_invalid", "Per-source handoff path must be relative to --step1-root.")
+            else:
+                resolved_source_handoff = (root / source_handoff).resolve()
+                try:
+                    relative_source_handoff = resolved_source_handoff.relative_to(root)
+                except ValueError:
+                    handoff_error("source_handoff_path_invalid", "Per-source handoff path resolves outside --step1-root.")
+                else:
+                    if not resolved_source_handoff.is_file():
+                        handoff_error("source_handoff_missing", f"Per-source handoff does not exist: {relative_source_handoff.as_posix()}")
+                    else:
+                        try:
+                            source_payload = _validate_source_handoff(_read_json(resolved_source_handoff))
+                        except (OSError, ValueError, json.JSONDecodeError) as exc:
+                            handoff_error("source_handoff_schema_invalid", f"Cannot validate per-source handoff: {exc}")
+                        else:
+                            mismatch = _handoff_identity_mismatch({
+                                "relative_path": entry.source_path,
+                                "sha256": entry.source_sha256,
+                                "run_id": entry.run_id,
+                            }, source_payload)
+                            if mismatch:
+                                handoff_error("source_handoff_identity_mismatch", mismatch)
         for ref in entry.artifacts:
             result["metrics"]["artifacts_checked"] += 1
             path = Path(ref.path)
@@ -494,6 +550,15 @@ def validate_saved_index(index_path: Path, step1_root: Path) -> dict[str, Any]:
                 if artifact_name == "workbook_manifest.json" or resolved.name == "workbook_manifest.json":
                     checks.append((payload.get("sha256"), entry.source_sha256, "source SHA-256"))
                 elif artifact_name == "source.json" or resolved.name == "source.json":
+                    if payload.get("schema_version") != "step1.v1":
+                        report("artifact_schema_invalid", "source.json must use schema_version step1.v1.", entry, ref, payload)
+                        continue
+                    try:
+                        _run_source(resolved.parent)
+                    except (OSError, ValueError, json.JSONDecodeError) as exc:
+                        report("artifact_schema_invalid", f"Invalid source.json schema: {exc}", entry, ref, payload)
+                        continue
+
                     checks.extend([
                         (payload.get("sha256"), entry.source_sha256, "source SHA-256"),
                         (payload.get("relative_path"), entry.source_path, "source path"),
@@ -531,6 +596,7 @@ def validate_saved_index(index_path: Path, step1_root: Path) -> dict[str, Any]:
         result["status"] = "blocked"
         if len(rebuilders) == 1 and all(item.get("next_tool") for item in result["diagnostics"]):
             result["next_tool"] = rebuilders.pop()
+    result["retryable"] = result["next_tool"] is not None
     return result
 
 
@@ -546,9 +612,8 @@ def build_index(handoff_path: Path, step1_root: Path, out_dir: Path = _DEFAULT_O
             raise ValueError("handoff must be a JSON object")
         schema = payload.get("schema_version")
         if schema == "step1.batch.v1":
-            raw_entries = payload.get("entries")
-            if not isinstance(raw_entries, list):
-                raise ValueError("step1.batch.v1 handoff entries must be a list")
+            payload = _validate_batch_handoff(payload)
+            raw_entries = payload["entries"]
             entries = [_resolve_batch_entry(root, item, ordinal) for ordinal, item in enumerate(raw_entries, 1)]
         elif schema == "step1.v1":
             entries = [_entry_from_handoff(root, _validate_source_handoff(payload), input_relative, 1)]

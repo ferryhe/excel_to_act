@@ -66,12 +66,63 @@ def test_step2_validate_passes_and_index_blocks_corrupt_references(tmp_path: Pat
     assert {"status", "diagnostics", "metrics", "retryable", "next_tool"} <= result.keys()
 
 
+def test_step2_validate_blocks_input_handoff_with_updated_digest_and_invalid_schema(tmp_path: Path) -> None:
+    root = tmp_path / "step1"
+    root.mkdir()
+    handoff = root / "handoff.json"
+    handoff.write_text(json.dumps({
+        "schema_version": "step1.v1", "source": {"path": "a.xlsx", "sha256": "sha"},
+        "status": "pass", "artifacts": [],
+    }), encoding="utf-8")
+    index_dir = tmp_path / "index"
+    built = CliRunner().invoke(app, ["step2", "index", "--handoff", str(handoff), "--step1-root", str(root), "--out", str(index_dir)])
+    assert built.exit_code == 0
+
+    handoff.write_text("{}", encoding="utf-8")
+    index_path = index_dir / "index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["input_handoff_sha256"] = hashlib.sha256(handoff.read_bytes()).hexdigest()
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+
+    checked = CliRunner().invoke(app, ["step2", "validate", "--index", str(index_path), "--step1-root", str(root)])
+
+    assert checked.exit_code == 1
+    result = json.loads(checked.stdout)
+    assert result["status"] == "blocked"
+    assert any(item["code"] == "input_handoff_schema_invalid" for item in result["diagnostics"])
+
+
+def test_step2_validate_marks_missing_inventory_action_retryable(tmp_path: Path) -> None:
+    root = tmp_path / "step1"
+    root.mkdir()
+    handoff = root / "handoff.json"
+    handoff.write_text(json.dumps({
+        "schema_version": "step1.v1", "source": {"path": "a.xlsx", "sha256": "sha"},
+        "status": "pass", "artifacts": [],
+    }), encoding="utf-8")
+    index_dir = tmp_path / "index"
+    built = CliRunner().invoke(app, ["step2", "index", "--handoff", str(handoff), "--step1-root", str(root), "--out", str(index_dir)])
+    assert built.exit_code == 0
+    index_path = index_dir / "index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["entries"][0]["artifacts"] = [{"name": "inventory.json", "path": "missing.json", "sha256": "missing"}]
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+
+    checked = CliRunner().invoke(app, ["step2", "validate", "--index", str(index_path), "--step1-root", str(root)])
+
+    assert checked.exit_code == 1
+    result = json.loads(checked.stdout)
+    assert result["status"] == "blocked"
+    assert result["next_tool"] == "inventory.extract"
+    assert result["retryable"] is True
+
+
 def test_step2_index_blocks_source_metadata_run_id_mismatch(tmp_path: Path) -> None:
     root = tmp_path / "step1"
     source_path = root / "runs/run-a/source.json"
     source_path.parent.mkdir(parents=True)
     source_path.write_text(json.dumps({
-        "schema_version": "phase1.v1", "batch_id": "batch-a", "run_id": "run-b",
+        "schema_version": "step1.v1", "batch_id": "batch-a", "run_id": "run-b",
         "source_path": "C:/models/a.xlsx", "relative_path": "models/a.xlsx",
         "sha256": "source-hash", "suffix": ".xlsx", "thresholds": {},
         "allow_opaque": True, "attempt_limit": 3,

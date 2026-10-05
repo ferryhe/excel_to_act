@@ -438,16 +438,15 @@ def test_saved_index_validator_checks_current_step1_identity_fields(tmp_path: Pa
     build_index(root / "handoff.json", root, index_dir)
     index_path = index_dir / "index.json"
     index = json.loads(index_path.read_text(encoding="utf-8"))
+    source_record = source_metadata()
+    source_record.update({"relative_path": "models/other.xlsx", "run_id": "run-b", "sha256": "another-workbook"})
     artifacts = {
         "workbook_manifest.json": {
             "schema_version": "phase1.v1", "artifact_type": "workbook_manifest",
             "workbook_path": "a.xlsx", "file_name": "a.xlsx", "file_size": 0,
             "sha256": "another-workbook", "sheets": [],
         },
-        "source.json": {
-            "schema_version": "phase1.v1", "relative_path": "models/other.xlsx", "run_id": "run-b",
-            "sha256": "another-workbook",
-        },
+        "source.json": source_record,
         "quality.json": {
             "schema_version": "step1.v1", "source_sha256": "another-workbook", "run_id": "run-a",
         },
@@ -487,6 +486,9 @@ def test_saved_index_validator_checks_current_step1_identity_fields(tmp_path: Pa
 def test_build_index_blocks_mismatched_current_step1_artifacts(tmp_path: Path, name: str, payload: dict) -> None:
     root = tmp_path / "step1"
     handoff = root / "handoff.json"
+    if name == "source.json":
+        payload = source_metadata()
+        payload.update({"relative_path": "models/other.xlsx", "sha256": "wrong-source"})
     artifact = root / "runs/source-a/artifacts" / name
     write_json(artifact, payload)
     write_json(handoff, source_handoff(artifacts=[{
@@ -554,7 +556,7 @@ def test_saved_index_validator_accepts_and_repairs_writer_emitted_current_handof
     index_dir = tmp_path / "index"
     run_dir = root / "batches/batch-a/sources/source-a/runs/run-a"
     source = {
-        "schema_version": "phase1.v1", "batch_id": "batch-a", "run_id": "run-a",
+        "schema_version": "step1.v1", "batch_id": "batch-a", "run_id": "run-a",
         "source_path": "C:/models/a.xlsx", "relative_path": "models/a.xlsx",
         "sha256": "source-hash", "suffix": ".xlsx", "thresholds": {},
         "allow_opaque": True, "attempt_limit": 3,
@@ -589,8 +591,10 @@ def test_saved_index_validator_accepts_and_repairs_writer_emitted_current_handof
     invalid = validate_saved_index(index_path, root)
 
     assert invalid["status"] == "blocked"
-    assert invalid["diagnostics"][0]["code"] == "artifact_schema_invalid"
-    assert invalid["next_tool"] == "report.handoff"
+    assert any(item["code"] == "artifact_schema_invalid" and item["artifact"] == "handoff.json" for item in invalid["diagnostics"])
+    artifact_error = next(item for item in invalid["diagnostics"] if item["code"] == "artifact_schema_invalid")
+    assert artifact_error["next_tool"] == "report.handoff"
+    assert invalid["next_tool"] is None
 
     _write_handoff(run_dir, quality)
     index["entries"][0]["artifacts"][0]["sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
@@ -611,3 +615,85 @@ def test_saved_index_validator_checks_input_handoff_reference(tmp_path: Path) ->
 
     assert result["status"] == "blocked"
     assert result["diagnostics"][0]["code"] == "input_handoff_checksum_mismatch"
+
+
+def test_saved_index_validator_checks_input_handoff_schema_even_with_updated_digest(tmp_path: Path) -> None:
+    root = tmp_path / "step1"
+    index_dir = tmp_path / "index"
+    handoff = root / "handoff.json"
+    write_json(handoff, source_handoff(artifacts=[]))
+    build_index(handoff, root, index_dir)
+    index_path = index_dir / "index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    write_json(handoff, {})
+    index["input_handoff_sha256"] = hashlib.sha256(handoff.read_bytes()).hexdigest()
+    write_json(index_path, index)
+
+    result = validate_saved_index(index_path, root)
+
+    assert result["status"] == "blocked"
+    assert any(item["code"] == "input_handoff_schema_invalid" and item["artifact"] == "input_handoff" for item in result["diagnostics"])
+
+
+@pytest.mark.parametrize("invalid_handoff_path", ["../outside.json", "sources/pass/missing.json"])
+def test_saved_index_validator_rechecks_batch_entry_handoff_path(tmp_path: Path, invalid_handoff_path: str) -> None:
+    root = tmp_path / "step1"
+    index_dir = tmp_path / "index"
+    batch_path = root / "batch_handoff.json"
+    per_source_handoff = root / "sources/pass/handoff.json"
+    write_json(per_source_handoff, source_handoff(
+        source={"path": "models/a.xlsx", "sha256": "sha-a"},
+        run_id="run-a",
+        artifacts=[],
+    ))
+    write_json(batch_path, {
+        "schema_version": "step1.batch.v1",
+        "entries": [{
+            "relative_path": "models/a.xlsx",
+            "sha256": "sha-a",
+            "run_id": "run-a",
+            "status": "pass",
+            "handoff_path": "sources/pass/handoff.json",
+        }],
+    })
+    build_index(batch_path, root, index_dir)
+    index_path = index_dir / "index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert validate_saved_index(index_path, root)["status"] == "pass"
+
+    index["entries"][0]["handoff_path"] = invalid_handoff_path
+    write_json(index_path, index)
+    if invalid_handoff_path == "sources/pass/missing.json":
+        per_source_handoff.unlink()
+
+    result = validate_saved_index(index_path, root)
+
+    expected_code = "source_handoff_path_invalid" if invalid_handoff_path.startswith("..") else "source_handoff_missing"
+    diagnostic = next(item for item in result["diagnostics"] if item["code"] == expected_code)
+    assert result["status"] == "blocked"
+    assert diagnostic["artifact"] == "source_handoff"
+    assert diagnostic["source_path"] == "models/a.xlsx"
+
+
+def test_saved_index_validator_rejects_incomplete_source_record_artifact(tmp_path: Path) -> None:
+    root = tmp_path / "step1"
+    index_dir = tmp_path / "index"
+    write_json(root / "handoff.json", source_handoff(artifacts=[]))
+    build_index(root / "handoff.json", root, index_dir)
+    index_path = index_dir / "index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    source_path = root / "runs/source-a/source.json"
+    source_record = source_metadata()
+    source_record.pop("attempt_limit")
+    write_json(source_path, source_record)
+    index["entries"][0]["artifacts"] = [{
+        "name": "source.json",
+        "path": source_path.relative_to(root).as_posix(),
+        "sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+    }]
+    write_json(index_path, index)
+
+    result = validate_saved_index(index_path, root)
+
+    assert result["status"] == "blocked"
+    assert any(item["code"] == "artifact_schema_invalid" and item["artifact"] == "source.json" for item in result["diagnostics"])
