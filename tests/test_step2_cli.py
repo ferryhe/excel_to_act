@@ -8,6 +8,42 @@ from typer.testing import CliRunner
 from excel_to_act.interfaces.cli import app
 
 
+def test_step2_manual_and_named_tool_commands_share_state(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    root.mkdir()
+    handoff = root / "handoff.json"
+    payload = {"schema_version": "step1.v1", "source": {"path": "a.xlsx", "sha256": "a"},
+               "status": "pass", "artifacts": []}
+    handoff.write_text(json.dumps(payload), encoding="utf-8")
+    options = ["--handoff", str(handoff), "--step1-root", str(root), "--out", str(out)]
+    runner = CliRunner()
+    resolved = runner.invoke(app, ["step2", "tool", "step2.handoff.resolve", *options])
+    assert resolved.exit_code == 0
+    assert not (out / "index.json").exists()
+    built = runner.invoke(app, ["step2", "index", *options])
+    assert json.loads(built.stdout)["attempt"] == 2
+    resumed = runner.invoke(app, ["step2", "tool", "step2.index.build", *options, "--resume"])
+    assert resumed.exit_code == 0
+    assert json.loads(resumed.stdout)["metrics"]["entries_skipped"] == 1
+    checked = runner.invoke(app, ["step2", "validate", "--index", str(out / "index.json"), "--step1-root", str(root)])
+    assert checked.exit_code == 0
+    assert json.loads(checked.stdout)["attempt"] == 2
+    payload["metrics"] = {"changed": True}
+    handoff.write_text(json.dumps(payload), encoding="utf-8")
+    third = runner.invoke(app, ["step2", "tool", "step2.index.build", *options])
+    assert json.loads(third.stdout)["attempt"] == 3
+    stopped = runner.invoke(app, ["step2", "index", *options])
+    assert stopped.exit_code == 1
+    assert json.loads(stopped.stdout)["stop_reason"] == "attempt_limit_reached"
+
+
+def test_step2_rejects_step1_dispatch_without_touching_histories(tmp_path: Path) -> None:
+    result = CliRunner().invoke(app, ["step2", "tool", "inventory.extract", "--step1-root", str(tmp_path), "--out", str(tmp_path / "index")])
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["diagnostics"][0]["code"] == "unknown_tool"
+    assert not (tmp_path / "index/state.json").exists()
+
+
 def test_step2_tools_lists_initial_actions() -> None:
     result = CliRunner().invoke(app, ["step2", "tools"])
 

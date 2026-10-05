@@ -8,7 +8,7 @@ import json
 import typer
 
 from excel_to_act.orchestrator.phase1 import Phase1Orchestrator
-from excel_to_act.steps.step2.workflow import build_index, tool_catalog as step2_tool_catalog, validate_saved_index
+from excel_to_act.steps.step2.workflow import build_index, execute_tool as execute_step2_tool, tool_catalog as step2_tool_catalog, validate_saved_index
 from excel_to_act.steps.step1.workflow import agent_definition, auto_recover, convert_directory, execute_tool, finalize_run, tool_catalog
 
 app = typer.Typer(help="Excel to actuarial model decomposition toolkit")
@@ -59,10 +59,11 @@ def step2_index(
     handoff: Path = typer.Option(..., "--handoff", help="Step 1 source or batch handoff JSON"),
     step1_root: Path = typer.Option(..., "--step1-root", help="Step 1 output root for resolving handoff and artifact paths"),
     out: Path = typer.Option(Path("output/step2_index"), "--out", "-o", help="Step 2 index output directory"),
+    resume: bool = typer.Option(False, "--resume", help="Reuse validated entries with unchanged inputs and saved outputs"),
 ) -> None:
     """Build a deterministic index from a current Step 1 handoff."""
 
-    result = build_index(handoff, step1_root, out)
+    result = build_index(handoff, step1_root, out, resume=resume)
     _emit_json(result)
     if result["status"] == "blocked":
         raise typer.Exit(code=1)
@@ -76,6 +77,23 @@ def step2_validate(
     """Validate a saved Step 2 index and its referenced Step 1 artifacts."""
 
     result = validate_saved_index(index, step1_root)
+    _emit_json(result)
+    if result["status"] == "blocked":
+        raise typer.Exit(code=1)
+
+
+@step2_app.command("tool")
+def step2_tool(
+    name: str = typer.Argument(..., help="One name from step2 tools"),
+    step1_root: Path = typer.Option(..., "--step1-root"),
+    handoff: Path | None = typer.Option(None, "--handoff"),
+    index: Path | None = typer.Option(None, "--index"),
+    out: Path = typer.Option(Path("output/step2_index"), "--out", "-o"),
+    resume: bool = typer.Option(False, "--resume"),
+) -> None:
+    """Dispatch exactly one selected Step 2 action."""
+    result = execute_step2_tool(name, step1_root=step1_root, handoff_path=handoff,
+                               index_path=index, out_dir=out, resume=resume)
     _emit_json(result)
     if result["status"] == "blocked":
         raise typer.Exit(code=1)
