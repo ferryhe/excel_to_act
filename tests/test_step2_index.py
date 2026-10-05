@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from excel_to_act.steps.step1.workflow import _write_handoff
-from excel_to_act.steps.step2.workflow import build_index, tool_catalog, validate_saved_index
+from excel_to_act.steps.step2.workflow import build_index, execute_tool, tool_catalog, validate_saved_index
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -49,6 +49,709 @@ def source_metadata() -> dict:
         "allow_opaque": True,
         "attempt_limit": 3,
     }
+
+
+def test_resume_reuses_only_validated_unchanged_entries(tmp_path: Path, monkeypatch) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    entries = []
+    for name in ("a", "b"):
+        write_json(root / f"{name}/handoff.json", source_handoff(
+            source={"path": f"{name}.xlsx", "sha256": name}, run_id=name, artifacts=[],
+        ))
+        entries.append({"relative_path": f"{name}.xlsx", "sha256": name, "run_id": name, "handoff_path": f"{name}/handoff.json"})
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": entries})
+    build_index(batch, root, out)
+    original = workflow._resolve_batch_entry
+    calls = []
+
+    def resolve(root, item, ordinal):
+        calls.append(item["relative_path"])
+        return original(root, item, ordinal)
+
+    monkeypatch.setattr(workflow, "_resolve_batch_entry", resolve)
+    unchanged = build_index(batch, root, out, resume=True)
+    assert unchanged["metrics"]["entries_skipped"] == 2
+    assert unchanged["metrics"]["entries_checked"] == 0
+    assert calls == []
+    assert len(json.loads((out / "state.json").read_text())["attempts"]) == 1
+
+    write_json(root / "a/handoff.json", source_handoff(
+        source={"path": "a.xlsx", "sha256": "a"}, run_id="a", artifacts=[], metrics={"changed": True},
+    ))
+    changed = build_index(batch, root, out, resume=True)
+    assert changed["metrics"]["entries_skipped"] == 1
+    assert changed["metrics"]["entries_checked"] == 1
+    assert calls == ["a.xlsx"]
+
+
+@pytest.mark.parametrize("change", ["rename", "remove", "insert"])
+def test_resume_reuses_entries_after_batch_positions_change(tmp_path: Path, monkeypatch, change: str) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    entries = {}
+    for name in ("a", "b", "c", "z"):
+        artifact = root / f"{name}/artifacts/custom.json"
+        write_json(artifact, {"content": name})
+        write_json(root / f"{name}/handoff.json", source_handoff(
+            source={"path": f"{name}.xlsx", "sha256": name}, run_id=name,
+            artifact_paths_relative_to=f"{name}/artifacts", artifacts=[{
+                "name": "custom.json", "path": "custom.json",
+                "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            }],
+        ))
+        entries[name] = {"relative_path": f"{name}.xlsx", "handoff_path": f"{name}/handoff.json"}
+    initial = ["b", "c"] if change == "insert" else ["a", "b", "c"]
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [entries[name] for name in initial]})
+    assert build_index(batch, root, out)["attempt"] == 1
+    original = workflow._resolve_batch_entry
+    calls = []
+
+    def resolve(root, item, ordinal):
+        calls.append(item["relative_path"])
+        return original(root, item, ordinal)
+
+    monkeypatch.setattr(workflow, "_resolve_batch_entry", resolve)
+    changed = {"rename": ["b", "c", "z"], "remove": ["b", "c"], "insert": ["a", "b", "c"]}[change]
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [entries[name] for name in changed]})
+    resumed = build_index(batch, root, out, resume=True)
+    processed = 0 if change == "remove" else 1
+    assert calls == (["z.xlsx"] if change == "rename" else ["a.xlsx"] if change == "insert" else [])
+    assert resumed["attempt"] == 2
+    assert resumed["metrics"]["entries_skipped"] == 2
+    assert resumed["metrics"]["entries_processed"] == processed
+    assert resumed["metrics"]["entries_checked"] == processed
+    assert resumed["metrics"]["artifacts_checked"] == processed
+    assert len(json.loads((out / "state.json").read_text())["attempts"]) == 2
+
+
+@pytest.mark.parametrize("item", [
+    {"relative_path": "a.xlsx", "handoff_path": "a/handoff.json"},
+    {"status": "blocked"},
+])
+def test_batch_duplicate_keys_survive_unrelated_insertion(tmp_path: Path, item: dict) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    write_json(root / "a/handoff.json", source_handoff(
+        source={"path": "a.xlsx", "sha256": "a"}, run_id="a", artifacts=[],
+    ))
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [item, item]})
+    state = {"entries": {}, "attempts": []}
+    _, entries, before, _ = workflow._load_entries(batch, "batch.json", root, out, state, False)
+    assert len(entries) == len(before) == 2
+    unrelated = {"relative_path": "b.xlsx", "handoff_path": "b/handoff.json"}
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [unrelated, item, item]})
+    _, entries, after, _ = workflow._load_entries(batch, "batch.json", root, out, state, False)
+    assert len(entries) == len(after) == 3
+    assert set(before).issubset(after)
+    if item.get("handoff_path"):
+        assert [after[key]["input_sha256"] for key in before] == [saved["input_sha256"] for saved in before.values()]
+
+
+def test_resume_reuses_unchanged_duplicate_batch_occurrences(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    write_json(root / "a/handoff.json", source_handoff(artifacts=[]))
+    item = {"handoff_path": "a/handoff.json"}
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [item, item]})
+    assert build_index(batch, root, out)["metrics"]["entries_checked"] == 2
+    before = (out / "state.json").read_bytes()
+    resumed = build_index(batch, root, out, resume=True)
+    assert resumed["status"] == "partial"
+    assert resumed["stop_reason"] is None
+    assert resumed["attempt"] == 1
+    assert resumed["metrics"]["entries_skipped"] == 2
+    assert resumed["metrics"]["entries_processed"] == resumed["metrics"]["entries_checked"] == 0
+    assert (out / "state.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("changed", ["first", "second"])
+def test_resume_validates_changed_occurrence_with_duplicate_source_id(tmp_path: Path, monkeypatch, changed: str) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    items = []
+    for name in ("first", "second"):
+        artifact = root / f"{name}/custom.json"
+        write_json(artifact, {"content": name})
+        write_json(root / f"{name}/handoff.json", source_handoff(
+            artifact_paths_relative_to=name, artifacts=[{
+                "name": "custom.json", "path": "custom.json", "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            }],
+        ))
+        items.append({"handoff_path": f"{name}/handoff.json"})
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": items})
+    assert build_index(batch, root, out)["metrics"]["entries_checked"] == 2
+    initial = json.loads((out / "index.json").read_text())["entries"]
+    assert initial[0]["source_id"] == initial[1]["source_id"]
+    (root / f"{changed}/custom.json").write_text("changed", encoding="utf-8")
+    original, calls = workflow._resolve_batch_entry, []
+
+    def resolve(root, item, ordinal):
+        calls.append(item["handoff_path"])
+        return original(root, item, ordinal)
+
+    monkeypatch.setattr(workflow, "_resolve_batch_entry", resolve)
+    resumed = build_index(batch, root, out, resume=True)
+    assert calls == [f"{changed}/handoff.json"]
+    assert resumed["status"] == "blocked"
+    assert resumed["metrics"]["entries_skipped"] == 1
+    assert resumed["metrics"]["entries_processed"] == resumed["metrics"]["entries_checked"] == 1
+    assert resumed["metrics"]["artifacts_checked"] == 1
+    assert [d["code"] for d in resumed["diagnostics"]] == ["artifact_checksum_mismatch"]
+    assert resumed["diagnostics"][0]["path"] == f"{changed}/custom.json"
+    states = {entry["output_sha256"]: entry["validation_status"] for entry in json.loads((out / "state.json").read_text())["entries"].values()}
+    statuses = [states[workflow._hash_value(entry)] for entry in json.loads((out / "index.json").read_text())["entries"]]
+    assert statuses == (["blocked", "pass"] if changed == "first" else ["pass", "blocked"])
+
+
+def test_resume_validates_inserted_unidentified_occurrence(tmp_path: Path) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    write_json(root / "old/handoff.json", source_handoff(source={}, run_id=None, artifacts=[]))
+    old = {"handoff_path": "old/handoff.json"}
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [old]})
+    build_index(batch, root, out)
+    write_json(root / "new/handoff.json", source_handoff(
+        source={}, run_id=None, artifact_paths_relative_to="new", artifacts=[{
+            "name": "custom.json", "path": "missing.json", "sha256": "missing",
+        }],
+    ))
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [{"handoff_path": "new/handoff.json"}, old]})
+    resumed = build_index(batch, root, out, resume=True)
+    assert resumed["status"] == "blocked"
+    assert resumed["metrics"]["entries_skipped"] == 1
+    assert resumed["metrics"]["entries_processed"] == resumed["metrics"]["entries_checked"] == 1
+    assert resumed["metrics"]["artifacts_checked"] == 1
+    assert [d["code"] for d in resumed["diagnostics"]] == ["artifact_missing"]
+    entries = json.loads((out / "index.json").read_text())["entries"]
+    assert entries[0]["source_id"] == entries[1]["source_id"]
+    states = {entry["output_sha256"]: entry["validation_status"] for entry in json.loads((out / "state.json").read_text())["entries"].values()}
+    assert [states[workflow._hash_value(entry)] for entry in entries] == ["blocked", "pass"]
+
+
+def test_resume_rechecks_changed_artifacts_and_saved_outputs(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    artifact = root / "runs/source-a/artifacts/custom.json"
+    write_json(artifact, {"opaque": True})
+    handoff = root / "handoff.json"
+    write_json(handoff, source_handoff(artifacts=[{
+        "name": "custom.json", "path": "custom.json", "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+    }]))
+    build_index(handoff, root, out)
+    (out / "INDEX.md").write_text("changed", encoding="utf-8")
+    rebuilt = build_index(handoff, root, out, resume=True)
+    assert rebuilt["metrics"]["entries_skipped"] == 0
+    write_json(artifact, {"opaque": "changed"})
+    changed = build_index(handoff, root, out, resume=True)
+    assert changed["metrics"]["entries_skipped"] == 0
+    assert any(d["code"] == "artifact_checksum_mismatch" for d in changed["diagnostics"])
+
+
+def test_resume_continues_interrupted_changed_entry_with_shared_budget(tmp_path: Path, monkeypatch) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    entries = []
+    for name in ("a", "b"):
+        write_json(root / f"{name}/handoff.json", source_handoff(
+            source={"path": f"{name}.xlsx", "sha256": name}, run_id=name, artifacts=[],
+        ))
+        entries.append({"relative_path": f"{name}.xlsx", "handoff_path": f"{name}/handoff.json"})
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": entries})
+    assert build_index(batch, root, out)["attempt"] == 1
+    write_json(root / "a/handoff.json", source_handoff(
+        source={"path": "a.xlsx", "sha256": "a"}, run_id="a", artifacts=[], metrics={"changed": True},
+    ))
+    original_build, original_resolve = workflow._build_index, workflow._resolve_batch_entry
+
+    def interrupted(*args, **kwargs):
+        raise SystemExit("interrupted after reservation")
+
+    monkeypatch.setattr(workflow, "_build_index", interrupted)
+    with pytest.raises(SystemExit):
+        build_index(batch, root, out, resume=True)
+    reserved = json.loads((out / "state.json").read_text())
+    assert len(reserved["attempts"]) == 2
+    assert reserved["attempts"][1]["result"]["diagnostics"][0]["code"] == "attempt_interrupted"
+    # The retry is explicit; an ordinary repeated call still stops.
+    assert build_index(batch, root, out)["stop_reason"] == "repeated_tool_input"
+    monkeypatch.setattr(workflow, "_build_index", original_build)
+    calls = []
+
+    def resolve(root, item, ordinal):
+        calls.append(item["relative_path"])
+        return original_resolve(root, item, ordinal)
+
+    monkeypatch.setattr(workflow, "_resolve_batch_entry", resolve)
+    resumed = build_index(batch, root, out, resume=True)
+    assert resumed["status"] == "partial"
+    assert resumed["attempt"] == 3
+    assert resumed["metrics"]["entries_processed"] == 1
+    assert resumed["metrics"]["entries_checked"] == 1
+    assert resumed["metrics"]["entries_skipped"] == 1
+    assert calls == ["a.xlsx"]
+    completed = json.loads((out / "state.json").read_text())
+    assert len(completed["attempts"]) == 3
+    assert completed["attempts"][1] == reserved["attempts"][1]
+    write_json(root / "a/handoff.json", source_handoff(
+        source={"path": "a.xlsx", "sha256": "a"}, run_id="a", artifacts=[], metrics={"changed": "again"},
+    ))
+    assert build_index(batch, root, out, resume=True)["stop_reason"] == "attempt_limit_reached"
+    assert calls == ["a.xlsx"]
+
+
+def test_writer_opaque_handoff_keeps_correction_and_specialist_actions(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    run = root / "runs/run-a"
+    write_json(run / "source.json", source_metadata())
+    quality = {
+        "status": "fail", "ready_for_next_step": False, "metrics": {"opaque_parts": 2},
+        "diagnostics": [{"code": "opaque_parts_preserved", "severity": "warning"}],
+        "next_tool": {"name": "inventory.extract", "arguments": {"run": str(run)}},
+    }
+    _write_handoff(run, quality)
+    emitted = json.loads((run / "handoff.json").read_text())
+    assert [action["name"] for action in emitted["next_actions"]] == ["inventory.extract"]
+    build_index(run / "handoff.json", root, out)
+    entry = json.loads((out / "index.json").read_text())["entries"][0]
+    assert [action["name"] for action in entry["next_actions"]] == ["inventory.extract", "specialist.review"]
+    assert entry["next_actions"][0] == emitted["next_actions"][0]
+    summary = (out / "INDEX.md").read_text(encoding="utf-8")
+    assert "inventory.extract" in summary and "specialist.review" in summary
+
+    # A handoff that already carries the human/specialist action keeps it once.
+    emitted["next_actions"] = entry["next_actions"]
+    write_json(run / "handoff.json", emitted)
+    build_index(run / "handoff.json", root, out, resume=True)
+    updated = json.loads((out / "index.json").read_text())["entries"][0]
+    assert updated["next_actions"] == entry["next_actions"]
+
+
+@pytest.mark.parametrize("corrupt_b", [False, True])
+def test_resume_recovers_validated_sibling_after_interrupted_output_write(tmp_path: Path, monkeypatch, corrupt_b: bool) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    entries = []
+    for name in ("a", "b"):
+        write_json(root / f"{name}/handoff.json", source_handoff(
+            source={"path": f"{name}.xlsx", "sha256": name}, run_id=name, artifacts=[],
+        ))
+        entries.append({"relative_path": f"{name}.xlsx", "handoff_path": f"{name}/handoff.json"})
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": entries})
+    build_index(batch, root, out)
+    write_json(root / "a/handoff.json", source_handoff(
+        source={"path": "a.xlsx", "sha256": "a"}, run_id="a", artifacts=[], metrics={"changed": True},
+    ))
+    original_validate, original_resolve = workflow._validate_saved_index, workflow._resolve_batch_entry
+
+    def interrupted(*args, **kwargs):
+        raise SystemExit("interrupted after index and summary writes")
+
+    monkeypatch.setattr(workflow, "_validate_saved_index", interrupted)
+    with pytest.raises(SystemExit):
+        build_index(batch, root, out, resume=True)
+    reserved = json.loads((out / "state.json").read_text())
+    assert len(reserved["attempts"]) == 2
+    assert not workflow._outputs_match(out, reserved)
+    partial = json.loads((out / "index.json").read_text())
+    assert partial["entries"][0]["metrics"] == {"changed": True}
+    if corrupt_b:
+        partial["entries"][1]["metrics"] = {"corrupt": True}
+        workflow._write_index(out, workflow.Step2Index.model_validate(partial))
+    calls, validated = [], []
+
+    def resolve(root, item, ordinal):
+        calls.append(item["relative_path"])
+        return original_resolve(root, item, ordinal)
+
+    def validate(index, root, skipped=None, **kwargs):
+        saved = json.loads(index.read_text())
+        validated.extend(entry["source_path"] for key, entry in zip(kwargs["entry_keys"], saved["entries"]) if key not in (skipped or set()))
+        return original_validate(index, root, skipped, **kwargs)
+
+    monkeypatch.setattr(workflow, "_resolve_batch_entry", resolve)
+    monkeypatch.setattr(workflow, "_validate_saved_index", validate)
+    resumed = build_index(batch, root, out, resume=True)
+    expected = ["a.xlsx", "b.xlsx"] if corrupt_b else ["a.xlsx"]
+    assert calls == validated == expected
+    assert resumed["metrics"]["entries_skipped"] == (0 if corrupt_b else 1)
+    assert resumed["attempt"] == 3
+    assert resumed["stop_reason"] == "attempt_limit_reached"
+    final = json.loads((out / "state.json").read_text())
+    assert len(final["attempts"]) == 3
+    assert final["attempts"][1] == reserved["attempts"][1]
+    assert workflow._outputs_match(out, final)
+    assert json.loads((out / "index.json").read_text())["entries"][1]["metrics"] == {"traceability_ratio": 1.0}
+
+
+def test_cached_resume_returns_validated_output_evidence_after_failed_input(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    handoff = root / "handoff.json"
+    write_json(handoff, source_handoff(artifacts=[], diagnostics=[{"code": "preserved_note", "severity": "warning"}]))
+    original = handoff.read_bytes()
+    built = build_index(handoff, root, out)
+    write_json(handoff, {"schema_version": "unsupported"})
+    failed = build_index(handoff, root, out)
+    assert failed["stop_reason"] == "non_retryable_failure"
+    before = (out / "state.json").read_bytes()
+    handoff.write_bytes(original)
+    cached = build_index(handoff, root, out, resume=True)
+    assert cached["status"] == "partial"
+    assert cached["source"] == built["source"]
+    assert cached["artifacts"] == built["artifacts"]
+    assert cached["metrics"]["input_count"] == 1
+    assert cached["metrics"]["artifact_count"] == built["metrics"]["artifact_count"]
+    assert cached["metrics"]["entries_skipped"] == 1
+    assert cached["metrics"]["entries_processed"] == cached["metrics"]["entries_checked"] == 0
+    assert cached["diagnostics"] == built["diagnostics"]
+    assert not any(d["code"] == "handoff_invalid" for d in cached["diagnostics"])
+    assert cached["attempt"] == 2
+    assert cached["stop_reason"] is None
+    assert (out / "state.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("shared_source_id", [False, True])
+def test_first_build_resume_reuses_entry_completed_before_artifact_interruption(tmp_path: Path, monkeypatch, shared_source_id: bool) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    entries, artifacts = [], {}
+    for name in ("a", "b"):
+        identity = "a" if shared_source_id else name
+        artifact = root / f"{name}/custom.json"
+        write_json(artifact, {"source": name})
+        artifacts[name] = artifact
+        write_json(root / f"{name}/handoff.json", source_handoff(
+            source={"path": f"{identity}.xlsx", "sha256": identity}, run_id=identity,
+            artifact_paths_relative_to=name, artifacts=[{
+                "name": "custom.json", "path": "custom.json", "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            }],
+        ))
+        entries.append({"relative_path": f"{identity}.xlsx", "handoff_path": f"{name}/handoff.json"})
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": entries})
+    original_read, original_resolve = workflow._read_json, workflow._resolve_batch_entry
+    reads = []
+
+    def interrupted(path):
+        if path in artifacts.values():
+            reads.append(path)
+        if path == artifacts["b"]:
+            raise SystemExit("interrupted during B artifact validation")
+        return original_read(path)
+
+    monkeypatch.setattr(workflow, "_read_json", interrupted)
+    with pytest.raises(SystemExit):
+        build_index(batch, root, out)
+    assert reads == [artifacts["a"], artifacts["b"]]
+    reserved = json.loads((out / "state.json").read_text())
+    assert len(reserved["attempts"]) == 1
+    assert reserved["attempts"][0]["result"]["diagnostics"][0]["code"] == "attempt_interrupted"
+    assert len(reserved["entries"]) == 1
+    completed_a = next(iter(reserved["entries"].values()))
+    assert completed_a["validation_status"] == "pass"
+    partial = json.loads((out / "index.json").read_text())
+    assert (partial["entries"][0]["source_id"] == partial["entries"][1]["source_id"]) is shared_source_id
+    assert completed_a["source_id"] == partial["entries"][0]["source_id"]
+    assert completed_a["output_sha256"] == workflow._hash_value(partial["entries"][0])
+    calls, reads = [], []
+
+    def read(path):
+        if path in artifacts.values():
+            reads.append(path)
+        return original_read(path)
+
+    def resolve(root, item, ordinal):
+        calls.append(item["handoff_path"])
+        return original_resolve(root, item, ordinal)
+
+    monkeypatch.setattr(workflow, "_read_json", read)
+    monkeypatch.setattr(workflow, "_resolve_batch_entry", resolve)
+    resumed = build_index(batch, root, out, resume=True)
+    assert calls == ["b/handoff.json"]
+    assert reads == [artifacts["b"]]
+    assert resumed["metrics"]["entries_skipped"] == 1
+    assert resumed["metrics"]["entries_processed"] == resumed["metrics"]["entries_checked"] == 1
+    assert resumed["metrics"]["artifacts_checked"] == 1
+    assert resumed["attempt"] == 2
+    final = json.loads((out / "state.json").read_text())
+    assert len(final["entries"]) == len(final["attempts"]) == 2
+    assert final["attempts"][0] == reserved["attempts"][0]
+    assert workflow._outputs_match(out, final)
+    assert build_index(batch, root, out)["stop_reason"] == "repeated_tool_input"
+
+
+def test_shared_bounds_stop_before_dispatch_and_leave_step1_history_alone(tmp_path: Path, monkeypatch) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    handoff = root / "handoff.json"
+    history = root / "runs/source-a/attempt_history.json"
+    write_json(handoff, source_handoff(artifacts=[]))
+    write_json(history, {"attempt_limit": 3, "attempts": [{"tool": "inventory.extract"}]})
+    before = history.read_bytes()
+    build_index(handoff, root, out)
+    repeated = execute_tool("step2.index.build", step1_root=root, handoff_path=handoff, out_dir=out)
+    assert repeated["stop_reason"] == "repeated_tool_input"
+    assert repeated["artifacts"]
+    assert len(json.loads((out / "state.json").read_text())["attempts"]) == 1
+    unchanged = validate_saved_index(out / "index.json", root)
+    assert unchanged["metrics"]["entries_checked"] == 0
+    assert unchanged["attempt"] == 1
+    execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=handoff, out_dir=out)
+    # A changed input with useful new evidence uses the same cumulative budget.
+    write_json(handoff, source_handoff(artifacts=[], metrics={"changed": True}))
+    third = build_index(handoff, root, out)
+    assert third["attempt"] == 3
+    monkeypatch.setattr(workflow, "_build_index", lambda *a, **k: pytest.fail("dispatch after limit"))
+    stopped = execute_tool("step2.index.build", step1_root=root, handoff_path=handoff, out_dir=out)
+    assert stopped["stop_reason"] == "attempt_limit_reached"
+    assert stopped["diagnostics"] is not None
+    cached = build_index(handoff, root, out, resume=True)
+    assert cached["status"] == "partial"
+    assert cached["metrics"]["entries_checked"] == 0
+    assert cached["attempt"] == 3
+    assert history.read_bytes() == before
+    assert all(a["tool"].startswith("step2.") for a in json.loads((out / "state.json").read_text())["attempts"])
+
+
+def test_no_progress_and_non_retryable_stops_keep_failure_evidence(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    handoff = root / "handoff.json"
+    write_json(handoff, source_handoff())  # Missing inventory is a Step 1 repair recommendation.
+    build_index(handoff, root, out)
+    repeated_resume = build_index(handoff, root, out, resume=True)
+    assert repeated_resume["stop_reason"] == "repeated_tool_input"
+    assert repeated_resume["attempt"] == 1
+    checked = validate_saved_index(out / "index.json", root)
+    assert checked["stop_reason"] == "no_progress"
+    stopped = execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=handoff, out_dir=out)
+    assert stopped["stop_reason"] == "no_progress"
+    assert any(d["code"] == "artifact_missing" for d in stopped["diagnostics"])
+    assert (out / "index.json").exists()
+
+    bad_out = tmp_path / "bad-index"
+    write_json(handoff, {"schema_version": "unsupported"})
+    failed = build_index(handoff, root, bad_out)
+    assert failed["stop_reason"] == "non_retryable_failure"
+    stopped = execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=handoff, out_dir=bad_out)
+    assert stopped["stop_reason"] == "non_retryable_failure"
+    assert stopped["diagnostics"][0]["code"] == "handoff_invalid"
+
+
+def test_resolver_failure_wording_does_not_reset_no_progress(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    source, batch = root / "a/handoff.json", root / "batch.json"
+    write_json(source, source_handoff(source={"path": "a.xlsx", "sha256": "a"}, run_id="a", artifacts=[]))
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [
+        {"relative_path": "a.xlsx", "handoff_path": "a/handoff.json"},
+    ]})
+    resolved = execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=batch, out_dir=out)
+    assert resolved["diagnostics"] == []
+    write_json(source, {"schema_version": "wrong"})
+    first_failure = execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=batch, out_dir=out)
+    history = json.loads((out / "state.json").read_text())["attempts"]
+    assert history[1]["improved"] is False
+    assert history[1]["no_progress_count"] == 1
+    assert first_failure["stop_reason"] is None
+    write_json(source, {"schema_version": "step1.v1"})
+    stopped = execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=batch, out_dir=out)
+    history = json.loads((out / "state.json").read_text())["attempts"]
+    assert history[2]["improved"] is False
+    assert history[2]["no_progress_count"] == 2
+    assert stopped["attempt"] == 3
+    assert stopped["stop_reason"] == "no_progress"
+    assert stopped["diagnostics"][0]["code"] == "source_handoff_invalid"
+    assert "source object" in stopped["diagnostics"][0]["message"]
+    assert stopped["diagnostics"] != first_failure["diagnostics"]
+    assert stopped["entries"][0]["diagnostics"] == stopped["diagnostics"]
+    assert history[1]["result"] == first_failure
+    assert history[2]["result"] == stopped
+
+
+def test_resolver_progress_keeps_duplicate_source_occurrences(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    for name in ("first", "second"):
+        write_json(root / f"{name}/handoff.json", source_handoff(artifacts=[]))
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [
+        {"handoff_path": "first/handoff.json"}, {"handoff_path": "second/handoff.json"},
+    ]})
+    execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=batch, out_dir=out)
+    write_json(root / "first/handoff.json", source_handoff(artifacts=[], metrics={"changed": True}))
+    execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=batch, out_dir=out)
+    history = json.loads((out / "state.json").read_text())["attempts"]
+    assert len(history[0]["resolved_entries"]) == len(history[1]["resolved_entries"]) == 2
+    assert history[1]["improved"] is True
+    assert history[1]["no_progress_count"] == 0
+
+
+def test_resolver_useful_entry_changes_and_fewer_errors_remain_progress(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    write_json(root / "a/handoff.json", source_handoff(source={"path": "a.xlsx", "sha256": "a"}, run_id="a", artifacts=[]))
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [
+        {"relative_path": "a.xlsx", "handoff_path": "a/handoff.json"},
+        {"relative_path": "b.xlsx", "handoff_path": "b/handoff.json"},
+    ]})
+    execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=batch, out_dir=out)
+    write_json(root / "a/handoff.json", source_handoff(source={"path": "a.xlsx", "sha256": "a"}, run_id="a", artifacts=[], metrics={"updated": True}))
+    execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=batch, out_dir=out)
+    changed = json.loads((out / "state.json").read_text())["attempts"][-1]
+    assert changed["improved"] is True
+    assert changed["no_progress_count"] == 0
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [
+        {"relative_path": "a.xlsx", "handoff_path": "a/handoff.json"},
+    ]})
+    execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=batch, out_dir=out)
+    fewer_errors = json.loads((out / "state.json").read_text())["attempts"][-1]
+    assert fewer_errors["result"]["diagnostics"] == []
+    assert fewer_errors["improved"] is True
+    assert fewer_errors["no_progress_count"] == 0
+
+
+@pytest.mark.parametrize("initial_valid", [False, True])
+def test_build_blocked_entry_changes_do_not_reset_no_progress(tmp_path: Path, monkeypatch, initial_valid: bool) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    source, batch = root / "a/handoff.json", root / "batch.json"
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [
+        {"relative_path": "a.xlsx", "handoff_path": "a/handoff.json"},
+    ]})
+    if initial_valid:
+        write_json(source, source_handoff(source={"path": "a.xlsx", "sha256": "a"}, run_id="a", artifacts=[]))
+        build_index(batch, root, out)
+    write_json(source, {"schema_version": "wrong"})
+    first = build_index(batch, root, out, resume=True)
+    first_state = json.loads((out / "state.json").read_text())
+    assert first_state["attempts"][-1]["improved"] is False
+    assert first_state["attempts"][-1]["no_progress_count"] == 1
+    assert all(entry["validation_status"] == "blocked" for entry in first_state["entries"].values())
+    assert first["stop_reason"] is None
+    write_json(source, {"schema_version": "step1.v1"})
+    second = build_index(batch, root, out, resume=True)
+    final = json.loads((out / "state.json").read_text())
+    assert final["attempts"][-1]["improved"] is False
+    assert final["attempts"][-1]["no_progress_count"] == 2
+    assert all(entry["validation_status"] == "blocked" for entry in final["entries"].values())
+    assert second["stop_reason"] == "no_progress"
+    assert second["attempt"] == (3 if initial_valid else 2)
+    assert "source object" in second["diagnostics"][0]["message"]
+    assert second["diagnostics"] != first["diagnostics"]
+    assert final["attempts"][-1]["result"] == second
+    before = (out / "state.json").read_bytes()
+    write_json(source, {"schema_version": "step1.v1", "source": {}})
+    monkeypatch.setattr(workflow, "_build_index", lambda *a, **k: pytest.fail("dispatch after no-progress stop"))
+    stopped = build_index(batch, root, out, resume=True)
+    assert stopped["recovery_stopped"] is True
+    assert stopped["diagnostics"] == second["diagnostics"]
+    assert stopped["artifacts"] == second["artifacts"]
+    assert stopped["attempt"] == second["attempt"]
+    assert (out / "state.json").read_bytes() == before
+
+
+def test_build_validated_entry_changes_and_fewer_errors_remain_progress(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    write_json(root / "a/handoff.json", source_handoff(source={"path": "a.xlsx", "sha256": "a"}, run_id="a", artifacts=[]))
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [
+        {"relative_path": "a.xlsx", "handoff_path": "a/handoff.json"},
+        {"relative_path": "b.xlsx", "handoff_path": "b/handoff.json"},
+    ]})
+    build_index(batch, root, out)
+    write_json(root / "a/handoff.json", source_handoff(source={"path": "a.xlsx", "sha256": "a"}, run_id="a", artifacts=[], metrics={"updated": True}))
+    build_index(batch, root, out, resume=True)
+    changed = json.loads((out / "state.json").read_text())["attempts"][-1]
+    assert changed["improved"] is True
+    assert changed["no_progress_count"] == 0
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [
+        {"relative_path": "a.xlsx", "handoff_path": "a/handoff.json"},
+    ]})
+    build_index(batch, root, out, resume=True)
+    fewer_errors = json.loads((out / "state.json").read_text())["attempts"][-1]
+    assert fewer_errors["result"]["diagnostics"] == []
+    assert fewer_errors["improved"] is True
+    assert fewer_errors["no_progress_count"] == 0
+
+
+def test_resolver_dispatches_once_and_opaque_action_is_visible(tmp_path: Path, monkeypatch) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    handoff = root / "handoff.json"
+    write_json(handoff, source_handoff(artifacts=[], metrics={"opaque_parts": 2}, diagnostics=[{"code": "opaque_parts_preserved", "message": "Preserved"}]))
+    monkeypatch.setattr(workflow, "_build_index", lambda *a, **k: pytest.fail("resolver built an index"))
+    resolved = execute_tool("step2.handoff.resolve", step1_root=root, handoff_path=handoff, out_dir=out)
+    assert resolved["tool"] == "step2.handoff.resolve"
+    assert not (out / "index.json").exists()
+    assert resolved["entries"][0]["next_actions"][0]["name"] == "specialist.review"
+    monkeypatch.undo()
+    build_index(handoff, root, out)
+    assert "specialist.review" in (out / "INDEX.md").read_text(encoding="utf-8")
+    repeated = build_index(handoff, root, out)
+    assert repeated["stop_reason"] == "repeated_tool_input"
+
+
+def test_resume_preserves_partial_index_and_retries_corrected_entry(tmp_path: Path) -> None:
+    root, out = tmp_path / "step1", tmp_path / "index"
+    batch = root / "batch.json"
+    write_json(root / "a/handoff.json", source_handoff(source={"path": "a.xlsx", "sha256": "a"}, artifacts=[]))
+    write_json(batch, {"schema_version": "step1.batch.v1", "entries": [
+        {"relative_path": "a.xlsx", "handoff_path": "a/handoff.json"},
+        {"relative_path": "b.xlsx", "handoff_path": "b/handoff.json", "status": "fail", "metrics": {"opaque_parts": 1}},
+    ]})
+    first = build_index(batch, root, out)
+    assert first["metrics"]["input_count"] == 2
+    saved = json.loads((out / "index.json").read_text())["entries"]
+    assert saved[1]["diagnostics"][-1]["code"] == "source_handoff_unavailable"
+    assert saved[1]["next_actions"][0]["name"] == "specialist.review"
+    write_json(root / "b/handoff.json", source_handoff(source={"path": "b.xlsx", "sha256": "b"}, artifacts=[]))
+    resumed = build_index(batch, root, out, resume=True)
+    assert resumed["metrics"]["entries_skipped"] == 1
+    assert resumed["metrics"]["entries_checked"] == 1
+    assert resumed["metrics"]["input_count"] == 2
+
+
+def test_invalid_state_is_preserved_and_interrupted_dispatch_is_counted(tmp_path: Path, monkeypatch) -> None:
+    from excel_to_act.steps.step2 import workflow
+
+    root, out = tmp_path / "step1", tmp_path / "index"
+    handoff = root / "handoff.json"
+    write_json(handoff, source_handoff(artifacts=[]))
+    out.mkdir()
+    state_path = out / "state.json"
+    state_path.write_text("{", encoding="utf-8")
+    before = state_path.read_bytes()
+    failed = build_index(handoff, root, out)
+    assert failed["stop_reason"] == "state_invalid"
+    assert state_path.read_bytes() == before
+    fresh_out = tmp_path / "fresh"
+
+    def interrupted(*args, **kwargs):
+        raise SystemExit("interrupted")
+
+    monkeypatch.setattr(workflow, "_build_index", interrupted)
+    with pytest.raises(SystemExit):
+        build_index(handoff, root, fresh_out)
+    saved = json.loads((fresh_out / "state.json").read_text())
+    assert len(saved["attempts"]) == 1
+    assert saved["attempts"][0]["result"]["diagnostics"][0]["code"] == "attempt_interrupted"
+    stopped = build_index(handoff, root, fresh_out)
+    assert stopped["stop_reason"] == "repeated_tool_input"
 
 
 def test_builds_single_current_handoff_with_relative_artifact_refs_and_quality(tmp_path: Path) -> None:
@@ -600,7 +1303,12 @@ def test_saved_index_validator_accepts_and_repairs_writer_emitted_current_handof
     index["entries"][0]["artifacts"][0]["sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
     index["input_handoff_sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
     write_json(index_path, index)
-    assert validate_saved_index(index_path, root)["status"] == "pass"
+    fourth = validate_saved_index(index_path, root)
+    assert fourth["stop_reason"] == "attempt_limit_reached"
+    assert fourth["attempt"] == 3
+    repaired_index = tmp_path / "repaired-index/index.json"
+    write_json(repaired_index, index)
+    assert validate_saved_index(repaired_index, root)["status"] == "pass"
 
 
 def test_saved_index_validator_checks_input_handoff_reference(tmp_path: Path) -> None:
