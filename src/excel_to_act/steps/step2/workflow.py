@@ -88,6 +88,19 @@ def _validate_source_handoff(value: Any) -> dict[str, Any]:
     return value
 
 
+def _handoff_identity_mismatch(entry: dict[str, Any], handoff: dict[str, Any]) -> str | None:
+    source = handoff["source"]
+    identities = (
+        ("source path", _text(entry.get("relative_path")), _text(source.get("path"))),
+        ("source SHA-256", _text(entry.get("sha256")), _text(source.get("sha256"))),
+        ("run ID", _text(entry.get("run_id")), _text(handoff.get("run_id"))),
+    )
+    for label, batch_value, handoff_value in identities:
+        if batch_value is not None and handoff_value is not None and batch_value != handoff_value:
+            return f"Batch entry {label} {batch_value!r} does not match per-source handoff {handoff_value!r}."
+    return None
+
+
 def _source_id(path: str | None, digest: str | None, run_id: str | None, ordinal: int) -> str:
     identity: Any = [path, digest, run_id] if path or digest or run_id else ["entry", ordinal]
     raw = json.dumps(identity, ensure_ascii=False, separators=(",", ":"))
@@ -227,6 +240,9 @@ def _resolve_batch_entry(root: Path, item: Any, ordinal: int) -> Step2IndexEntry
             f"Invalid per-source handoff: {exc}",
             code="source_handoff_invalid",
         )
+    mismatch = _handoff_identity_mismatch(item, handoff)
+    if mismatch:
+        return _missing_handoff_entry(item, ordinal, relative, mismatch, code="source_handoff_mismatch")
     return _entry_from_handoff(root, handoff, relative, ordinal, item)
 
 

@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from excel_to_act.steps.step2.workflow import build_index, tool_catalog
 
 
@@ -141,12 +143,14 @@ def test_rejects_source_metadata_shape_in_batch_and_preserves_batch_evidence(tmp
 def test_batch_keeps_failed_sources_and_missing_handoffs_with_evidence(tmp_path: Path) -> None:
     root = tmp_path / "step1"
     batch_path = root / "batches/batch-b/batch_handoff.json"
-    write_json(root / "sources/pass/handoff.json", source_handoff(status="partial", run_id="run-pass"))
+    write_json(root / "sources/pass/handoff.json", source_handoff(
+        source={"path": "models/a.xlsx", "sha256": "sha-a"}, status="partial", run_id="run-pass"
+    ))
     write_json(root / "sources/fail/handoff.json", source_handoff(
-        source={"path": "models/changed.xlsx", "sha256": "changed-sha"},
+        source={"path": "models/b.xlsx", "sha256": "sha-b"},
         status="partial",
         ready_for_next_step=False,
-        run_id="different-run",
+        run_id="run-fail",
         metrics={"opaque_rate": 0.2},
     ))
     write_json(batch_path, {
@@ -175,10 +179,91 @@ def test_batch_keeps_failed_sources_and_missing_handoffs_with_evidence(tmp_path:
     assert entries[2]["handoff_path"] is None
 
 
+@pytest.mark.parametrize(
+    ("handoff_update", "mismatch"),
+    [
+        ({"source": {"path": "models/other.xlsx", "sha256": "sha-b"}}, "source path"),
+        ({"source": {"path": "models/b.xlsx", "sha256": "other-sha"}}, "source SHA-256"),
+        ({"run_id": "other-run"}, "run ID"),
+    ],
+)
+def test_batch_rejects_handoff_with_mismatched_identity_and_keeps_batch_evidence(
+    tmp_path: Path,
+    handoff_update: dict,
+    mismatch: str,
+) -> None:
+    root = tmp_path / "step1"
+    updates = {"source": {"path": "models/b.xlsx", "sha256": "sha-b"}, "run_id": "run-b"}
+    updates.update(handoff_update)
+    handoff = source_handoff(**updates, metrics={"wrong": True})
+    handoff_path = root / "sources/other/handoff.json"
+    batch_path = root / "batch.json"
+    write_json(handoff_path, handoff)
+    write_json(batch_path, {
+        "schema_version": "step1.batch.v1",
+        "batch_id": "batch-a",
+        "entries": [{
+            "relative_path": "models/b.xlsx",
+            "sha256": "sha-b",
+            "run_id": "run-b",
+            "status": "fail",
+            "metrics": {"batch_evidence": True},
+            "diagnostics": [{"code": "batch_diagnostic"}],
+            "handoff_path": "sources/other/handoff.json",
+        }],
+    })
+
+    result = build_index(batch_path, root, tmp_path / "index")
+    entry = json.loads((tmp_path / "index/index.json").read_text(encoding="utf-8"))["entries"][0]
+
+    assert result["status"] == "partial"
+    assert entry["source_path"] == "models/b.xlsx"
+    assert entry["source_sha256"] == "sha-b"
+    assert entry["run_id"] == "run-b"
+    assert entry["status"] == "fail"
+    assert entry["metrics"] == {"batch_evidence": True}
+    assert entry["artifacts"] == []
+    assert entry["diagnostics"][0]["code"] == "batch_diagnostic"
+    assert entry["diagnostics"][1]["code"] == "source_handoff_mismatch"
+    assert mismatch in entry["diagnostics"][1]["message"]
+
+
+def test_batch_identity_check_allows_missing_source_hash_and_run_id(tmp_path: Path) -> None:
+    root = tmp_path / "step1"
+    batch_path = root / "batch.json"
+    write_json(root / "sources/a/handoff.json", source_handoff(
+        source={"path": "models/a.xlsx", "sha256": None},
+        run_id=None,
+        status="fail",
+        ready_for_next_step=False,
+        artifacts=[],
+    ))
+    write_json(batch_path, {
+        "schema_version": "step1.batch.v1",
+        "entries": [{
+            "relative_path": "models/a.xlsx",
+            "sha256": "batch-sha",
+            "run_id": "batch-run",
+            "status": "fail",
+            "handoff_path": "sources/a/handoff.json",
+        }],
+    })
+
+    result = build_index(batch_path, root, tmp_path / "index")
+    entry = json.loads((tmp_path / "index/index.json").read_text(encoding="utf-8"))["entries"][0]
+
+    assert result["status"] == "partial"
+    assert entry["source_sha256"] == "batch-sha"
+    assert entry["run_id"] == "batch-run"
+    assert entry["diagnostics"] == []
+
+
 def test_batch_handoff_and_artifact_paths_use_layered_bases_not_final_output(tmp_path: Path) -> None:
     root = tmp_path / "step1"
     batch_path = root / "batch_handoff.json"
     write_json(root / "per-source/handoff.json", source_handoff(
+        source={"path": "a.xlsx", "sha256": "a"},
+        run_id="1",
         run_path="runs/alternate",
         artifact_paths_relative_to="runs/chosen",
         final_output="final/elsewhere",
