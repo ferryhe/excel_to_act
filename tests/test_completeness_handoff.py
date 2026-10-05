@@ -15,7 +15,11 @@ from excel_to_act.schemas import (
     FormulaGraph,
     Handoff,
     ModuleClassification,
+    PackagePart,
+    RangeInventory,
+    SheetInventory,
     SheetManifest,
+    SourceLocation,
     WorkbookInventory,
     WorkbookManifest,
 )
@@ -107,6 +111,62 @@ def test_missing_sheet_blocks_completeness() -> None:
     assert report.blocking_reasons
     assert any(gap.object_type == "sheet" for gap in report.gaps)
     assert report.status == CompletenessStatus.fail.value
+
+
+def test_collected_comment_part_is_not_reported_as_dropped() -> None:
+    """Excel writes ``xl/comments1.xml``; other writers nest it under ``xl/comments/``."""
+
+    def manifest_with(part_name: str) -> WorkbookManifest:
+        manifest = _manifest()
+        manifest.package_parts = [
+            PackagePart(
+                name="xl/worksheets/sheet1.xml",
+                size=1,
+                source_location=SourceLocation(
+                    object_type="package_part", ooxml_part="xl/worksheets/sheet1.xml"
+                ),
+            ),
+            PackagePart(
+                name=part_name,
+                size=1,
+                source_location=SourceLocation(object_type="package_part", ooxml_part=part_name),
+            ),
+        ]
+        return manifest
+
+    inventory = WorkbookInventory(
+        workbook_sha256=_manifest().sha256,
+        sheets=[
+            SheetInventory(
+                source_location=SourceLocation(object_type="worksheet", sheet_name="Inputs"),
+                name="Inputs",
+                index=0,
+                max_row=2,
+                max_column=3,
+                layout_objects=[
+                    RangeInventory(
+                        source_location=SourceLocation(
+                            object_type="comment", sheet_name="Inputs", address="A1"
+                        ),
+                        address="A1",
+                        kind="comment",
+                    )
+                ],
+            )
+        ],
+        coverage=CoverageSummary(
+            recognized_inventory_objects=2,
+            unsupported_or_opaque_objects=0,
+            discovered_workbook_objects=2,
+        ),
+    )
+
+    for part_name in ("xl/comments1.xml", "xl/comments/comment1.xml"):
+        report = verify_completeness(
+            manifest_with(part_name), inventory, FormulaGraph(), ModuleClassification()
+        )
+        check = next(check for check in report.checks if check.name == "content_parts_accounted")
+        assert check.passed, f"{part_name}: {check.detail}"
 
 
 def test_cli_exits_nonzero_when_completeness_fails(tmp_path: Path) -> None:

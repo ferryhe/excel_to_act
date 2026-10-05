@@ -15,6 +15,7 @@ Severity model:
 
 from __future__ import annotations
 
+import re
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -40,14 +41,20 @@ _INTERNALLY_CONSUMED = {"xl/workbook.xml", "xl/sharedStrings.xml", "xl/styles.xm
 _PRESENTATION_PREFIXES = ("xl/theme/", "xl/printerSettings/")
 # Metadata parts we do not model yet (see README §4 A); tracked, not blocking.
 _METADATA_PREFIXES = ("docProps/",)
-# part prefix -> inventory evidence that proves the part was actually consumed.
-# The prefix alone is not enough: a part is only accounted for when the output
-# contains the corresponding objects, otherwise removing collection would go
-# unnoticed.
-_COVERED_PART_RULES: tuple[tuple[str, str], ...] = (
-    ("xl/worksheets/", "worksheet"),
-    ("xl/tables/", "table"),
-    ("xl/comments/", "comment"),
+# part pattern -> inventory evidence that proves the part was actually consumed.
+# Patterns, not directory prefixes: worksheet, table, and comment parts are flat
+# files with a numeric suffix (Excel writes ``xl/comments1.xml``), so a prefix
+# such as ``xl/comments/`` never matches and an already collected part is
+# reported as silently dropped. The pattern alone is still not enough: a part
+# counts as accounted for only when the output contains one matching object,
+# otherwise removing collection would go unnoticed (one evidence item per part).
+_COVERED_PART_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"xl/worksheets/sheet\d+\.xml"), "worksheet"),
+    (re.compile(r"xl/tables/table\d+\.xml"), "table"),
+    # Both layouts occur: Excel writes ``xl/comments1.xml``; other writers nest
+    # them as ``xl/comments/comment1.xml``.
+    (re.compile(r"xl/comments\d+\.xml"), "comment"),
+    (re.compile(r"xl/comments/comment\d+\.xml"), "comment"),
 )
 _CELL_VALUE_TAGS = {"v", "f", "is"}
 
@@ -170,8 +177,8 @@ def verify_completeness(
         if part.opaque:
             continue
         accounted = False
-        for prefix, required in _COVERED_PART_RULES:
-            if name.startswith(prefix):
+        for pattern, required in _COVERED_PART_RULES:
+            if pattern.match(name):
                 available = evidence.get(required, [])
                 if available:
                     available.pop()
