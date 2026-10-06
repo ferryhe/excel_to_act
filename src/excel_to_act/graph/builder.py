@@ -136,7 +136,18 @@ class RegexFormulaGraphBuilder:
             if table is None:
                 return None
             selector = match.group("selector")
-            column = selector if "[" not in selector and "]" not in selector else None
+            selector_key = selector.casefold()
+            item_selector = {"#all": "#All", "#data": "#Data"}.get(selector_key)
+            current_row = selector.startswith("@")
+            column = (
+                selector[1:]
+                if current_row
+                else selector
+                if item_selector is None and "[" not in selector and "]" not in selector
+                else None
+            )
+            if current_row and not column:
+                return None
             headers = table.metadata.get("columns")
             if not headers:
                 try:
@@ -157,7 +168,8 @@ class RegexFormulaGraphBuilder:
                 return None
             if column and headers:
                 column = next(str(header) for header in headers if str(header).casefold() == column.casefold())
-            label = f"{table.name}[{column or selector}]"
+            label_selector = item_selector or (f"@{column}" if current_row else column or selector)
+            label = f"{table.name}[{label_selector}]"
             return GraphNode(
                 id=_node_id(GraphNodeKind.range.value, label),
                 kind=GraphNodeKind.range,
@@ -176,18 +188,25 @@ class RegexFormulaGraphBuilder:
         def reference_node(operand: str, current_sheet: str, workbook_path: str | None) -> GraphNode | None:
             sheet_name, reference = _formula_parts(operand)
             if sheet_name is not None:
-                external_sheet = sheet_name
-                if external_sheet.startswith("[") and "]" in external_sheet:
-                    workbook, external_sheet = external_sheet[1:].split("]", 1)
+                external_match = re.search(r"\[(?P<workbook>[^\]]+)\](?P<sheet>.*)$", sheet_name)
+                if external_match:
+                    workbook = external_match.group("workbook")
+                    external_path = sheet_name[:external_match.start()]
+                    external_sheet = external_match.group("sheet")
                     if not workbook or not external_sheet or not _valid_a1_reference(reference):
                         return None
                     normalized = reference.replace("$", "").upper()
-                    label = f"[{workbook}]{external_sheet}!{normalized}"
+                    label = f"{external_path}[{workbook}]{external_sheet}!{normalized}"
                     return GraphNode(
                         id=_node_id(GraphNodeKind.external.value, label),
                         kind=GraphNodeKind.external,
                         label=label,
-                        metadata={"workbook": workbook, "sheet": external_sheet, "address": normalized},
+                        metadata={
+                            "workbook": workbook,
+                            "path": external_path,
+                            "sheet": external_sheet,
+                            "address": normalized,
+                        },
                     )
             if not _CELL_REF_RE.fullmatch(reference):
                 if sheet_name is not None and sheet_name.casefold() not in sheets:

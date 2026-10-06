@@ -219,6 +219,61 @@ def test_structured_reference_and_defined_name_scopes(tmp_path) -> None:
     assert _target(graph, "Other!A1") == "name:MortRate"
 
 
+def test_table_item_and_current_row_selectors_are_traceable(tmp_path) -> None:
+    path = tmp_path / "table_selectors.xlsx"
+    workbook = Workbook()
+    inputs = workbook.active
+    inputs.title = "Inputs"
+    inputs["A1"] = "Col"
+    inputs["B1"] = "Calc"
+    inputs["A2"] = 1
+    inputs["B2"] = "=SUM(Table1[@Col])"
+    inputs["A3"] = 2
+    inputs["B3"] = "=SUM(Table1[@Col])"
+    inputs["C1"] = "=SUM(Table1[#All])"
+    inputs["C2"] = "=SUM(Table1[#Data])"
+    inputs.add_table(Table(displayName="Table1", ref="A1:B3"))
+    workbook.save(path)
+    workbook.close()
+
+    manifest = OpenpyxlWorkbookReader().read_manifest(path)
+    inventory = OpenpyxlInventoryExtractor().extract(path, manifest)
+    graph = RegexFormulaGraphBuilder().build(inventory)
+
+    expected = {
+        "Inputs!B2": "Table1[@Col]",
+        "Inputs!B3": "Table1[@Col]",
+        "Inputs!C1": "Table1[#All]",
+        "Inputs!C2": "Table1[#Data]",
+    }
+    assert not any(
+        feature.source_location.object_id in expected
+        for feature in graph.unsupported_features
+    )
+    for source, structured_reference in expected.items():
+        node = next(node for node in graph.nodes if node.id == _target(graph, source))
+        assert node.kind == GraphNodeKind.range
+        assert node.metadata["table"] == "Table1"
+        assert node.metadata["structured_reference"] == structured_reference
+
+
+def test_path_qualified_external_reference_keeps_identity() -> None:
+    graph = RegexFormulaGraphBuilder().build(
+        _inventory({("Inputs", "A3"): "='C:\\Models\\[Book.xlsx]Inputs'!A1"})
+    )
+
+    external_id = _target(graph, "Inputs!A3")
+    external = next(node for node in graph.nodes if node.id == external_id)
+    assert external.kind == GraphNodeKind.external
+    assert external.metadata["workbook"] == "Book.xlsx"
+    assert external.metadata["path"] == "C:\\Models\\"
+    assert external.metadata["sheet"] == "Inputs"
+    assert external.metadata["address"] == "A1"
+    assert external.label == "C:\\Models\\[Book.xlsx]Inputs!A1"
+    assert all(edge.target != "cell:Inputs!A1" for edge in graph.edges)
+    assert graph.unsupported_features == []
+
+
 def test_sheet_references_keep_their_full_identity() -> None:
     inventory = _inventory(
         {
