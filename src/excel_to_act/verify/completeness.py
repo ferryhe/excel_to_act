@@ -15,6 +15,7 @@ Severity model:
 
 from __future__ import annotations
 
+import re
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -40,14 +41,18 @@ _INTERNALLY_CONSUMED = {"xl/workbook.xml", "xl/sharedStrings.xml", "xl/styles.xm
 _PRESENTATION_PREFIXES = ("xl/theme/", "xl/printerSettings/")
 # Metadata parts we do not model yet (see README §4 A); tracked, not blocking.
 _METADATA_PREFIXES = ("docProps/",)
-# part prefix -> inventory evidence that proves the part was actually consumed.
-# The prefix alone is not enough: a part is only accounted for when the output
-# contains the corresponding objects, otherwise removing collection would go
-# unnoticed.
-_COVERED_PART_RULES: tuple[tuple[str, str], ...] = (
+# Package part matcher -> inventory evidence that proves the part was consumed.
+# Keep worksheet/table directory matching broad because relationship targets can
+# use custom filenames. Comments need exact names because Excel stores them flat.
+# A matching name alone is not enough: one evidence item is consumed per part so
+# removing collection is still detected.
+_COVERED_PART_RULES: tuple[tuple[str | re.Pattern[str], str], ...] = (
     ("xl/worksheets/", "worksheet"),
     ("xl/tables/", "table"),
-    ("xl/comments/", "comment"),
+    # Both layouts occur: Excel writes ``xl/comments1.xml``; other writers nest
+    # them as ``xl/comments/comment1.xml``.
+    (re.compile(r"xl/comments\d+\.xml"), "comment"),
+    (re.compile(r"xl/comments/comment\d+\.xml"), "comment"),
 )
 _CELL_VALUE_TAGS = {"v", "f", "is"}
 
@@ -170,8 +175,13 @@ def verify_completeness(
         if part.opaque:
             continue
         accounted = False
-        for prefix, required in _COVERED_PART_RULES:
-            if name.startswith(prefix):
+        for matcher, required in _COVERED_PART_RULES:
+            matches = (
+                name.startswith(matcher)
+                if isinstance(matcher, str)
+                else matcher.fullmatch(name) is not None
+            )
+            if matches:
                 available = evidence.get(required, [])
                 if available:
                     available.pop()
