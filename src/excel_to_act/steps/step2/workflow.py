@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -295,7 +296,7 @@ def _resolve_batch_entry(root: Path, item: Any, ordinal: int) -> Step2IndexEntry
     return _entry_from_handoff(root, handoff, relative, ordinal, item)
 
 
-def _markdown(index: Step2Index) -> str:
+def _markdown(index: Step2Index, output_dir: Path | None = None) -> str:
     def cell(value: Any) -> str:
         return str(value).replace("|", r"\|").replace("`", r"\`").replace("\r", " ").replace("\n", " ")
 
@@ -319,6 +320,15 @@ def _markdown(index: Step2Index) -> str:
         artifacts = ", ".join(f"`{cell(ref.name)}`" for ref in entry.artifacts) or "—"
         lines.append(f"| `{cell(entry.source_path or entry.source_id)}` | `{cell(entry.source_sha256 or 'unavailable')}` | {cell(entry.status)} | {str(entry.ready_for_next_step).lower()} | {artifacts} |")
         lines.extend(["", f"### `{cell(entry.source_path or entry.source_id)}`", "", f"- Run: `{cell(entry.run_id or 'unavailable')}`"])
+        for ref in entry.artifacts:
+            if ref.name in {"controls_handoff.md", "vba_handoff.md"}:
+                target = str(Path(index.step1_root) / ref.path)
+                if output_dir is not None:
+                    try:
+                        target = os.path.relpath(target, output_dir)
+                    except ValueError:
+                        pass
+                lines.append(f"- Human control/VBA handoff: [{cell(ref.name)}](<{target.replace(chr(92), '/')}>).")
         if entry.metrics:
             lines.append(f"- Metrics: `{cell(json.dumps(entry.metrics, ensure_ascii=False, sort_keys=True))}`")
         lines.extend(f"- Blocker: {cell(blocker)}" for blocker in entry.blockers)
@@ -336,7 +346,7 @@ def _write_index(out_dir: Path, index: Step2Index) -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     index_path, summary_path = out_dir / _INDEX_NAME, out_dir / _SUMMARY_NAME
     index_path.write_bytes(_json_bytes(index.model_dump(mode="json")))
-    summary_path.write_text(_markdown(index), encoding="utf-8")
+    summary_path.write_text(_markdown(index, out_dir.resolve()), encoding="utf-8")
     return index_path, summary_path
 
 
@@ -760,7 +770,7 @@ def _load_entries(
             old = Step2Index.model_validate(_read_json(out_dir / _INDEX_NAME))
             if (old.step1_root == str(root) and old.input_handoff_path == input_relative
                     and (_outputs_match(out_dir, state) or (
-                        unfinished and (out_dir / _SUMMARY_NAME).read_text(encoding="utf-8") == _markdown(old)
+                        unfinished and (out_dir / _SUMMARY_NAME).read_text(encoding="utf-8") == _markdown(old, out_dir.resolve())
                     ))):
                 cached = {_hash_value(entry.model_dump(mode="json")): entry for entry in old.entries}
         except (OSError, ValueError):

@@ -74,6 +74,22 @@ excel-to-act step1 fidelity --run <run-dir>      # 比较原始 XML 字段与标
 excel-to-act step1 finalize --run <run-dir>      # 通过新检查后发布最终转换目录
 ```
 
+也可以对单个工作簿分别检查复选框、ActiveX 和 VBA 交接。每类都有 `identify`、`convert`、`evaluate` 命令：`identify` 只读；`convert --dry-run` 只显示计划，不创建或改动输出；`evaluate` 会重新提取源事实并与已保存产物比较。
+
+```powershell
+excel-to-act step1 checkbox identify .\model.xlsm
+excel-to-act step1 checkbox convert .\model.xlsm --out .\controls [--dry-run]
+excel-to-act step1 checkbox evaluate .\model.xlsm --out .\controls
+excel-to-act step1 activex identify .\model.xlsm
+excel-to-act step1 activex convert .\model.xlsm --out .\controls [--dry-run]
+excel-to-act step1 activex evaluate .\model.xlsm --out .\controls
+excel-to-act step1 vba identify .\model.xlsm
+excel-to-act step1 vba convert .\model.xlsm --out .\controls [--dry-run]
+excel-to-act step1 vba evaluate .\model.xlsm --out .\controls
+```
+
+默认 Step 1 交接会写出类型化控件产物、供人阅读的 `controls_handoff.md`，以及带校验和索引的独立 VBA 源码文件。像源文件中的 `#REF!` 复选框链接会作为 invalid 记录，不会猜目标单元格。ActiveX 事件名按工作表 codeName 与已声明的 VBA 过程做静态关联；不会运行宏，ActiveX 二进制流仍保持 opaque。导出的 VBA 是可读源码交接，不是 Excel 运行时行为的转译。
+
 默认门槛是 100% 逻辑对象可追溯、OOXML 部件逐字节保存、已支持事实精确一致。未知或未解析部件仍会保存；默认策略把它们报告为 `partial`，并只在其它检查通过后允许进入 Step 2。可以用 `--no-allow-opaque` 禁止这种交接。手动设置较低的 `--fidelity-min` 会明确产生 partial 结果；它不能绕过缺失的支持对象、损坏 XML、源文件变化或校验错误。Step 1 不计算公式、不判断精算含义；人确认 Step 1 handoff 后，Step 2 才开始建立索引并决定后续解释工作。`inspect <workbook> --out <dir>` 保持原来的单工作簿 Phase 1 行为。
 
 包部件的解析比例和 opaque 比例使用同一单位（所有非目录 OOXML ZIP 部件），并与逻辑对象覆盖率分开：`parsed_coverage_ratio` 是已关联到 inventory 身份的支持逻辑对象比例，`parsed_package_parts_ratio` 是 fresh scan 中已读取且非 opaque 的部件比例，`opaque_rate` 是 opaque 部件比例。`--parsed-package-min` 和 `--opaque-max` 都接受 `[0,1]`，默认分别为 `0` 和 `1`，允许显式的 opaque `partial` 交接；提高前者或降低后者可以独立收紧包部件要求。`--no-allow-opaque` 无条件禁止 opaque 部件，任何数值门槛都不能覆盖缺失对象、源读取/校验错误或字节保存失败。

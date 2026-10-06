@@ -29,6 +29,7 @@ from excel_to_act.steps.step1.workflow import _hash_file, auto_recover, convert_
 
 
 MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+DRAWING = "{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}"
 PKG_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 
 
@@ -1040,6 +1041,53 @@ def test_step1_column_layout_uses_full_excel_span_once_and_finalizes(
     assert columns[0]["source_identity"]
     assert execute_tool("step1.check", run)["status"] == "pass"
     assert finalize_run(run)["ready_for_next_step"] is True
+
+
+def test_step1_control_anchor_columns_are_not_column_layout(tmp_path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Facts"
+    sheet["A1"] = 1
+    dimension = sheet.column_dimensions["G"]
+    dimension.min = 7
+    dimension.max = 9
+    dimension.width = 13
+    dimension.hidden = True
+    source = tmp_path / "control-anchor.xlsx"
+    workbook.save(source)
+    workbook.close()
+
+    with zipfile.ZipFile(source) as package:
+        worksheet = ET.fromstring(package.read("xl/worksheets/sheet1.xml"))
+    controls = ET.SubElement(worksheet, MAIN + "controls")
+    control = ET.SubElement(controls, MAIN + "control", {"name": "CheckBox1", "shapeId": "1"})
+    control_pr = ET.SubElement(control, MAIN + "controlPr")
+    anchor = ET.SubElement(control_pr, MAIN + "anchor")
+    for edge, column in (("from", "6"), ("to", "8")):
+        point = ET.SubElement(anchor, MAIN + edge)
+        ET.SubElement(point, DRAWING + "col").text = column
+    _rewrite_package(
+        source,
+        replacements={
+            "xl/worksheets/sheet1.xml": ET.tostring(worksheet, encoding="utf-8", xml_declaration=True)
+        },
+    )
+
+    with zipfile.ZipFile(source) as package:
+        original_worksheet = package.read("xl/worksheets/sheet1.xml")
+    scan = scan_step1_source(source)
+    columns = [item for item in scan["objects"] if item["kind"] == "column_layout"]
+    assert len(columns) == 1
+    assert columns[0]["details"]["address"] == "G:I"
+
+    converted = convert_directory(source.parent, tmp_path / "converted")
+    assert converted["entries"][0]["status"] == "pass"
+    run = tmp_path / "converted" / converted["entries"][0]["run_path"]
+    assert execute_tool("step1.check", run)["status"] == "pass"
+    assert finalize_run(run)["ready_for_next_step"] is True
+    parts = {item["name"]: item for item in _read(run / "package_parts.json")}
+    preserved = run / parts["xl/worksheets/sheet1.xml"]["preserved_path"]
+    assert preserved.read_bytes() == original_worksheet
 
 
 @pytest.mark.parametrize(

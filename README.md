@@ -74,6 +74,22 @@ excel-to-act step1 fidelity --run <run-dir>      # Compare raw XML fields with n
 excel-to-act step1 finalize --run <run-dir>      # Publish the final conversion directory after fresh checks
 ```
 
+Checkbox, ActiveX, and VBA handoff can also be inspected independently for one workbook. Each family has `identify`, `convert`, and `evaluate` commands; `identify` is read-only, `convert --dry-run` reports its plan without creating or changing output, and `evaluate` freshly extracts source facts and compares them with saved artifacts.
+
+```powershell
+excel-to-act step1 checkbox identify .\model.xlsm
+excel-to-act step1 checkbox convert .\model.xlsm --out .\controls [--dry-run]
+excel-to-act step1 checkbox evaluate .\model.xlsm --out .\controls
+excel-to-act step1 activex identify .\model.xlsm
+excel-to-act step1 activex convert .\model.xlsm --out .\controls [--dry-run]
+excel-to-act step1 activex evaluate .\model.xlsm --out .\controls
+excel-to-act step1 vba identify .\model.xlsm
+excel-to-act step1 vba convert .\model.xlsm --out .\controls [--dry-run]
+excel-to-act step1 vba evaluate .\model.xlsm --out .\controls
+```
+
+The default Step 1 handoff writes typed control artifacts, a human-readable `controls_handoff.md`, and separately indexed VBA source files with checksums. Checkbox links such as source `#REF!` values are recorded as invalid rather than guessed. ActiveX event names are associated with worksheet code names and declared VBA procedures statically; macros are not run, and ActiveX binary streams remain opaque. VBA files are readable source handoff, not a translation of Excel runtime behavior.
+
 Default thresholds require 100% logical-object traceability, byte-for-byte OOXML part preservation, and exact agreement for supported facts. Unknown or unparsed parts are still preserved. The default policy reports them as `partial` and allows handoff to Step 2 only after all other checks pass. Use `--no-allow-opaque` to prohibit this handoff. Manually lowering `--fidelity-min` explicitly produces a partial result; it cannot bypass missing supported objects, damaged XML, source changes, or verification errors. Step 1 does not calculate formulas or interpret actuarial meaning. After a person confirms the Step 1 handoff, Step 2 starts indexing and deciding what interpretation work is needed. `inspect <workbook> --out <dir>` retains the original single-workbook Phase 1 behavior.
 
 The parsed and opaque package-part ratios use the same unit (all non-directory OOXML ZIP parts), separately from logical-object coverage. `parsed_coverage_ratio` is the proportion of supported logical objects linked to inventory identities; `parsed_package_parts_ratio` is the proportion of parts read and classified as non-opaque in a fresh scan; `opaque_rate` is the proportion of opaque parts. `--parsed-package-min` and `--opaque-max` both accept `[0,1]` and default to `0` and `1`, respectively, allowing an explicit opaque `partial` handoff. Raising the former or lowering the latter independently tightens package-part requirements. `--no-allow-opaque` always prohibits opaque parts. No numeric threshold can override missing objects, source read/verification errors, or byte-preservation failures.
