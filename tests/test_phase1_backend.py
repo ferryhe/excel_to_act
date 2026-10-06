@@ -76,6 +76,53 @@ def test_schema_roundtrip_and_source_validation(tmp_path: Path) -> None:
         SourceLocation(object_type="cell", address="A1")
 
 
+def test_exported_workbook_inventory_schema_matches_model() -> None:
+    schema = json.loads(Path("schemas/workbook_inventory.schema.json").read_text())
+    assert schema == WorkbookInventory.model_json_schema()
+
+
+def test_old_phase1_inventory_without_additive_fields_reads_through_store(tmp_path: Path) -> None:
+    fixture = make_fixture(tmp_path / "fixture.xlsx")
+    manifest = OpenpyxlWorkbookReader().read_manifest(fixture)
+    inventory = OpenpyxlInventoryExtractor().extract(fixture, manifest).model_dump(mode="json")
+    additive_cell_fields = {
+        "source_identity", "raw_value_text", "raw_formula_text", "raw_formula_attributes",
+        "formula_present", "ooxml_cell_type", "cached_text", "cached_text_present",
+        "workbook_date_system", "date_serial_text",
+    }
+    for sheet in inventory["sheets"]:
+        sheet.pop("source_identity", None)
+        locations = [sheet["source_location"]]
+        for cell in sheet["cells"]:
+            locations.append(cell["source_location"])
+            for field in additive_cell_fields:
+                cell.pop(field, None)
+        for item in [*sheet["ranges"], *sheet["layout_objects"]]:
+            item.pop("source_identity", None)
+            locations.append(item["source_location"])
+        for location in locations:
+            location.pop("source_identity", None)
+    for item in [*inventory["workbook_ranges"], *inventory["unsupported_features"]]:
+        item.pop("source_identity", None)
+        item["source_location"].pop("source_identity", None)
+    path = tmp_path / "legacy-inventory.json"
+    path.write_text(json.dumps(inventory))
+
+    loaded = LocalArtifactStore(tmp_path).read_json(path, WorkbookInventory)
+    formula = next(cell for cell in loaded.sheets[0].cells if cell.address == "C2")
+    assert formula.formula == "=B1*B2"
+    assert all(value is None for value in (
+        formula.source_identity, formula.raw_value_text, formula.raw_formula_text,
+        formula.formula_present, formula.ooxml_cell_type, formula.cached_text,
+        formula.cached_text_present, formula.workbook_date_system, formula.date_serial_text,
+    ))
+    assert formula.raw_formula_attributes == {}
+    assert formula.source_identity is formula.source_location.source_identity is None
+    assert loaded.sheets[0].source_identity is None
+    assert all(item.source_identity is item.source_location.source_identity is None for item in loaded.sheets[0].ranges)
+    assert all(item.source_identity is item.source_location.source_identity is None for item in loaded.workbook_ranges)
+
+
 def test_unsupported_file_type_returns_typed_diagnostic(tmp_path: Path) -> None:
     bad = tmp_path / "legacy.xls"
     bad.write_bytes(b"not an OOXML workbook")
@@ -104,6 +151,8 @@ def test_manifest_inventory_graph_classification_confirmation(tmp_path: Path) ->
     assert isinstance(WorkbookInventory.model_validate_json(inventory.model_dump_json()), WorkbookInventory)
     assert inventory.coverage.recognized_inventory_objects + inventory.coverage.unsupported_or_opaque_objects == inventory.coverage.discovered_workbook_objects
     inputs = next(s for s in inventory.sheets if s.name == "Inputs")
+    rate = next(cell for cell in inputs.cells if cell.address == "B1")
+    assert rate.value == 0.05 and rate.number_format == "0.00%"
     assert all(c.source_location for c in inputs.cells)
     assert any(r.kind == "table" for r in inputs.ranges)
     assert any(o.kind == "data_validation" for o in inputs.layout_objects)
