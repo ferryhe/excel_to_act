@@ -218,6 +218,11 @@ def verify_completeness(
 
     # 4. Every formula cell produced an edge or is recorded as unparseable.
     outgoing = {edge.source for edge in graph.edges}
+    resolved = {
+        node.id
+        for node in graph.nodes
+        if node.kind == "cell" and node.metadata.get("references_resolved") is True
+    }
     recorded = {
         feature.source_location.object_id
         for feature in graph.unsupported_features
@@ -226,7 +231,11 @@ def verify_completeness(
     formula_cells = [
         f"{sheet.name}!{cell.address}" for sheet in inventory.sheets for cell in sheet.cells if cell.formula
     ]
-    unlinked = [ref for ref in formula_cells if f"cell:{ref}" not in outgoing and ref not in recorded]
+    unlinked = [
+        ref
+        for ref in formula_cells
+        if f"cell:{ref}" not in outgoing and f"cell:{ref}" not in resolved and ref not in recorded
+    ]
     checks.append(
         CompletenessCheck(
             name="formulas_linked",
@@ -234,7 +243,7 @@ def verify_completeness(
             severity=UnsupportedSeverity.warning,
             expected=len(formula_cells),
             actual=len(formula_cells) - len(unlinked),
-            detail="every formula cell has a dependency edge or an unparseable record"
+            detail="every formula cell has a dependency edge, a resolved zero-reference result, or an unparseable record"
             if not unlinked
             else f"formula cells without an edge: {unlinked[:10]}",
         )
