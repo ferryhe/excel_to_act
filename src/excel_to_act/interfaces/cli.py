@@ -11,12 +11,16 @@ import typer
 from excel_to_act.orchestrator.phase1 import Phase1Orchestrator
 from excel_to_act.steps.step2.workflow import build_index, execute_tool as execute_step2_tool, tool_catalog as step2_tool_catalog, validate_saved_index
 from excel_to_act.steps.step1.workflow import agent_definition, auto_recover, convert_directory, execute_tool, finalize_run, tool_catalog
+from excel_to_act.schemas import WorkbookView
+from excel_to_act.views import compile_views, serialize_views, validate_agent_output
 
 app = typer.Typer(help="Excel to actuarial model decomposition toolkit")
 step1_app = typer.Typer(help="Human Step1 raw-directory conversion and checked handoff")
 step2_app = typer.Typer(help="Index Step 1 handoffs for downstream agents")
+views_app = typer.Typer(help="Compile deterministic source-addressable workbook views")
 app.add_typer(step1_app, name="step1")
 app.add_typer(step2_app, name="step2")
+app.add_typer(views_app, name="views")
 
 
 @app.callback()
@@ -105,6 +109,31 @@ def step2_tool(
     _emit_json(result)
     if result["status"] == "blocked":
         raise typer.Exit(code=1)
+
+
+@views_app.command("compile")
+def views_compile(
+    handoff: Path = typer.Option(..., "--handoff", help="Step 1 source or batch handoff JSON"),
+    step1_root: Path = typer.Option(..., "--step1-root", help="Step 1 output root"),
+    out: Path = typer.Option(Path("views.json"), "--out", "-o", help="Deterministic JSON output"),
+    budget: int = typer.Option(1200, "--budget", min=1, help="Estimated token budget per chunk"),
+) -> None:
+    """Compile validated Step 1 artifacts into deterministic sheet views."""
+    data = serialize_views(compile_views(handoff, step1_root, budget=budget))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    typer.echo(f"Wrote views to {out}")
+
+
+@views_app.command("validate")
+def views_validate(
+    views_file: Path = typer.Option(..., "--views", exists=True, dir_okay=False),
+    output: Path = typer.Option(..., "--output", exists=True, dir_okay=False),
+) -> None:
+    """Validate a JSON Agent response against compiled views."""
+    views = [WorkbookView.model_validate(item) for item in json.loads(views_file.read_text(encoding="utf-8"))]
+    result = validate_agent_output(json.loads(output.read_text(encoding="utf-8")), views)
+    _emit_json(result)
 
 
 @step1_app.command("tools")

@@ -35,6 +35,9 @@ from excel_to_act.schemas.artifacts import (
     UnsupportedFeature,
     UnsupportedSeverity,
     VbaModule,
+    ViewChunk,
+    ViewRecord,
+    WorkbookView,
     WorkbookInventory,
     WorkbookManifest,
 )
@@ -74,6 +77,9 @@ __all__ = [
     "UnsupportedFeature",
     "UnsupportedSeverity",
     "VbaModule",
+    "ViewChunk",
+    "ViewRecord",
+    "WorkbookView",
     "WorkbookInventory",
     "WorkbookManifest",
 ]
