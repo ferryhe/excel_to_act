@@ -111,7 +111,11 @@ def test_old_phase1_inventory_without_additive_fields_reads_through_store(tmp_pa
     loaded = LocalArtifactStore(tmp_path).read_json(path, WorkbookInventory)
     formula = next(cell for cell in loaded.sheets[0].cells if cell.address == "C2")
     assert formula.formula == "=B1*B2"
-    assert formula.formula_present is formula.cached_text_present is formula.workbook_date_system is None
+    assert all(value is None for value in (
+        formula.source_identity, formula.raw_value_text, formula.raw_formula_text,
+        formula.formula_present, formula.ooxml_cell_type, formula.cached_text,
+        formula.cached_text_present, formula.workbook_date_system, formula.date_serial_text,
+    ))
     assert formula.raw_formula_attributes == {}
     assert formula.source_identity is formula.source_location.source_identity is None
     assert loaded.sheets[0].source_identity is None
