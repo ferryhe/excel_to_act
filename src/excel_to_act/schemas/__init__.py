@@ -47,6 +47,17 @@ from excel_to_act.schemas.artifacts import (
     WorkbookInventory,
     WorkbookManifest,
 )
+from excel_to_act.schemas.step2_prepare import (
+    DependencyAuditSource,
+    DependencySnapshotSource,
+    DefinedNameLookup,
+    ReadingFileRef,
+    ReadingLookup,
+    ReadingSource,
+    Step2DependencyAudit,
+    Step2DependencySnapshot,
+    Step2ReadingManifest,
+)
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -94,4 +105,13 @@ __all__ = [
     "WorkbookView",
     "WorkbookInventory",
     "WorkbookManifest",
+    "ReadingFileRef",
+    "ReadingLookup",
+    "DefinedNameLookup",
+    "ReadingSource",
+    "Step2DependencyAudit",
+    "Step2DependencySnapshot",
+    "Step2ReadingManifest",
+    "DependencyAuditSource",
+    "DependencySnapshotSource",
 ]

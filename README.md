@@ -56,11 +56,12 @@ excel-to-act step2 agent
 excel-to-act step2 tools
 excel-to-act step2 index --handoff PATH --step1-root DIR [--out DIR] [--resume]
 excel-to-act step2 validate --index output/step2_index/index.json --step1-root DIR
+excel-to-act step2 prepare --index output/step2_index/index.json --step1-root DIR --out output/reading [--scope analysis_scope.json] [--resume] [--dry-run]
 output/step2_index/index.json
 output/step2_index/INDEX.md
 ```
 
-The Step 2 batch index is distinct from the legacy per-workbook `artifact_index.json` shown below.
+`step2 prepare` validates the saved native index without adding an indexing recovery attempt, then writes a source/run-bound reading package with separate views, static dependency evidence, and paired English handoffs. Without `--scope`, all source sheets are retained. Preparation reads saved inventory and formula facts; it does not execute macros or recalculate formulas. The Step 2 batch index is distinct from the legacy per-workbook `artifact_index.json` shown below.
 
 If the output directory is inside the input directory, discovery excludes that output subtree and records the excluded path in the batch's `discovery` information. Identical input and output directories produce an explicit error.
 

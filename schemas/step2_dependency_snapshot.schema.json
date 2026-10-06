@@ -1,0 +1,419 @@
+{
+  "$defs": {
+    "CellInventory": {
+      "properties": {
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "cached_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached Text"
+        },
+        "cached_text_present": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached Text Present"
+        },
+        "cached_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached Value"
+        },
+        "cached_value_available": {
+          "default": false,
+          "title": "Cached Value Available",
+          "type": "boolean"
+        },
+        "column": {
+          "minimum": 1,
+          "title": "Column",
+          "type": "integer"
+        },
+        "data_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Type"
+        },
+        "date_serial_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Date Serial Text"
+        },
+        "formula": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Formula"
+        },
+        "formula_present": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Formula Present"
+        },
+        "kind": {
+          "$ref": "#/$defs/CellKind"
+        },
+        "number_format": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Number Format"
+        },
+        "ooxml_cell_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ooxml Cell Type"
+        },
+        "raw_formula_attributes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Raw Formula Attributes",
+          "type": "object"
+        },
+        "raw_formula_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Formula Text"
+        },
+        "raw_value_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Value Text"
+        },
+        "row": {
+          "minimum": 1,
+          "title": "Row",
+          "type": "integer"
+        },
+        "source_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Identity"
+        },
+        "source_location": {
+          "$ref": "#/$defs/SourceLocation"
+        },
+        "style_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Style Id"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "workbook_date_system": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workbook Date System"
+        }
+      },
+      "required": [
+        "source_location",
+        "address",
+        "row",
+        "column",
+        "kind"
+      ],
+      "title": "CellInventory",
+      "type": "object"
+    },
+    "CellKind": {
+      "enum": [
+        "value",
+        "formula",
+        "blank"
+      ],
+      "title": "CellKind",
+      "type": "string"
+    },
+    "DependencySnapshotSource": {
+      "properties": {
+        "cells": {
+          "items": {
+            "$ref": "#/$defs/CellInventory"
+          },
+          "title": "Cells",
+          "type": "array"
+        },
+        "ranges": {
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "title": "Ranges",
+          "type": "array"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "scope_sha256": {
+          "title": "Scope Sha256",
+          "type": "string"
+        },
+        "source_sha256": {
+          "title": "Source Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_sha256",
+        "run_id",
+        "scope_sha256"
+      ],
+      "title": "DependencySnapshotSource",
+      "type": "object"
+    },
+    "SourceLocation": {
+      "description": "Original workbook location for a discovered object.",
+      "properties": {
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "object_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Object Id"
+        },
+        "object_type": {
+          "title": "Object Type",
+          "type": "string"
+        },
+        "ooxml_part": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ooxml Part"
+        },
+        "sheet_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Index"
+        },
+        "sheet_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Name"
+        },
+        "source_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Identity"
+        },
+        "workbook_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workbook Path"
+        }
+      },
+      "required": [
+        "object_type"
+      ],
+      "title": "SourceLocation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifact_type": {
+      "const": "retained_dependency_cells",
+      "default": "retained_dependency_cells",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "step2.dependency_snapshot.v1",
+      "default": "step2.dependency_snapshot.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/DependencySnapshotSource"
+      },
+      "title": "Sources",
+      "type": "array"
+    }
+  },
+  "title": "Step2DependencySnapshot",
+  "type": "object"
+}

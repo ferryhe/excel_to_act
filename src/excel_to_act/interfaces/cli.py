@@ -12,6 +12,7 @@ from excel_to_act.orchestrator.phase1 import Phase1Orchestrator
 from excel_to_act.ingest.control_artifacts import ARTIFACT_FILES, build_single_control_artifact, clear_declared_vba_sources, evaluate_control_output, vba_handoff_markdown
 from excel_to_act.schemas import VbaHandoff
 from excel_to_act.steps.step2.workflow import build_index, execute_tool as execute_step2_tool, tool_catalog as step2_tool_catalog, validate_saved_index
+from excel_to_act.steps.step2.prepare import prepare as prepare_step2
 from excel_to_act.steps.step1.workflow import agent_definition, auto_recover, convert_directory, execute_tool, finalize_run, tool_catalog
 from excel_to_act.schemas import WorkbookView
 from excel_to_act.views import compile_views, serialize_views, validate_agent_output
@@ -117,6 +118,22 @@ def step2_tools() -> None:
     """Print the initial machine-readable Step 2 action catalogue."""
 
     _emit_json(step2_tool_catalog())
+
+
+@step2_app.command("prepare")
+def step2_prepare(
+    index: Path = typer.Option(..., "--index", help="Validated native Step 2 index.json"),
+    step1_root: Path = typer.Option(..., "--step1-root", help="Step 1 output root for resolving indexed artifacts"),
+    out: Path = typer.Option(..., "--out", help="Reading package output directory"),
+    scope: Path | None = typer.Option(None, "--scope", help="Source/run-bound analysis.scope.v1 JSON"),
+    resume: bool = typer.Option(False, "--resume", help="Reuse a matching package after verifying every saved output hash"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report capabilities and planned files without writing"),
+) -> None:
+    """Prepare validated Step 1 and Step 2 artifacts for progressive reading."""
+    result = prepare_step2(index, step1_root, out, scope_path=scope, resume=resume, dry_run=dry_run)
+    _emit_json(result)
+    if result["status"] == "blocked":
+        raise typer.Exit(code=1)
 
 
 @step2_app.command("index")
