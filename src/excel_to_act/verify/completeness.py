@@ -41,16 +41,14 @@ _INTERNALLY_CONSUMED = {"xl/workbook.xml", "xl/sharedStrings.xml", "xl/styles.xm
 _PRESENTATION_PREFIXES = ("xl/theme/", "xl/printerSettings/")
 # Metadata parts we do not model yet (see README §4 A); tracked, not blocking.
 _METADATA_PREFIXES = ("docProps/",)
-# part pattern -> inventory evidence that proves the part was actually consumed.
-# Patterns, not directory prefixes: worksheet, table, and comment parts are flat
-# files with a numeric suffix (Excel writes ``xl/comments1.xml``), so a prefix
-# such as ``xl/comments/`` never matches and an already collected part is
-# reported as silently dropped. The pattern alone is still not enough: a part
-# counts as accounted for only when the output contains one matching object,
-# otherwise removing collection would go unnoticed (one evidence item per part).
-_COVERED_PART_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"xl/worksheets/sheet\d+\.xml"), "worksheet"),
-    (re.compile(r"xl/tables/table\d+\.xml"), "table"),
+# Package part matcher -> inventory evidence that proves the part was consumed.
+# Keep worksheet/table directory matching broad because relationship targets can
+# use custom filenames. Comments need exact names because Excel stores them flat.
+# A matching name alone is not enough: one evidence item is consumed per part so
+# removing collection is still detected.
+_COVERED_PART_RULES: tuple[tuple[str | re.Pattern[str], str], ...] = (
+    ("xl/worksheets/", "worksheet"),
+    ("xl/tables/", "table"),
     # Both layouts occur: Excel writes ``xl/comments1.xml``; other writers nest
     # them as ``xl/comments/comment1.xml``.
     (re.compile(r"xl/comments\d+\.xml"), "comment"),
@@ -177,8 +175,13 @@ def verify_completeness(
         if part.opaque:
             continue
         accounted = False
-        for pattern, required in _COVERED_PART_RULES:
-            if pattern.match(name):
+        for matcher, required in _COVERED_PART_RULES:
+            matches = (
+                name.startswith(matcher)
+                if isinstance(matcher, str)
+                else matcher.fullmatch(name) is not None
+            )
+            if matches:
                 available = evidence.get(required, [])
                 if available:
                     available.pop()

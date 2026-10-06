@@ -120,10 +120,17 @@ def test_collected_comment_part_is_not_reported_as_dropped() -> None:
         manifest = _manifest()
         manifest.package_parts = [
             PackagePart(
-                name="xl/worksheets/sheet1.xml",
+                name="xl/worksheets/custom_inputs.xml",
                 size=1,
                 source_location=SourceLocation(
-                    object_type="package_part", ooxml_part="xl/worksheets/sheet1.xml"
+                    object_type="package_part", ooxml_part="xl/worksheets/custom_inputs.xml"
+                ),
+            ),
+            PackagePart(
+                name="xl/tables/assumptions_table.xml",
+                size=1,
+                source_location=SourceLocation(
+                    object_type="package_part", ooxml_part="xl/tables/assumptions_table.xml"
                 ),
             ),
             PackagePart(
@@ -144,6 +151,14 @@ def test_collected_comment_part_is_not_reported_as_dropped() -> None:
                 max_row=2,
                 max_column=3,
                 layout_objects=[
+                    RangeInventory(
+                        source_location=SourceLocation(
+                            object_type="table", sheet_name="Inputs", address="D1"
+                        ),
+                        name="Assumptions",
+                        address="D1:E2",
+                        kind="table",
+                    ),
                     RangeInventory(
                         source_location=SourceLocation(
                             object_type="comment", sheet_name="Inputs", address="A1"
@@ -167,6 +182,23 @@ def test_collected_comment_part_is_not_reported_as_dropped() -> None:
         )
         check = next(check for check in report.checks if check.name == "content_parts_accounted")
         assert check.passed, f"{part_name}: {check.detail}"
+
+    report = verify_completeness(
+        manifest_with("xl/comments1.xml.backup"), inventory, FormulaGraph(), ModuleClassification()
+    )
+    check = next(check for check in report.checks if check.name == "content_parts_accounted")
+    assert not check.passed
+    assert "xl/comments1.xml.backup" in check.detail
+
+    inventory.sheets[0].layout_objects = [
+        item for item in inventory.sheets[0].layout_objects if item.kind != "comment"
+    ]
+    report = verify_completeness(
+        manifest_with("xl/comments1.xml"), inventory, FormulaGraph(), ModuleClassification()
+    )
+    check = next(check for check in report.checks if check.name == "content_parts_accounted")
+    assert not check.passed
+    assert "xl/comments1.xml" in check.detail
 
 
 def test_cli_exits_nonzero_when_completeness_fails(tmp_path: Path) -> None:
