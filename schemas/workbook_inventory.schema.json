@@ -5,6 +5,18 @@
         "source_location": {
           "$ref": "#/$defs/SourceLocation"
         },
+        "source_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Identity"
+        },
         "address": {
           "title": "Address",
           "type": "string"
@@ -116,6 +128,109 @@
           "default": false,
           "title": "Cached Value Available",
           "type": "boolean"
+        },
+        "raw_value_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Value Text"
+        },
+        "raw_formula_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Formula Text"
+        },
+        "raw_formula_attributes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Raw Formula Attributes",
+          "type": "object"
+        },
+        "formula_present": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Formula Present"
+        },
+        "ooxml_cell_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ooxml Cell Type"
+        },
+        "cached_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached Text"
+        },
+        "cached_text_present": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached Text Present"
+        },
+        "workbook_date_system": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workbook Date System"
+        },
+        "date_serial_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Date Serial Text"
         }
       },
       "required": [
@@ -192,6 +307,18 @@
           "additionalProperties": true,
           "title": "Metadata",
           "type": "object"
+        },
+        "source_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Identity"
         }
       },
       "required": [
@@ -230,6 +357,18 @@
           "default": "visible",
           "title": "State",
           "type": "string"
+        },
+        "source_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Identity"
         },
         "cells": {
           "items": {
@@ -342,6 +481,18 @@
           ],
           "default": null,
           "title": "Ooxml Part"
+        },
+        "source_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Identity"
         }
       },
       "required": [

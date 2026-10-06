@@ -504,6 +504,10 @@ def test_raw_facts_normalized_fidelity_and_persisted_recovery(tmp_path: Path) ->
     assert cells[("Facts", "C2")]["date_serial_text"] == "43830"
     shared_master = cells[("Facts", "D2")]
     assert shared_master["raw_formula_attributes"] == {"t": "shared", "ref": "D2:D3", "si": "0"}
+    shared_follower = cells[("Facts", "D3")]
+    assert shared_follower["raw_formula_text"] is None
+    assert shared_follower["raw_formula_attributes"] == {"t": "shared", "si": "0"}
+    assert shared_follower["normalized_formula"] == "=B3*2"
     assert shared_master["cached_text"] == "0" and shared_master["normalized_cached_value"] == 0
     assert shared_master["normalized_cached_value_available"] is True
     assert cells[("Facts", "D3")]["normalized_cached_value"] is False
@@ -521,6 +525,9 @@ def test_raw_facts_normalized_fidelity_and_persisted_recovery(tmp_path: Path) ->
     assert data_table_formula["formula"] is None
     assert data_table_formula["raw_formula_attributes"]["t"] == "dataTable"
     assert data_table_formula["raw_formula_attributes"]["ref"] == "D5:E6"
+    array_formula = next(cell for cell in inventory["sheets"][0]["cells"] if cell["address"] == "D4")
+    assert array_formula["raw_formula_text"] == "1+1"
+    assert array_formula["raw_formula_attributes"] == {"t": "array", "ref": "D4"}
 
     names = [item for item in inventory["workbook_ranges"] if item["kind"] == "defined_name"]
     assert {(item["name"], item["metadata"]["scope"]) for item in names} == {
@@ -632,6 +639,9 @@ def test_date_serial_requires_numeric_source_type_and_raw_number(tmp_path: Path)
         assert source_cells[address]["date_serial_text"] is None, (address, source_cells[address])
     assert source_cells["B1"]["normalized_value"] == "42"
     assert source_cells["C1"]["normalized_value"] == "#N/A"
+    assert source_cells["C1"]["cell_type"] == "e"
+    assert source_cells["C1"]["number_format"] == "yyyy-mm-dd"
+    assert source_cells["C1"]["date_serial_text"] is None
     assert source_cells["D1"]["normalized_value"] == "2024-01-02T00:00:00"
     assert source_cells["E1"]["normalized_value"] == "文本"
     assert source_cells["F1"]["normalized_value"] is True
@@ -651,6 +661,10 @@ def test_date_serial_requires_numeric_source_type_and_raw_number(tmp_path: Path)
     cells = {cell["address"]: cell for cell in inventory["sheets"][0]["cells"]}
     assert cells["A1"]["value"] == "N/A" and cells["A1"]["raw_value_text"] == "0"
     assert cells["A1"]["ooxml_cell_type"] == "s" and cells["A1"]["date_serial_text"] is None
+    assert cells["C1"]["value"] == "#N/A"
+    assert cells["C1"]["ooxml_cell_type"] == "e"
+    assert cells["C1"]["number_format"] == "yyyy-mm-dd"
+    assert cells["C1"]["date_serial_text"] is None
     assert cells["G1"]["date_serial_text"] == cells["H1"]["date_serial_text"] == "45293"
     assert execute_tool("step1.check", run)["status"] == "pass"
 
