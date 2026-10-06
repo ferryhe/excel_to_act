@@ -194,10 +194,27 @@ def compile_views(handoff_path: str | Path, step1_root: str | Path, *, budget: i
                     "name": module.name, "kind": module.kind, "code": module.code,
                     "procedures": module.procedures,
                 }))
+        graph_nodes = {node.id: node for node in graph.nodes}
         for node in graph.nodes:
-            if node.kind.value == "vba" and node.source_location:
-                workbook_records.append(_record(entry.source_id, "vba", node.source_location, {
+            if node.kind.value == "vba":
+                location = node.source_location or (vba_part.source_location if vba_part else None)
+                if location is None:
+                    raise ValueError(f"VBA graph node {node.id} has no source package location")
+                workbook_records.append(_record(entry.source_id, "vba", location, {
                     "id": node.id, "label": node.label, "metadata": node.metadata,
+                }))
+        for edge in graph.edges:
+            if edge.relationship == "vba_ref":
+                source_node = graph_nodes.get(edge.source)
+                location = edge.source_location
+                if location is None and source_node and source_node.kind.value == "vba" and vba_part:
+                    location = vba_part.source_location
+                if location is None:
+                    raise ValueError(f"VBA graph edge {edge.source!r} -> {edge.target!r} has no source location")
+                workbook_records.append(_record(entry.source_id, "dependency", location, {
+                    "source": edge.source, "target": edge.target,
+                    "relationship": edge.relationship, "formula": edge.formula,
+                    "confidence": edge.confidence,
                 }))
         for feature in inventory.unsupported_features:
             workbook_records.append(_record(entry.source_id, "unsupported", feature.source_location, {

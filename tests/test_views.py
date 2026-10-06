@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 from openpyxl import Workbook
 from openpyxl.worksheet.table import Table
 
-from excel_to_act.schemas import SourceLocation, ViewRecord, WorkbookView
+from excel_to_act.schemas import FormulaGraph, GraphEdge, GraphNode, GraphNodeKind, SourceLocation, ViewRecord, WorkbookInventory, WorkbookView
 from excel_to_act.steps.step1.workflow import convert_directory
+from excel_to_act import views as views_module
 from excel_to_act.views import compile_views, serialize_views, validate_agent_output
 
 
-def _source(tmp_path: Path) -> tuple[Path, Path, Path]:
+def _source(tmp_path: Path, *, vba: bool = False) -> tuple[Path, Path, Path]:
     raw = tmp_path / "raw"
     raw.mkdir()
     book_path = raw / "book.xlsx"
@@ -27,6 +29,9 @@ def _source(tmp_path: Path) -> tuple[Path, Path, Path]:
     other["C3"] = "=MissingName"
     book.save(book_path)
     book.close()
+    if vba:
+        with ZipFile(book_path, "a") as archive:
+            archive.writestr("xl/vbaProject.bin", b"test-project")
     out = tmp_path / "step1"
     result = convert_directory(raw, out)
     batch = out / result["artifacts"][0]["path"]
@@ -99,6 +104,30 @@ def test_compile_accepts_batch_handoff_without_guessing_source(tmp_path: Path) -
     assert len({(view.source_id, view.source_run_id, view.source_sha256) for view in views}) == 1
 
 
+def test_compile_preserves_vba_graph_edges_at_real_package_location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    handoff, root, _ = _source(tmp_path, vba=True)
+    original_build = views_module.RegexFormulaGraphBuilder.build
+
+    def graph_with_vba(self: views_module.RegexFormulaGraphBuilder, inventory: WorkbookInventory) -> FormulaGraph:
+        graph = original_build(self, inventory)
+        graph.nodes.append(GraphNode(id="vba:Module1", kind=GraphNodeKind.vba, label="Module1"))
+        graph.edges.append(GraphEdge(
+            source="vba:Module1", target="cell:Facts!A2", relationship="vba_ref",
+            formula='Range("Facts!A2")',
+        ))
+        return graph
+
+    monkeypatch.setattr(views_module.RegexFormulaGraphBuilder, "build", graph_with_vba)
+    views = compile_views(handoff, root)
+    workbook = next(view for view in views if view.scope == "workbook")
+    edge = next(record for record in workbook.records if record.record_type == "dependency" and record.facts["relationship"] == "vba_ref")
+    assert edge.facts["source"] == "vba:Module1"
+    assert edge.facts["target"] == "cell:Facts!A2"
+    assert edge.source_location.object_id == "xl/vbaProject.bin"
+    assert edge.source_location.ooxml_part == "xl/vbaProject.bin"
+    assert edge.source_location.address is None
+
+
 def test_agent_validator_accepts_three_explicit_claim_types_and_opaque_report(tmp_path: Path) -> None:
     view = _view()
     loc = view.records[0].source_location.model_dump(mode="json")
@@ -161,6 +190,11 @@ def test_agent_validator_reports_opaque_without_guessing() -> None:
              "source_location": record.source_location.model_dump(mode="json"),
              "kind": "opaque", "reported_opaque": True}
     assert len(validate_agent_output({"claims": [claim]}, [view])["opaque_reports"]) == 1
+
+
+def test_workbook_view_rejects_unsupported_scope() -> None:
+    with pytest.raises(ValueError):
+        WorkbookView.model_validate({**_view().model_dump(mode="json"), "scope": "unsupported"})
 
 
 def test_exported_schema_is_the_runtime_model_schema() -> None:

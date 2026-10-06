@@ -194,6 +194,11 @@
       "type": "string"
     },
     "scope": {
+      "enum": [
+        "workbook",
+        "sheet",
+        "region"
+      ],
       "title": "Scope",
       "type": "string"
     },

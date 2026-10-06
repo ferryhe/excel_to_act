@@ -421,7 +421,7 @@ class WorkbookView(Artifact):
     source_sha256: str
     source_run_id: str
     source_schema_version: str
-    scope: str
+    scope: Literal["workbook", "sheet", "region"]
     sheet_name: str | None = None
     region_address: str | None = None
     records: list[ViewRecord]
