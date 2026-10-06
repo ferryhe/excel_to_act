@@ -400,6 +400,35 @@ class RunMetadata(Artifact):
         return value
 
 
+class ViewRecord(BaseModel):
+    record_id: str
+    record_type: str
+    source_location: SourceLocation
+    facts: dict[str, Any] = Field(default_factory=dict)
+
+
+class ViewChunk(BaseModel):
+    chunk_id: str
+    record_ids: list[str]
+    estimated_tokens: int = Field(ge=0)
+    over_budget_record_ids: list[str] = Field(default_factory=list)
+
+
+class WorkbookView(Artifact):
+    artifact_type: Literal["workbook_view"] = "workbook_view"
+    view_id: str
+    source_id: str
+    source_sha256: str
+    source_run_id: str
+    source_schema_version: str
+    scope: str
+    sheet_name: str | None = None
+    region_address: str | None = None
+    records: list[ViewRecord]
+    chunks: list[ViewChunk]
+    opaque_report: list[str] = Field(default_factory=list)
+
+
 def artifact_json_schema(model: type[BaseModel]) -> dict[str, Any]:
     return model.model_json_schema()
 
