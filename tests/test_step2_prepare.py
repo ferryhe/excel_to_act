@@ -168,7 +168,7 @@ def test_prepare_help_and_catalog_advertise_only_implemented_reader() -> None:
     runner = CliRunner()
     help_result = runner.invoke(app, ["step2", "prepare", "--help"])
     assert help_result.exit_code == 0
-    assert "--index" in help_result.stdout and "--dry-run" in help_result.stdout
+    assert "--index" in help_result.output and "--dry-run" in help_result.output
 
     catalog = json.loads(runner.invoke(app, ["step2", "tools"]).stdout)
     assert [command["name"] for command in catalog["reader_commands"]] == ["step2.prepare"]
