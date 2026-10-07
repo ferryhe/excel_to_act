@@ -703,6 +703,7 @@ def test_prepare_resolves_structured_data_selectors_case_insensitively(tmp_path:
         (("@Amount", "@Rate"), ["A2", "B3"], ["A2", "B3"], 2, 0),
         (("[#Headers],[Amount]", "[#Data],[Amount]"), [], [], 0, 2),
         (("#Headers", "Amount"), ["A1:B1", "A2:A3"], ["A1", "B1", "A2", "A3"], 2, 0),
+        (("#All", "#All"), ["A1:B3"], ["A1", "B1", "A2", "B2", "A3", "B3"], 2, 0),
     ],
 )
 def test_prepare_maps_only_exact_structured_table_selectors(
@@ -728,9 +729,8 @@ def test_prepare_maps_only_exact_structured_table_selectors(
     assert [item["address"] for item in snapshot["ranges"]] == expected_ranges
     assert [item["address"] for item in manifest_source["allowed_dependency_ranges"]] == expected_ranges
     assert sorted(cell["address"] for cell in snapshot["cells"]) == sorted(expected_cells)
-    if unresolved:
-        static_diagnostics = [item for item in audit["diagnostics"] if item["code"] == "static_reference_unresolved"]
-        assert len(static_diagnostics) == unresolved
+    static_diagnostics = [item for item in audit["diagnostics"] if item["code"] == "static_reference_unresolved"]
+    assert len(static_diagnostics) == unresolved
 
 
 @pytest.mark.parametrize(

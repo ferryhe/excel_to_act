@@ -243,9 +243,11 @@ def _destination(node: GraphNode, source_location: SourceLocation | None = None)
             data_end = max_row - totals_rows
             headers = node.metadata.get("table_columns")
             metadata_column = node.metadata.get("column")
-            if selector_key in {"#data", "#headers"}:
+            if selector_key in {"#all", "#data", "#headers"}:
                 if metadata_column is not None:
                     return None, None
+                if selector_key == "#all":
+                    return sheet, f"{get_column_letter(min_col)}{min_row}:{get_column_letter(max_col)}{max_row}"
                 if selector_key == "#headers":
                     if header_rows == 0:
                         return None, None

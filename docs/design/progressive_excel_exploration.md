@@ -1,6 +1,6 @@
 # Progressive Excel Exploration for Agents
 
-Status: proposed design. The new commands described below are not implemented. This analysis covers tools, CLI contracts, agent instructions and acceptance checks; independent review is required before treating the design as ready for implementation.
+Status: `step2 prepare` is implemented and documented for this Issue. `step2 query` and `step2 trace` remain proposed and are not implemented. This design covers their future tools, CLI contracts, agent instructions and acceptance checks; independent review is required before implementation.
 
 An agent should decompose a workbook once, verify the resulting facts, and then explore progressively through small evidence packets. Step 1 supplies source facts. Step 2 makes those facts accessible and preserves the approved scope. Step 3 interprets business behavior. Runtime observation and numerical reconciliation supply additional evidence when behavior depends on calculation or macros.
 
