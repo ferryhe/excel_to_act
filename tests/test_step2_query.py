@@ -18,7 +18,7 @@ from excel_to_act.schemas.step2_prepare import (
     ReadingSource,
     Step2ReadingManifest,
 )
-from excel_to_act.steps.step2.query import QueryFailure, query, validate_evidence_packet
+from excel_to_act.steps.step2.query import QueryFailure, _normalize_address, query, validate_evidence_packet
 from excel_to_act.views import _tokens
 
 
@@ -147,6 +147,10 @@ def package(tmp_path: Path) -> dict[str, Any]:
         _record("c-a1", "Calc", "A1", {"address": "A1", "kind": "value", "value": 3,
                                          "formula": None, "cached_value": None, "cached_value_available": False}),
     ]
+    apostrophe_records = [
+        _record("q-a1", "O'Brien", "A1", {"address": "A1", "kind": "value", "value": "quoted-sheet",
+                                              "formula": None, "cached_value": None, "cached_value_available": False}),
+    ]
     workbook_records = [
         _record("w-mod-a", None, None, {"name": "ModA", "kind": "StdModule", "code": "Sub Run()\nEnd Sub\n", "procedures": ["Run"]}, "vba_module"),
         _record("w-mod-calc", None, None, {"name": "Calc", "kind": "StdModule", "code": "Sub CalcRun()\nEnd Sub\n", "procedures": ["CalcRun"]}, "vba_module"),
@@ -158,6 +162,7 @@ def package(tmp_path: Path) -> dict[str, Any]:
         _view("v-book", "workbook", None, workbook_records, reading),
         _view("v-main", "sheet", "Main", main_records, reading),
         _view("v-calc", "sheet", "Calc", calc_records, reading),
+        _view("v-apostrophe", "sheet", "O'Brien", apostrophe_records, reading),
     ]
     view_refs = []
     outputs: dict[str, str] = {}
@@ -173,7 +178,7 @@ def package(tmp_path: Path) -> dict[str, Any]:
     scope_bytes = b"{}\n"
     (reading / "scope.json").write_bytes(scope_bytes)
     outputs["scope.json"] = hashlib.sha256(scope_bytes).hexdigest()
-    workbook_ref, main_ref, calc_ref = view_refs
+    workbook_ref, main_ref, calc_ref, apostrophe_ref = view_refs
     names = [
         DefinedNameLookup(name="DupName", scope="workbook", node_id="name:global", address="A1",
                           source_location=_loc("Calc", "A1", "defined_name")),
@@ -187,10 +192,10 @@ def package(tmp_path: Path) -> dict[str, Any]:
     source = ReadingSource(
         source_id=SOURCE_ID, source_path="model.xlsm", source_sha256=SOURCE_SHA, run_id=RUN_ID,
         status="partial", ready_for_next_step=True, artifacts=source_refs, views=view_refs,
-        retained_sheets=["Main"], excluded_sheets=["Calc"],
+        retained_sheets=["Main", "O'Brien"], excluded_sheets=["Calc"],
         allowed_dependency_ranges=[{"sheet_name": "Calc", "address": "O7:Q112"}],
         scope_sha256="scope-sha", lookup=ReadingLookup(workbook_view=workbook_ref,
-            sheet_views={"Main": main_ref, "Calc": calc_ref}, defined_names=names),
+            sheet_views={"Main": main_ref, "Calc": calc_ref, "O'Brien": apostrophe_ref}, defined_names=names),
     )
     manifest = Step2ReadingManifest(
         compiler_version="test", revision_id="revision-a", input_fingerprint="fingerprint-a", options={},
@@ -224,6 +229,10 @@ def test_all_eight_selectors_and_source_identity(package: dict[str, Any]) -> Non
     assert zero["facts"]["value"] == 0 and zero["facts"]["cached_value_available"] is False
     formula = _query(package, "cell", sheet="Main", target="A2")["views"][0]["records"][0]
     assert formula["facts"]["formula"] == "=1+1" and formula["facts"]["cached_value"] is None
+    quoted_sheet = _query(package, "cell", target="'O''Brien'!A1")
+    separate_sheet = _query(package, "cell", sheet="O'Brien", target="A1")
+    assert quoted_sheet["views"][0]["records"] == separate_sheet["views"][0]["records"]
+    assert quoted_sheet["views"][0]["records"][0]["record_id"] == "q-a1"
     assert _query(package, "range", sheet="Main", address="A1:B2")["pagination"]["delivered_count"] == 3
     assert _query(package, "name", target="DupName", sheet="Main")["summary"]["declaration"]["scope"] == "Main"
     control = _query(package, "control", target="Main.Check Box 1")
@@ -305,6 +314,88 @@ def test_scope_guards_metadata_and_name_ambiguity(package: dict[str, Any]) -> No
                                           "--source-id", SOURCE_ID, "--kind", "vba", "--target", "SheetUnknown"])
     assert cli_result.exit_code == 1
     assert json.loads(cli_result.stdout)["diagnostics"][0]["code"] == "vba_ownership_unknown"
+
+
+@pytest.mark.parametrize(
+    ("kind", "address"),
+    [
+        ("cell", "A0"),
+        ("range", "A0:B1"),
+        ("cell", "XFE1"),
+        ("range", "XFD1:XFE1"),
+        ("cell", "A1048577"),
+        ("range", "A1048576:A1048577"),
+    ],
+)
+def test_address_selectors_reject_coordinates_outside_excel_bounds(
+    package: dict[str, Any], kind: str, address: str,
+) -> None:
+    with pytest.raises(QueryFailure) as error:
+        if kind == "cell":
+            _query(package, kind, sheet="Main", target=address)
+        else:
+            _query(package, kind, sheet="Main", address=address)
+    assert error.value.status == "unsupported"
+    assert error.value.diagnostic["code"] == "selector_address_invalid"
+
+
+def test_excel_address_boundaries_are_accepted_and_invalid_cli_is_structured(package: dict[str, Any]) -> None:
+    assert _normalize_address("A1", cell=True)[1] == (1, 1, 1, 1)
+    assert _normalize_address("XFD1048576", cell=True)[1] == (16_384, 1_048_576, 16_384, 1_048_576)
+    assert _normalize_address("A1:XFD1048576")[1] == (1, 1, 16_384, 1_048_576)
+    result = CliRunner().invoke(app, ["step2", "query", "--manifest", str(package["manifest"]),
+                                     "--source-id", SOURCE_ID, "--kind", "cell", "--sheet", "Main", "--target", "XFE1"])
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "unsupported"
+    assert payload["diagnostics"][0]["code"] == "selector_address_invalid"
+
+
+def test_vba_source_file_sha_must_match_handoff_in_query_and_packet_validation(
+    package: dict[str, Any],
+) -> None:
+    packet = _query(package, "vba", target="ModA", budget=10000)
+    view = packet["views"][0]
+    claim = {"claims": [_claim(view, view["records"][0])]}
+    module_sha = packet["summary"]["module"]["sha256"]
+    assert hashlib.sha256(view["records"][0]["facts"]["code"].encode()).hexdigest() == module_sha
+
+    manifest = json.loads(package["manifest"].read_text(encoding="utf-8"))
+    source_ref = manifest["sources"][0]["artifacts"]["ModA.bas"]
+    changed_source = b"Sub Replacement()\nEnd Sub\n"
+    (package["step1"] / source_ref["path"]).write_bytes(changed_source)
+    source_ref["sha256"] = hashlib.sha256(changed_source).hexdigest()
+    manifest_bytes = _json_bytes(manifest)
+    package["manifest"].write_bytes(manifest_bytes)
+
+    with pytest.raises(QueryFailure) as query_error:
+        _query(package, "vba", target="ModA", budget=10000)
+    assert query_error.value.status == "integrity_failed"
+    assert query_error.value.diagnostic["code"] == "vba_source_mismatch"
+    cli_result = CliRunner().invoke(app, ["step2", "query", "--manifest", str(package["manifest"]),
+                                          "--source-id", SOURCE_ID, "--kind", "vba", "--target", "ModA",
+                                          "--budget", "10000"])
+    assert cli_result.exit_code == 1
+    assert json.loads(cli_result.stdout)["diagnostics"][0]["code"] == "vba_source_mismatch"
+
+    forged_packet = copy.deepcopy(packet)
+    forged_packet["manifest"]["sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
+    forged_packet["manifest"]["bytes"] = len(manifest_bytes)
+    forged_packet["source_file_refs"][0]["sha256"] = source_ref["sha256"]
+    binding = {
+        "manifest_sha256": forged_packet["manifest"]["sha256"],
+        "source_id": forged_packet["source"]["source_id"],
+        "selector": forged_packet["selector"],
+        "canonical_views": [(ref["path"], ref["sha256"]) for ref in forged_packet["canonical_view_refs"]],
+        "stream": [(page["view_id"], record["record_id"])
+                   for page in forged_packet["views"] for record in page["records"]],
+    }
+    forged_packet["pagination"]["binding_sha256"] = hashlib.sha256(
+        json.dumps(binding, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    validation = validate_evidence_packet(forged_packet, claim)
+    assert validation["valid"] is False
+    assert validation["diagnostics"][0]["code"] == "vba_source_mismatch"
 
 
 def test_paging_keeps_complete_records_and_resumes_after_oversized_record(package: dict[str, Any]) -> None:

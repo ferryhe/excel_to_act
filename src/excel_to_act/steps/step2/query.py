@@ -103,6 +103,8 @@ def _normalize_address(value: str, *, cell: bool = False) -> tuple[str, tuple[in
     if any(item is None for item in bounds):
         raise QueryFailure("unsupported", "selector_address_invalid", f"Selector address {value!r} is not an A1 cell/range.", requested=value)
     min_col, min_row, max_col, max_row = bounds
+    if min_col < 1 or max_col > 16_384 or min_row < 1 or max_row > 1_048_576:
+        raise QueryFailure("unsupported", "selector_address_invalid", f"Selector address {value!r} is outside Excel worksheet bounds.", requested=value)
     if cell and (min_col != max_col or min_row != max_row):
         raise QueryFailure("unsupported", "selector_cell_invalid", "A cell selector must identify exactly one cell.", requested=value)
     normalized = f"{get_column_letter(min_col)}{min_row}"
@@ -116,7 +118,11 @@ def _parse_sheet_address(target: str, sheet: str | None) -> tuple[str | None, st
         return sheet, target
     if "!" in target:
         raw_sheet, address = target.rsplit("!", 1)
-        return raw_sheet.strip("'"), address
+        if raw_sheet.startswith("'") and raw_sheet.endswith("'"):
+            raw_sheet = raw_sheet[1:-1].replace("''", "'")
+        else:
+            raw_sheet = raw_sheet.strip("'")
+        return raw_sheet, address
     return None, target
 
 
@@ -709,6 +715,8 @@ def query(
                 if source_ref is None:
                     raise QueryFailure("unavailable", "vba_source_file_missing", "VBA module source file has no canonical manifest reference.", target=requested_target, source_file=source_file)
                 source_data = _read_ref(source_ref, roots, manifest)
+                if _sha(source_data) != module.get("sha256"):
+                    raise QueryFailure("integrity_failed", "vba_source_mismatch", "Canonical VBA source file does not match the selected handoff module SHA-256.", target=requested_target, path=source_ref.path)
                 source_bytes += len(source_data)
                 source_file_refs.append(source_ref)
                 summary = {"label": "derivation", "module": module, "source_file": source_ref.model_dump(mode="json"), "owner_sheet": owner}
@@ -1020,7 +1028,7 @@ def validate_evidence_packet(packet_value: Any, output: dict[str, Any]) -> dict[
                         raise QueryFailure("integrity_failed", "selector_record_mismatch", "Delivered feature does not match the selected feature.", record_id=record.record_id)
                     if kind == "feature" and selector.get("sheet") and (record.source_location.sheet_name or "").casefold() != selector["sheet"].casefold():
                         raise QueryFailure("integrity_failed", "selector_record_mismatch", "Delivered feature is outside the selected worksheet.", record_id=record.record_id)
-            if kind == "vba" and pages:
+            if kind == "vba" and (pages or packet.source_file_refs):
                 handoff_data = _vba_handoff(source, roots, manifest)
                 modules = [item for item in (handoff_data[0].get("modules", []) if handoff_data else [])
                            if isinstance(item, dict) and str(item.get("name", "")).casefold() == str(selector.get("target", "")).casefold()]
@@ -1031,6 +1039,8 @@ def validate_evidence_packet(packet_value: Any, output: dict[str, Any]) -> dict[
                 source_ref = next((ref for ref in source.artifacts.values() if ref.root == "step1" and ref.path == expected_path), None)
                 if source_ref is None or not any(ref.path == source_ref.path and ref.sha256 == source_ref.sha256 for ref in packet.source_file_refs):
                     raise QueryFailure("integrity_failed", "vba_source_ref_missing", "Delivered module packet must include its canonical source-file reference.")
+                if source_ref.sha256 != modules[0].get("sha256"):
+                    raise QueryFailure("integrity_failed", "vba_source_mismatch", "Canonical VBA source file reference does not match the selected handoff module SHA-256.", path=source_ref.path)
                 if any(hashlib.sha256(str(record.facts.get("code", "")).encode("utf-8")).hexdigest() != modules[0].get("sha256")
                        for page in pages for record in page.records):
                     raise QueryFailure("integrity_failed", "vba_source_mismatch", "Delivered module record code differs from the canonical source file hash.")
