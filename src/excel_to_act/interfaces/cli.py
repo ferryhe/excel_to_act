@@ -9,16 +9,25 @@ from importlib.resources import files
 import typer
 
 from excel_to_act.orchestrator.phase1 import Phase1Orchestrator
+from excel_to_act.ingest.control_artifacts import ARTIFACT_FILES, build_single_control_artifact, clear_declared_vba_sources, evaluate_control_output, vba_handoff_markdown
+from excel_to_act.schemas import VbaHandoff
 from excel_to_act.steps.step2.workflow import build_index, execute_tool as execute_step2_tool, tool_catalog as step2_tool_catalog, validate_saved_index
+from excel_to_act.steps.step2.prepare import prepare as prepare_step2
 from excel_to_act.steps.step1.workflow import agent_definition, auto_recover, convert_directory, execute_tool, finalize_run, tool_catalog
 from excel_to_act.schemas import WorkbookView
 from excel_to_act.views import compile_views, serialize_views, validate_agent_output
 
 app = typer.Typer(help="Excel to actuarial model decomposition toolkit")
 step1_app = typer.Typer(help="Human Step1 raw-directory conversion and checked handoff")
+checkbox_app = typer.Typer(help="Identify, convert, and evaluate worksheet checkbox bindings")
+activex_app = typer.Typer(help="Identify, convert, and evaluate ActiveX event declarations")
+vba_app = typer.Typer(help="Identify, export, and evaluate VBA source handoff")
 step2_app = typer.Typer(help="Index Step 1 handoffs for downstream agents")
 views_app = typer.Typer(help="Compile deterministic source-addressable workbook views")
 app.add_typer(step1_app, name="step1")
+step1_app.add_typer(checkbox_app, name="checkbox")
+step1_app.add_typer(activex_app, name="activex")
+step1_app.add_typer(vba_app, name="vba")
 app.add_typer(step2_app, name="step2")
 app.add_typer(views_app, name="views")
 
@@ -52,6 +61,51 @@ def _emit_json(result: dict) -> None:
     typer.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
 
+def _control_models(kind: str, workbook: Path):
+    return build_single_control_artifact(kind, workbook)
+
+
+def _control_identify(kind: str, workbook: Path) -> None:
+    artifact, _sources = _control_models(kind, workbook)
+    _emit_json(artifact.model_dump(mode="json"))
+
+
+def _control_convert(kind: str, workbook: Path, out: Path, dry_run: bool) -> None:
+    artifact, sources = _control_models(kind, workbook)
+    artifact_name = ARTIFACT_FILES[kind]
+    outputs = [artifact_name]
+    if kind == "vba":
+        outputs.extend(sorted(sources))
+        outputs.append("vba_handoff.md")
+    plan = {"tool": f"step1.{kind}.convert", "status": artifact.status, "dry_run": dry_run, "workbook": str(workbook.expanduser().resolve()), "output": str(out.expanduser().resolve()), "records": len(getattr(artifact, "bindings", getattr(artifact, "controls", getattr(artifact, "modules", [])))), "files": outputs, "diagnostics": artifact.diagnostics}
+    if not dry_run:
+        out = out.expanduser().resolve()
+        out.mkdir(parents=True, exist_ok=True)
+        if kind == "vba":
+            previous = None
+            try:
+                previous = VbaHandoff.model_validate_json((out / artifact_name).read_bytes())
+            except (OSError, ValueError):
+                pass
+            clear_declared_vba_sources(out, previous)
+        (out / artifact_name).write_bytes((json.dumps(artifact.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+        for relative, content in sources.items():
+            path = out / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        if kind == "vba":
+            (out / "vba_handoff.md").write_bytes(vba_handoff_markdown(artifact).encode("utf-8"))
+        plan["written"] = True
+    _emit_json(plan)
+
+
+def _control_evaluate(kind: str, workbook: Path, out: Path) -> None:
+    result = evaluate_control_output(kind, workbook, out)
+    _emit_json(result)
+    if result["status"] == "fail":
+        raise typer.Exit(code=1)
+
+
 @step2_app.command("agent")
 def step2_agent() -> None:
     """Print the packaged Step 2 host-agent contract."""
@@ -64,6 +118,22 @@ def step2_tools() -> None:
     """Print the initial machine-readable Step 2 action catalogue."""
 
     _emit_json(step2_tool_catalog())
+
+
+@step2_app.command("prepare")
+def step2_prepare(
+    index: Path = typer.Option(..., "--index", help="Validated native Step 2 index.json"),
+    step1_root: Path = typer.Option(..., "--step1-root", help="Step 1 output root for resolving indexed artifacts"),
+    out: Path = typer.Option(..., "--out", help="Reading package output directory"),
+    scope: Path | None = typer.Option(None, "--scope", help="Source/run-bound analysis.scope.v1 JSON"),
+    resume: bool = typer.Option(False, "--resume", help="Reuse a matching package after verifying every saved output hash"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report capabilities and planned files without writing"),
+) -> None:
+    """Prepare validated Step 1 and Step 2 artifacts for progressive reading."""
+    result = prepare_step2(index, step1_root, out, scope_path=scope, resume=resume, dry_run=dry_run)
+    _emit_json(result)
+    if result["status"] == "blocked":
+        raise typer.Exit(code=1)
 
 
 @step2_app.command("index")
@@ -141,6 +211,72 @@ def step1_tools() -> None:
     """Print the machine-readable Step1 tool catalogue."""
 
     _emit_json(tool_catalog())
+
+
+@checkbox_app.command("identify")
+def checkbox_identify(workbook: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True)) -> None:
+    _control_identify("checkbox", workbook)
+
+
+@checkbox_app.command("convert")
+def checkbox_convert(
+    workbook: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    out: Path = typer.Option(..., "--out"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    _control_convert("checkbox", workbook, out, dry_run)
+
+
+@checkbox_app.command("evaluate")
+def checkbox_evaluate(
+    workbook: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    out: Path = typer.Option(..., "--out"),
+) -> None:
+    _control_evaluate("checkbox", workbook, out)
+
+
+@activex_app.command("identify")
+def activex_identify(workbook: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True)) -> None:
+    _control_identify("activex", workbook)
+
+
+@activex_app.command("convert")
+def activex_convert(
+    workbook: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    out: Path = typer.Option(..., "--out"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    _control_convert("activex", workbook, out, dry_run)
+
+
+@activex_app.command("evaluate")
+def activex_evaluate(
+    workbook: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    out: Path = typer.Option(..., "--out"),
+) -> None:
+    _control_evaluate("activex", workbook, out)
+
+
+@vba_app.command("identify")
+def vba_identify(workbook: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True)) -> None:
+    _control_identify("vba", workbook)
+
+
+@vba_app.command("convert")
+def vba_convert(
+    workbook: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    out: Path = typer.Option(..., "--out"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    _control_convert("vba", workbook, out, dry_run)
+
+
+@vba_app.command("evaluate")
+def vba_evaluate(
+    workbook: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    out: Path = typer.Option(..., "--out"),
+) -> None:
+    _control_evaluate("vba", workbook, out)
 
 
 @step1_app.command("agent")

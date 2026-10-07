@@ -369,7 +369,7 @@ def scan_step1_source(path: Path) -> dict[str, Any]:
                     height = element.attrib.get("ht") if element.attrib.get("customHeight") in {"1", "true"} else None
                     if hidden or height is not None:
                         add_object("row_layout", object_identity(kind, part, row_num), part, sheet=name, address=row_num)
-                elif kind == "col":
+                elif kind == "col" and element.tag == MAIN + "col":
                     raw_min = element.attrib.get("min", "")
                     raw_max = element.attrib.get("max", raw_min)
                     start_index = int(raw_min)

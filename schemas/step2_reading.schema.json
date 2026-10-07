@@ -1,0 +1,483 @@
+{
+  "$defs": {
+    "DefinedNameLookup": {
+      "properties": {
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Id"
+        },
+        "scope": {
+          "title": "Scope",
+          "type": "string"
+        },
+        "source_location": {
+          "$ref": "#/$defs/SourceLocation"
+        }
+      },
+      "required": [
+        "name",
+        "scope",
+        "address",
+        "source_location"
+      ],
+      "title": "DefinedNameLookup",
+      "type": "object"
+    },
+    "ReadingFileRef": {
+      "properties": {
+        "bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bytes"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "root": {
+          "enum": [
+            "reading",
+            "step1",
+            "step2_index"
+          ],
+          "title": "Root",
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "enum": [
+                "workbook",
+                "sheet",
+                "region"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scope"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "sheet_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Name"
+        },
+        "view_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "View Id"
+        }
+      },
+      "required": [
+        "root",
+        "path",
+        "sha256"
+      ],
+      "title": "ReadingFileRef",
+      "type": "object"
+    },
+    "ReadingLookup": {
+      "properties": {
+        "defined_names": {
+          "items": {
+            "$ref": "#/$defs/DefinedNameLookup"
+          },
+          "title": "Defined Names",
+          "type": "array"
+        },
+        "region_views": {
+          "items": {
+            "$ref": "#/$defs/ReadingFileRef"
+          },
+          "title": "Region Views",
+          "type": "array"
+        },
+        "sheet_views": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ReadingFileRef"
+          },
+          "title": "Sheet Views",
+          "type": "object"
+        },
+        "workbook_view": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReadingFileRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "ReadingLookup",
+      "type": "object"
+    },
+    "ReadingSource": {
+      "properties": {
+        "allowed_dependency_ranges": {
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "title": "Allowed Dependency Ranges",
+          "type": "array"
+        },
+        "allowed_read_paths": {
+          "items": {
+            "$ref": "#/$defs/ReadingFileRef"
+          },
+          "title": "Allowed Read Paths",
+          "type": "array"
+        },
+        "artifacts": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ReadingFileRef"
+          },
+          "title": "Artifacts",
+          "type": "object"
+        },
+        "dependency_graph": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReadingFileRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "diagnostics": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Diagnostics",
+          "type": "array"
+        },
+        "effective_scope": {
+          "additionalProperties": true,
+          "title": "Effective Scope",
+          "type": "object"
+        },
+        "excluded_sheets": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Excluded Sheets",
+          "type": "array"
+        },
+        "lookup": {
+          "$ref": "#/$defs/ReadingLookup"
+        },
+        "ready_for_next_step": {
+          "default": false,
+          "title": "Ready For Next Step",
+          "type": "boolean"
+        },
+        "retained_sheets": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Retained Sheets",
+          "type": "array"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "scope_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scope Sha256"
+        },
+        "source_id": {
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Path"
+        },
+        "source_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Sha256"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "views": {
+          "items": {
+            "$ref": "#/$defs/ReadingFileRef"
+          },
+          "title": "Views",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_id",
+        "status"
+      ],
+      "title": "ReadingSource",
+      "type": "object"
+    },
+    "SourceLocation": {
+      "description": "Original workbook location for a discovered object.",
+      "properties": {
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "object_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Object Id"
+        },
+        "object_type": {
+          "title": "Object Type",
+          "type": "string"
+        },
+        "ooxml_part": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ooxml Part"
+        },
+        "sheet_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Index"
+        },
+        "sheet_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Name"
+        },
+        "source_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Identity"
+        },
+        "workbook_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workbook Path"
+        }
+      },
+      "required": [
+        "object_type"
+      ],
+      "title": "SourceLocation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifact_type": {
+      "const": "reading_manifest",
+      "default": "reading_manifest",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "compiler_version": {
+      "title": "Compiler Version",
+      "type": "string"
+    },
+    "index": {
+      "$ref": "#/$defs/ReadingFileRef"
+    },
+    "input_fingerprint": {
+      "title": "Input Fingerprint",
+      "type": "string"
+    },
+    "options": {
+      "additionalProperties": true,
+      "title": "Options",
+      "type": "object"
+    },
+    "outputs": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Outputs",
+      "type": "object"
+    },
+    "revision_id": {
+      "title": "Revision Id",
+      "type": "string"
+    },
+    "roots": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Roots",
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "step2.reading.v1",
+      "default": "step2.reading.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scope": {
+      "$ref": "#/$defs/ReadingFileRef"
+    },
+    "source_count": {
+      "minimum": 0,
+      "title": "Source Count",
+      "type": "integer"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/ReadingSource"
+      },
+      "title": "Sources",
+      "type": "array"
+    }
+  },
+  "required": [
+    "compiler_version",
+    "revision_id",
+    "input_fingerprint",
+    "options",
+    "roots",
+    "source_count",
+    "index",
+    "scope",
+    "sources",
+    "outputs"
+  ],
+  "title": "Step2ReadingManifest",
+  "type": "object"
+}

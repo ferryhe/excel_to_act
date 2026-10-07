@@ -140,22 +140,37 @@ def _region_records(source_id: str, sheet: Any, region: RangeInventory) -> list[
     return records
 
 
-def compile_views(handoff_path: str | Path, step1_root: str | Path, *, budget: int = 1200) -> list[WorkbookView]:
+def compile_views(
+    handoff_path: str | Path | None,
+    step1_root: str | Path,
+    *,
+    budget: int = 1200,
+    validated_index: Step2Index | None = None,
+    validated_artifacts: dict[tuple[str, str], tuple[Path, Any]] | None = None,
+    graph_overrides: dict[str, FormulaGraph] | None = None,
+    extra_records: dict[str, dict[str, list[ViewRecord]]] | None = None,
+) -> list[WorkbookView]:
     """Validate Step 1 through Step 2, then compile one deterministic sheet view per source sheet."""
     if budget < 1:
         raise ValueError("budget must be positive")
-    root, handoff = Path(step1_root).expanduser().resolve(), Path(handoff_path).expanduser()
-    with TemporaryDirectory(prefix="excel-to-act-views-") as tmp:
-        result = build_index(handoff, root, Path(tmp))
-        if result.get("status") == "blocked":
-            raise ValueError(f"Step 2 rejected handoff: {result.get('diagnostics', [])}")
-        index_file = next((Path(item["path"]) for item in result.get("artifacts", []) if item.get("name") == "index.json"), None)
-        if index_file is None:
-            raise ValueError("Step 2 did not produce index.json")
-        validation = validate_saved_index(index_file, root)
-        if validation.get("status") != "pass":
-            raise ValueError(f"Step 2 validation failed: {validation.get('diagnostics', [])}")
-        index = Step2Index.model_validate_json(index_file.read_bytes())
+    root = Path(step1_root).expanduser().resolve()
+    if validated_index is None:
+        if handoff_path is None:
+            raise ValueError("handoff_path is required without a validated index")
+        handoff = Path(handoff_path).expanduser()
+        with TemporaryDirectory(prefix="excel-to-act-views-") as tmp:
+            result = build_index(handoff, root, Path(tmp))
+            if result.get("status") == "blocked":
+                raise ValueError(f"Step 2 rejected handoff: {result.get('diagnostics', [])}")
+            index_file = next((Path(item["path"]) for item in result.get("artifacts", []) if item.get("name") == "index.json"), None)
+            if index_file is None:
+                raise ValueError("Step 2 did not produce index.json")
+            validation = validate_saved_index(index_file, root)
+            if validation.get("status") != "pass":
+                raise ValueError(f"Step 2 validation failed: {validation.get('diagnostics', [])}")
+            index = Step2Index.model_validate_json(index_file.read_bytes())
+    else:
+        index = validated_index
     views: list[WorkbookView] = []
     for entry in index.entries:
         if entry.status not in {"pass", "partial"} or not entry.source_sha256 or not entry.run_id:
@@ -164,13 +179,22 @@ def compile_views(handoff_path: str | Path, step1_root: str | Path, *, budget: i
         required = {"inventory.json", "workbook_manifest.json"}
         if not required <= artifacts.keys():
             raise ValueError(f"Step 2 entry {entry.source_id} is missing {sorted(required - artifacts.keys())}")
-        inventory = WorkbookInventory.model_validate_json(artifacts["inventory.json"].read_bytes())
-        graph = (
-            FormulaGraph.model_validate_json(artifacts["dependency_graph.json"].read_bytes())
-            if "dependency_graph.json" in artifacts
-            else RegexFormulaGraphBuilder().build(inventory)
-        )
-        manifest = WorkbookManifest.model_validate_json(artifacts["workbook_manifest.json"].read_bytes())
+        validated = validated_artifacts or {}
+        inventory = validated.get((entry.source_id, "inventory.json"), (None, None))[1]
+        if not isinstance(inventory, WorkbookInventory):
+            inventory = WorkbookInventory.model_validate_json(artifacts["inventory.json"].read_bytes())
+        graph = (graph_overrides or {}).get(entry.source_id)
+        if graph is None:
+            graph = validated.get((entry.source_id, "dependency_graph.json"), (None, None))[1]
+        if not isinstance(graph, FormulaGraph):
+            graph = (
+                FormulaGraph.model_validate_json(artifacts["dependency_graph.json"].read_bytes())
+                if "dependency_graph.json" in artifacts
+                else RegexFormulaGraphBuilder().build(inventory)
+            )
+        manifest = validated.get((entry.source_id, "workbook_manifest.json"), (None, None))[1]
+        if not isinstance(manifest, WorkbookManifest):
+            manifest = WorkbookManifest.model_validate_json(artifacts["workbook_manifest.json"].read_bytes())
         identities = (inventory.workbook_sha256, manifest.sha256)
         if any(value != entry.source_sha256 for value in identities):
             raise ValueError(f"Artifact identity mismatch for Step 2 source {entry.source_id}")
@@ -243,6 +267,7 @@ def compile_views(handoff_path: str | Path, step1_root: str | Path, *, budget: i
                         "target_sheet_name": target_sheet,
                         "cross_sheet": target_sheet is not None and target_sheet != sheet.name,
                     }))
+            records.extend((extra_records or {}).get(entry.source_id, {}).get(sheet.name, []))
             for feature in graph.unsupported_features:
                 if feature.source_location.sheet_name == sheet.name:
                     records.append(_record(entry.source_id, "unresolved_reference", feature.source_location, {

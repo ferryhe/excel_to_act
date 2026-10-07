@@ -4,17 +4,19 @@ Actuarial models use these controls as scenario switches: a checkbox or scroll
 bar writes into a *linked cell* that the formulas then read. Missing that link
 means losing the model's input surface.
 
-In OOXML the link lives in the sheet's legacy VML drawing, not in a tidy
-SpreadsheetML element:
+This helper reads the legacy VML representation only. Modern worksheet form
+controls store their linked cell in ``xl/ctrlProps/*.xml``; the combined
+modern/VML checkbox inventory is in ``control_artifacts.py``. ActiveX binary
+streams remain opaque.
+
+VML stores the legacy link like this:
 
     <x:ClientData ObjectType="Checkbox">
       <x:FmlaLink>Inputs!$B$2</x:FmlaLink>
       <x:Checked>1</x:Checked>
     </x:ClientData>
 
-``xl/ctrlProps/*.xml`` does not carry the linked cell (ActiveX controls keep
-their properties in ``xl/activeX/*.bin``, which stays opaque), so VML is the
-authoritative source for legacy controls.
+ActiveX control properties in ``xl/activeX/*.bin`` remain opaque.
 """
 
 from __future__ import annotations

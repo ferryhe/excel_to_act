@@ -12,6 +12,8 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from excel_to_act.schemas import (
+    ActiveXEvents,
+    CheckboxBindings,
     ArtifactMetadata,
     CompletenessReport,
     ConfirmationTemplate,
@@ -21,6 +23,7 @@ from excel_to_act.schemas import (
     RunMetadata,
     WorkbookInventory,
     WorkbookManifest,
+    VbaHandoff,
 )
 from excel_to_act.schemas.artifacts import SCHEMA_VERSION
 
@@ -43,6 +46,9 @@ _MODEL_BY_FILE: dict[str, type[BaseModel]] = {
     "confirmation_template.json": ConfirmationTemplate,
     "completeness.json": CompletenessReport,
     "handoff.json": Handoff,
+    "checkbox_bindings.json": CheckboxBindings,
+    "activex_events.json": ActiveXEvents,
+    "vba_handoff.json": VbaHandoff,
     "run_metadata.json": RunMetadata,
 }
 

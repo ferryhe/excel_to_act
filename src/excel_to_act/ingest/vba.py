@@ -18,7 +18,7 @@ from excel_to_act.schemas import VbaModule
 
 _VBA_PART = "vbaProject.bin"
 _KIND_BY_EXT = {".bas": "StdModule", ".cls": "ClassModule", ".frm": "UserForm", ".frx": "UserForm"}
-_PROC_RE = re.compile(r"(?:Public |Private |Friend )?(?:Sub|Function)\s+(\w+)")
+_PROC_RE = re.compile(r"^[ \t]*(?:(?:Public|Private|Friend)[ \t]+)?(?:Static[ \t]+)?(?:Sub|Function)[ \t]+(\w+)\b", re.IGNORECASE | re.MULTILINE)
 
 
 @dataclass(frozen=True)

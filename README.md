@@ -56,11 +56,12 @@ excel-to-act step2 agent
 excel-to-act step2 tools
 excel-to-act step2 index --handoff PATH --step1-root DIR [--out DIR] [--resume]
 excel-to-act step2 validate --index output/step2_index/index.json --step1-root DIR
+excel-to-act step2 prepare --index output/step2_index/index.json --step1-root DIR --out output/reading [--scope analysis_scope.json] [--resume] [--dry-run]
 output/step2_index/index.json
 output/step2_index/INDEX.md
 ```
 
-The Step 2 batch index is distinct from the legacy per-workbook `artifact_index.json` shown below.
+`step2 prepare` validates the saved native index without adding an indexing recovery attempt, then writes a source/run-bound reading package with separate views, static dependency evidence, and paired English handoffs. Without `--scope`, all source sheets are retained. Preparation reads saved inventory and formula facts; it does not execute macros or recalculate formulas. The Step 2 batch index is distinct from the legacy per-workbook `artifact_index.json` shown below.
 
 If the output directory is inside the input directory, discovery excludes that output subtree and records the excluded path in the batch's `discovery` information. Identical input and output directories produce an explicit error.
 
@@ -73,6 +74,22 @@ excel-to-act step1 coverage --run <run-dir>      # Check logical objects and OOX
 excel-to-act step1 fidelity --run <run-dir>      # Compare raw XML fields with normalized facts
 excel-to-act step1 finalize --run <run-dir>      # Publish the final conversion directory after fresh checks
 ```
+
+Checkbox, ActiveX, and VBA handoff can also be inspected independently for one workbook. Each family has `identify`, `convert`, and `evaluate` commands; `identify` is read-only, `convert --dry-run` reports its plan without creating or changing output, and `evaluate` freshly extracts source facts and compares them with saved artifacts.
+
+```powershell
+excel-to-act step1 checkbox identify .\model.xlsm
+excel-to-act step1 checkbox convert .\model.xlsm --out .\controls [--dry-run]
+excel-to-act step1 checkbox evaluate .\model.xlsm --out .\controls
+excel-to-act step1 activex identify .\model.xlsm
+excel-to-act step1 activex convert .\model.xlsm --out .\controls [--dry-run]
+excel-to-act step1 activex evaluate .\model.xlsm --out .\controls
+excel-to-act step1 vba identify .\model.xlsm
+excel-to-act step1 vba convert .\model.xlsm --out .\controls [--dry-run]
+excel-to-act step1 vba evaluate .\model.xlsm --out .\controls
+```
+
+The default Step 1 handoff writes typed control artifacts, a human-readable `controls_handoff.md`, and separately indexed VBA source files with checksums. Checkbox links such as source `#REF!` values are recorded as invalid rather than guessed. ActiveX event names are associated with worksheet code names and declared VBA procedures statically; macros are not run, and ActiveX binary streams remain opaque. VBA files are readable source handoff, not a translation of Excel runtime behavior.
 
 Default thresholds require 100% logical-object traceability, byte-for-byte OOXML part preservation, and exact agreement for supported facts. Unknown or unparsed parts are still preserved. The default policy reports them as `partial` and allows handoff to Step 2 only after all other checks pass. Use `--no-allow-opaque` to prohibit this handoff. Manually lowering `--fidelity-min` explicitly produces a partial result; it cannot bypass missing supported objects, damaged XML, source changes, or verification errors. Step 1 does not calculate formulas or interpret actuarial meaning. After a person confirms the Step 1 handoff, Step 2 starts indexing and deciding what interpretation work is needed. `inspect <workbook> --out <dir>` retains the original single-workbook Phase 1 behavior.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -295,7 +296,7 @@ def _resolve_batch_entry(root: Path, item: Any, ordinal: int) -> Step2IndexEntry
     return _entry_from_handoff(root, handoff, relative, ordinal, item)
 
 
-def _markdown(index: Step2Index) -> str:
+def _markdown(index: Step2Index, output_dir: Path | None = None) -> str:
     def cell(value: Any) -> str:
         return str(value).replace("|", r"\|").replace("`", r"\`").replace("\r", " ").replace("\n", " ")
 
@@ -319,6 +320,15 @@ def _markdown(index: Step2Index) -> str:
         artifacts = ", ".join(f"`{cell(ref.name)}`" for ref in entry.artifacts) or "—"
         lines.append(f"| `{cell(entry.source_path or entry.source_id)}` | `{cell(entry.source_sha256 or 'unavailable')}` | {cell(entry.status)} | {str(entry.ready_for_next_step).lower()} | {artifacts} |")
         lines.extend(["", f"### `{cell(entry.source_path or entry.source_id)}`", "", f"- Run: `{cell(entry.run_id or 'unavailable')}`"])
+        for ref in entry.artifacts:
+            if ref.name in {"controls_handoff.md", "vba_handoff.md"}:
+                target = str(Path(index.step1_root) / ref.path)
+                if output_dir is not None:
+                    try:
+                        target = os.path.relpath(target, output_dir)
+                    except ValueError:
+                        pass
+                lines.append(f"- Human control/VBA handoff: [{cell(ref.name)}](<{target.replace(chr(92), '/')}>).")
         if entry.metrics:
             lines.append(f"- Metrics: `{cell(json.dumps(entry.metrics, ensure_ascii=False, sort_keys=True))}`")
         lines.extend(f"- Blocker: {cell(blocker)}" for blocker in entry.blockers)
@@ -336,7 +346,7 @@ def _write_index(out_dir: Path, index: Step2Index) -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     index_path, summary_path = out_dir / _INDEX_NAME, out_dir / _SUMMARY_NAME
     index_path.write_bytes(_json_bytes(index.model_dump(mode="json")))
-    summary_path.write_text(_markdown(index), encoding="utf-8")
+    summary_path.write_text(_markdown(index, out_dir.resolve()), encoding="utf-8")
     return index_path, summary_path
 
 
@@ -385,6 +395,7 @@ def _validate_saved_index(
     index_path: Path, step1_root: Path, skip_entry_keys: set[str] | None = None,
     *, entry_keys: list[str] | None = None,
     on_entry_validated: Callable[[str, Step2IndexEntry, bool], None] | None = None,
+    validated_artifacts: dict[tuple[str, str], tuple[Path, Any]] | None = None,
 ) -> dict[str, Any]:
     """Check a saved index and every referenced artifact using Step 1 contracts."""
     root = step1_root.expanduser().resolve()
@@ -394,7 +405,7 @@ def _validate_saved_index(
         "source": {"index": str(index_path)},
         "run_id": None,
         "artifacts": [],
-        "metrics": {"entries_checked": 0, "artifacts_checked": 0, "input_handoff_checked": 0},
+        "metrics": {"entries_checked": 0, "artifacts_checked": 0, "input_handoff_checked": 0, "inventory_models_deserialized": 0},
         "diagnostics": [],
         "retryable": False,
         "next_tool": None,
@@ -514,6 +525,7 @@ def _validate_saved_index(
                             if mismatch:
                                 handoff_error("source_handoff_identity_mismatch", mismatch)
         for ref in entry.artifacts:
+            artifact_diagnostics_before = len(result["diagnostics"])
             result["metrics"]["artifacts_checked"] += 1
             path = Path(ref.path)
             if path.is_absolute():
@@ -545,6 +557,7 @@ def _validate_saved_index(
                 report("artifact_json_invalid", f"Invalid JSON in {relative.as_posix()}: {exc}", entry, ref)
                 continue
             artifact_name = Path(ref.name).name
+            validated_payload = payload
             model = _MODEL_BY_FILE.get(artifact_name) or _MODEL_BY_FILE.get(resolved.name)
             handoff_reference = artifact_name == "handoff.json" or resolved.name == "handoff.json"
             current_handoff = handoff_reference and isinstance(payload, dict) and payload.get("schema_version") == "step1.v1"
@@ -560,7 +573,9 @@ def _validate_saved_index(
                 continue
             elif model:
                 try:
-                    model.model_validate(payload)
+                    if artifact_name == "inventory.json":
+                        result["metrics"]["inventory_models_deserialized"] += 1
+                    validated_payload = model.model_validate(payload)
                 except ValueError as exc:
                     report("artifact_schema_invalid", f"Invalid {ref.name} schema: {exc}", entry, ref, payload)
                     continue
@@ -607,6 +622,9 @@ def _validate_saved_index(
                             ref,
                             payload,
                         )
+            if (validated_artifacts is not None
+                    and len(result["diagnostics"]) == artifact_diagnostics_before):
+                validated_artifacts[(entry.source_id, artifact_name)] = (resolved, validated_payload)
         if on_entry_validated is not None:
             on_entry_validated(key, entry, input_valid and len(result["diagnostics"]) == diagnostics_before)
 
@@ -760,7 +778,7 @@ def _load_entries(
             old = Step2Index.model_validate(_read_json(out_dir / _INDEX_NAME))
             if (old.step1_root == str(root) and old.input_handoff_path == input_relative
                     and (_outputs_match(out_dir, state) or (
-                        unfinished and (out_dir / _SUMMARY_NAME).read_text(encoding="utf-8") == _markdown(old)
+                        unfinished and (out_dir / _SUMMARY_NAME).read_text(encoding="utf-8") == _markdown(old, out_dir.resolve())
                     ))):
                 cached = {_hash_value(entry.model_dump(mode="json")): entry for entry in old.entries}
         except (OSError, ValueError):
@@ -1047,7 +1065,7 @@ _TOOLS: list[dict[str, Any]] = [
 
 
 def tool_catalog() -> dict[str, Any]:
-    """Return the initial machine-readable Step 2 actions."""
+    """Return Step 2 recovery tools and implemented reader commands."""
     return {
         "tool": "step2.tools",
         "status": "ok",
@@ -1059,4 +1077,9 @@ def tool_catalog() -> dict[str, Any]:
         "retryable": False,
         "next_tool": None,
         "tools": _TOOLS,
+        "reader_commands": [{
+            "name": "step2.prepare",
+            "command": "step2 prepare --index INDEX --step1-root ROOT --out READING_DIR [--scope SCOPE] [--resume] [--dry-run]",
+            "outputs": ["manifest.json", "scope.json", "dependency_audit.json", "retained_dependency_cells.json", "paired English handoffs", "source views", "dependency graphs"],
+        }],
     }
