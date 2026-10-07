@@ -10,6 +10,18 @@ After indexing, run `excel-to-act step2 prepare --index INDEX --step1-root ROOT 
 
 The Step 2 handoff's `artifacts` entries use root-relative references. Audit and snapshot references include SHA-256 and byte length; the manifest reference contains only its explicit `reading` root and path because a manifest cannot checksum itself. Source rows keep each source's status, readiness, and diagnostics, including failed batch entries.
 
+## Progressive evidence reading
+
+Use the selected source identity from `manifest.json`, then ask for `overview` before reading a specific sheet or fact. Every query requires the exact `--source-id`; do not infer the first source in a batch.
+
+```text
+excel-to-act step2 query --manifest output/reading/manifest.json --source-id SOURCE --kind overview
+excel-to-act step2 query --manifest output/reading/manifest.json --source-id SOURCE --kind cell --sheet PremiumTable --target B7
+excel-to-act views validate --views evidence-packet.json --output claims.json
+```
+
+Use a targeted `sheet`, `cell`, `range`, `name`, `control`, `vba`, or `feature` query for the question at hand. Keep the returned packet with the claims and validate citations against that packet. A packet validates only that cited facts, IDs, locations, run identity, and canonical files match delivered evidence; it does not validate semantic or numerical conclusions. A truncated page returns a cursor. Continue it, increasing `--budget` when the next complete record is too large; never treat an omitted record as evidence. Do not repeat the same query when no new evidence or selector is available. Respect excluded sheets and approved dependency ranges; a broader read needs a new confirmed scope and preparation revision. Issue #32 trace is not available in this reader.
+
 `step2 index` returns `status`, `diagnostics`, `metrics`, `retryable`, and `next_tool`. Its `status` is index usability (`partial` for any non-empty built index) unless validation blocks it; an empty or blocked index returns `blocked`. Standalone `step2 validate` returns validation integrity in its response `status`. In saved `index.json`, top-level `status` is index usability, `validation_status` is validation integrity, and `entries[*].status` is each Step 1 source status; use each entry’s `next_actions` for its next actions. Diagnostics identify the source entry and artifact when available. `retryable` and `next_tool` recommend only existing actions; per-entry `next_actions` may name a Step 1 action for the host to invoke through Step 1's own recovery contract.
 
 ## Tools and recovery

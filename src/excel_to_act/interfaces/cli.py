@@ -13,6 +13,7 @@ from excel_to_act.ingest.control_artifacts import ARTIFACT_FILES, build_single_c
 from excel_to_act.schemas import VbaHandoff
 from excel_to_act.steps.step2.workflow import build_index, execute_tool as execute_step2_tool, tool_catalog as step2_tool_catalog, validate_saved_index
 from excel_to_act.steps.step2.prepare import prepare as prepare_step2
+from excel_to_act.steps.step2.query import QueryFailure, query as query_step2, validate_evidence_packet
 from excel_to_act.steps.step1.workflow import agent_definition, auto_recover, convert_directory, execute_tool, finalize_run, tool_catalog
 from excel_to_act.schemas import WorkbookView
 from excel_to_act.views import compile_views, serialize_views, validate_agent_output
@@ -136,6 +137,34 @@ def step2_prepare(
         raise typer.Exit(code=1)
 
 
+@step2_app.command("query")
+def step2_query(
+    manifest: Path = typer.Option(..., "--manifest", exists=True, dir_okay=False, readable=True, help="#30 prepared reading manifest.json"),
+    source_id: str = typer.Option(..., "--source-id", help="Exact source ID from the manifest; never inferred"),
+    kind: str = typer.Option(..., "--kind", help="overview, sheet, cell, range, name, control, vba, or feature"),
+    target: str | None = typer.Option(None, "--target", help="Cell, name, control, module, feature, or sheet target"),
+    sheet: str | None = typer.Option(None, "--sheet", help="Worksheet context for a selector"),
+    range_address: str | None = typer.Option(None, "--range", help="A1 range for a range query"),
+    budget: int = typer.Option(1200, "--budget", min=1, help="Estimated token budget; records are never split"),
+    cursor: str | None = typer.Option(None, "--cursor", help="Continue the same source-bound selector page"),
+    out: Path | None = typer.Option(None, "--out", help="Optional evidence packet path"),
+) -> None:
+    """Read a bounded page from a prepared Step 2 evidence package."""
+    try:
+        result = query_step2(manifest, source_id, kind, target=target, sheet=sheet,
+                             address=range_address, budget=budget, cursor=cursor)
+    except QueryFailure as exc:
+        _emit_json({"tool": "step2.query", "status": exc.status, "diagnostics": [exc.diagnostic]})
+        raise typer.Exit(code=1) from exc
+    if out is not None:
+        out = out.expanduser().resolve()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _emit_json(result)
+    if result.get("status") in {"integrity_failed", "unavailable", "unsupported", "not_found", "needs_selection", "out_of_scope", "needs_scope_resolution", "oversized"}:
+        raise typer.Exit(code=1)
+
+
 @step2_app.command("index")
 def step2_index(
     handoff: Path = typer.Option(..., "--handoff", help="Step 1 source or batch handoff JSON"),
@@ -200,10 +229,20 @@ def views_validate(
     views_file: Path = typer.Option(..., "--views", exists=True, dir_okay=False),
     output: Path = typer.Option(..., "--output", exists=True, dir_okay=False),
 ) -> None:
-    """Validate a JSON Agent response against compiled views."""
-    views = [WorkbookView.model_validate(item) for item in json.loads(views_file.read_text(encoding="utf-8"))]
-    result = validate_agent_output(json.loads(output.read_text(encoding="utf-8")), views)
+    """Validate claims against a legacy view list or a source-bound evidence packet."""
+    try:
+        view_data = json.loads(views_file.read_text(encoding="utf-8"))
+        agent_output = json.loads(output.read_text(encoding="utf-8"))
+        if isinstance(view_data, list):
+            views = [WorkbookView.model_validate(item) for item in view_data]
+            result = validate_agent_output(agent_output, views)
+        else:
+            result = validate_evidence_packet(view_data, agent_output)
+    except (OSError, ValueError, TypeError) as exc:
+        result = {"valid": False, "diagnostics": [{"code": "validation_input_invalid", "severity": "error", "message": str(exc)}]}
     _emit_json(result)
+    if result.get("valid") is not True:
+        raise typer.Exit(code=1)
 
 
 @step1_app.command("tools")
