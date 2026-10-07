@@ -79,22 +79,23 @@ def trace(
             node_proofs[node_id] = proof
         return node_id
 
-    name_groups: dict[str, list[Any]] = defaultdict(list)
+    name_groups: dict[tuple[str, str], list[tuple[str, Any]]] = defaultdict(list)
     name_problems: dict[str, str] = {}
     destinations: dict[str, dict[str, Any]] = {}
     for i, item in enumerate(source.lookup.defined_names):
         node_id = item.node_id or f"name:{item.scope}!{item.name}"
-        name_groups[node_id].append(item)
+        name_groups[(item.scope.casefold(), item.name.casefold())].append((node_id, item))
         if node_id not in nodes:
             nodes[node_id] = GraphNode(id=node_id, kind=GraphNodeKind.name, label=item.name,
                 source_location=item.source_location,
                 metadata={"name": item.name, "scope": item.scope, "address": item.address})
         node_proofs[node_id] = {"manifest_sha256": _sha(manifest_bytes), "pointer": f"/sources/{manifest.sources.index(source)}/lookup/defined_names/{i}"}
-    for node_id, declarations in name_groups.items():
+    for declarations in name_groups.values():
         if len(declarations) != 1:
-            name_problems[node_id] = "ambiguous_or_multi_area_name"
+            for node_id, _ in declarations:
+                name_problems[node_id] = "ambiguous_or_multi_area_name"
             continue
-        item = declarations[0]
+        node_id, item = declarations[0]
         owner, address = _parse_destination(item.address, item.source_location.sheet_name)
         owner = actual_sheet(owner)
         if not owner or not address:
@@ -127,7 +128,7 @@ def trace(
                 "provenance": node_proofs[node.id]}
 
     if kind == "name":
-        candidates = [(node_id, item) for node_id, items in name_groups.items() for item in items
+        candidates = [(node_id, item) for items in name_groups.values() for node_id, item in items
                       if item.name.casefold() == selector["target"]]
         if selector["sheet"]:
             local = [row for row in candidates if row[1].scope.casefold() == selector["sheet"]]

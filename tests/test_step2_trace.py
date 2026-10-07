@@ -287,3 +287,33 @@ def test_instrumented_extraction_prepare_query_trace_reuse(tmp_path: Path, monke
         raise AssertionError("read command deserialized inventory")
     monkeypatch.setattr(prepare_module.WorkbookInventory, "model_validate", inventory_forbidden)
     trace_module.trace(manifest, source_id, "cell", "Main!A1", direction="upstream")
+
+
+def test_prepared_multi_area_with_graph_and_missing_id_stays_unresolved(tmp_path: Path):
+    from excel_to_act.steps.step2.prepare import prepare
+    from excel_to_act.steps.step2.trace import trace
+    from test_step2_prepare import _setup
+
+    root, index, _, _, _ = _setup(tmp_path, multi_area_name=True)
+    out = tmp_path / "reading"
+    assert prepare(index, root, out)["status"] == "prepared"
+    manifest = out / "manifest.json"
+    source = json.loads(manifest.read_bytes())["sources"][0]
+    declarations = [item for item in source["lookup"]["defined_names"] if item["name"] == "Both"]
+    assert [(item["address"], item["node_id"]) for item in declarations] == [
+        ("$A$1", "name:Both"), ("$B$1", None),
+    ]
+    packet = trace(manifest, source["source_id"], "cell", "Main!A2", direction="upstream")
+    assert _ids(packet) == {"cell:Main!A2", "name:Both"}
+    assert any(item["node_id"] == "name:Both" and item["reason"] == "ambiguous_or_multi_area_name"
+               for item in packet["trace"]["unresolved"])
+    assert not any(edge["relationship"] == "name_destination" for edge in packet["trace"]["edges"])
+    assert validate_evidence_packet(packet, {"claims": []})["valid"] is True
+    selected = trace(manifest, source["source_id"], "name", "Both", direction="upstream")
+    assert selected["status"] == "needs_selection"
+    assert set(selected["trace"]["roots"]) == {"name:Both", "name:workbook!Both"}
+    assert selected["trace"]["unresolved"] and not selected["trace"]["edges"]
+    for address in ("A1", "B1"):
+        reverse = trace(manifest, source["source_id"], "cell", f"Calc!{address}", direction="downstream")
+        assert not any(edge["relationship"] == "name_destination" for edge in reverse["trace"]["edges"])
+        assert "cell:Main!A2" not in _ids(reverse)
