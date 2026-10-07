@@ -172,7 +172,7 @@ def test_prepare_help_and_catalog_advertise_only_implemented_reader() -> None:
     assert {"--index", "--step1-root", "--out", "--scope", "--resume", "--dry-run"} <= registered_options
 
     catalog = json.loads(runner.invoke(app, ["step2", "tools"]).stdout)
-    assert [command["name"] for command in catalog["reader_commands"]] == ["step2.prepare", "step2.query"]
+    assert [command["name"] for command in catalog["reader_commands"]] == ["step2.prepare", "step2.query", "step2.trace"]
 
 
 def test_prepare_exports_json_schemas_for_runtime_contracts() -> None:

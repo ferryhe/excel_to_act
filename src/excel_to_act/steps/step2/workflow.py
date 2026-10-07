@@ -1088,6 +1088,12 @@ def tool_catalog() -> dict[str, Any]:
             "command": "step2 query --manifest MANIFEST --source-id SOURCE --kind KIND [--target TARGET] [--sheet SHEET] [--range A1_RANGE] [--budget N] [--cursor CURSOR] [--out PACKET]",
             "inputs": {"manifest": "#30 reading manifest", "source_id": "Exact source ID from the manifest", "kind": "overview, sheet, cell, range, name, control, vba, or feature", "target": "Selector-specific target", "sheet": "Worksheet context", "range": "A1 range", "budget": "Positive estimated-token page budget", "cursor": "Source/selector-bound continuation cursor"},
             "outputs": ["source-bound evidence packet", "canonical view references and complete delivered records", "selector summary, pagination, selected view/byte metrics, diagnostics"],
+            "next": ["step2.trace", "views.validate"],
+        }, {
+            "name": "step2.trace",
+            "command": "step2 trace --manifest MANIFEST --source-id SOURCE --kind cell|range|name --target TARGET [--sheet SHEET] --direction upstream|downstream|both [--max-depth N] [--max-nodes N] [--max-edges N] [--out PACKET]",
+            "inputs": {"manifest": "Prepared reading manifest", "source_id": "Required exact source ID", "direction": "upstream dependencies follows formula-cell -> input; downstream reverses; both combines", "limits": "Defaults depth 8, nodes 100, edges 200; ceilings 100/10000/20000"},
+            "outputs": ["canonical evidence packet with static trace", "source formula edges and provenance-marked structural derivations", "frontier, truncated, unresolved, scope boundaries, next actions and reuse counters"],
             "next": ["views.validate"],
         }],
     }

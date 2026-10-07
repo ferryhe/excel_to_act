@@ -14,6 +14,7 @@ from excel_to_act.schemas import VbaHandoff
 from excel_to_act.steps.step2.workflow import build_index, execute_tool as execute_step2_tool, tool_catalog as step2_tool_catalog, validate_saved_index
 from excel_to_act.steps.step2.prepare import prepare as prepare_step2
 from excel_to_act.steps.step2.query import QueryFailure, query as query_step2, validate_evidence_packet
+from excel_to_act.steps.step2.trace import trace as trace_step2
 from excel_to_act.steps.step1.workflow import agent_definition, auto_recover, convert_directory, execute_tool, finalize_run, tool_catalog
 from excel_to_act.schemas import WorkbookView
 from excel_to_act.views import compile_views, serialize_views, validate_agent_output
@@ -162,6 +163,36 @@ def step2_query(
         out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     _emit_json(result)
     if result.get("status") in {"integrity_failed", "unavailable", "unsupported", "not_found", "needs_selection", "out_of_scope", "needs_scope_resolution", "oversized"}:
+        raise typer.Exit(code=1)
+
+
+@step2_app.command("trace")
+def step2_trace(
+    manifest: Path = typer.Option(..., "--manifest", exists=True, dir_okay=False, readable=True),
+    source_id: str = typer.Option(..., "--source-id", help="Exact manifest source ID; required"),
+    kind: str = typer.Option(..., "--kind", help="cell, range, or name"),
+    target: str = typer.Option(..., "--target", help="A1 cell/range or defined name"),
+    direction: str = typer.Option(..., "--direction", help="upstream dependencies, downstream consumers, or both"),
+    sheet: str | None = typer.Option(None, "--sheet", help="Worksheet or name scope"),
+    max_depth: int = typer.Option(8, "--max-depth", help="Depth bound (0..100)"),
+    max_nodes: int = typer.Option(100, "--max-nodes", help="Node bound (1..10000)"),
+    max_edges: int = typer.Option(200, "--max-edges", help="Edge bound (1..20000)"),
+    out: Path | None = typer.Option(None, "--out", help="Optional evidence packet path"),
+) -> None:
+    """Trace a bounded static dependency path using a prepared graph and source records."""
+    try:
+        result = trace_step2(manifest, source_id, kind, target, sheet=sheet, direction=direction,
+                             max_depth=max_depth, max_nodes=max_nodes, max_edges=max_edges)
+        if out is not None:
+            out = out.expanduser().resolve()
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except (QueryFailure, OSError) as exc:
+        diagnostic = exc.diagnostic if isinstance(exc, QueryFailure) else {"code": "trace_write_failed", "severity": "error", "message": str(exc)}
+        _emit_json({"tool": "step2.trace", "status": exc.status if isinstance(exc, QueryFailure) else "unavailable", "diagnostics": [diagnostic]})
+        raise typer.Exit(code=1) from exc
+    _emit_json(result)
+    if result["status"] == "needs_selection":
         raise typer.Exit(code=1)
 
 
