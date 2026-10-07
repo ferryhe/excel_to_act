@@ -3,14 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.table import Table, TableColumn
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from excel_to_act.interfaces.cli import app
@@ -168,22 +167,9 @@ def _prepare_args(root: Path, index: Path, out: Path, scope: Path | None = None)
 
 def test_prepare_help_and_catalog_advertise_only_implemented_reader() -> None:
     runner = CliRunner()
-    help_result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from excel_to_act.interfaces.cli import app; app()",
-            "step2",
-            "prepare",
-            "--help",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert help_result.returncode == 0
-    help_text = help_result.stdout + help_result.stderr
-    assert "--index" in help_text and "--dry-run" in help_text
+    prepare = get_command(app).commands["step2"].commands["prepare"]
+    registered_options = {option for parameter in prepare.params for option in parameter.opts}
+    assert {"--index", "--step1-root", "--out", "--scope", "--resume", "--dry-run"} <= registered_options
 
     catalog = json.loads(runner.invoke(app, ["step2", "tools"]).stdout)
     assert [command["name"] for command in catalog["reader_commands"]] == ["step2.prepare"]
