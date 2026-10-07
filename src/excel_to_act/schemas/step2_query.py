@@ -60,3 +60,4 @@ class EvidencePacket(BaseModel):
     pagination: dict[str, Any] = Field(default_factory=dict)
     metrics: dict[str, Any] = Field(default_factory=dict)
     diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+    trace: dict[str, Any] | None = None

@@ -819,6 +819,10 @@ def validate_evidence_packet(packet_value: Any, output: dict[str, Any]) -> dict[
             raise QueryFailure("integrity_failed", "packet_invalid", "Evidence packet must be a JSON object.")
         if not isinstance(output, dict):
             raise QueryFailure("integrity_failed", "agent_output_invalid", "Agent output must be a JSON object.")
+        if packet_value.get("trace") is not None:
+            from excel_to_act.steps.step2.trace import validate_trace_packet
+            EvidencePacket.model_validate(packet_value)
+            return validate_trace_packet(packet_value, output)
         raw_manifest = packet_value.get("manifest")
         raw_source = packet_value.get("source")
         raw_selector = packet_value.get("selector")
@@ -1052,7 +1056,7 @@ def validate_evidence_packet(packet_value: Any, output: dict[str, Any]) -> dict[
                     raise QueryFailure("integrity_failed", "vba_ownership_unknown", "Worksheet VBA ownership needs scope resolution before delivering code.")
         result = validate_agent_output(output, pages)
         return {"valid": True, "provenance_only": True, "claim_validation": result, "diagnostics": []}
-    except (QueryFailure, ValueError, TypeError) as exc:
+    except (QueryFailure, ValueError, TypeError, KeyError) as exc:
         if isinstance(exc, QueryFailure):
             diagnostic = exc.diagnostic
         else:

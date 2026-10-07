@@ -1,4 +1,14 @@
-# Step 2: Artifact Index
+# Step 2: Prepared Exploration
+
+Prepare → overview → small query → bounded trace → citation validation → Step 3 interpretation → fresh independent review. See [the exploration specification](../../../../docs/design/step2_trace_exploration.md) for the fixture/Pricing walkthrough and review instructions.
+
+```text
+excel-to-act step2 trace --manifest MANIFEST --source-id SOURCE --kind cell|range|name --target TARGET [--sheet SHEET] --direction upstream|downstream|both [--max-depth N] [--max-nodes N] [--max-edges N] [--out PACKET]
+```
+
+The stored formula edge points from a formula cell to its referenced input: upstream follows it; downstream reverses it. Structural name destinations and stored range members preserve cross-sheet identity and provenance. Downstream includes consumers through these names/ranges. Scoped name ambiguity and unsupported destinations remain explicit. Bounds default to depth 8/nodes 100/edges 200; their maxima are 100/10000/20000. Every trace reports frontier, truncation, unresolved paths, scope boundaries, and next actions. Partial traces never prove closure.
+
+Trace reuses prepared graph/lookups and selected canonical views. It does not consume recovery attempts. It stops excluded-sheet formula expansion and delivers only approved read-only dependency records. Approved name destinations, stored range members, and incoming edges from retained formula sources remain traversable within bounds. Keep formula/cache facts unchanged. Literal VBA references are auxiliary; dynamic addresses, read/write order, full calls, macro execution, and scenario recalculation need separate evidence. `views validate` checks trace derivations against canonical replay and checks claims against delivered source records; a PASS proves provenance only.
 
 Step 2 reads current Step 1 handoffs (`step1.v1` or `step1.batch.v1`) and writes a navigation and quality index. It keeps every batch entry, including failed entries and entries whose per-source handoff is unavailable. It stores source identity, status, metrics, diagnostics, next actions, and references; artifact contents are not copied and no semantic conclusions are made.
 

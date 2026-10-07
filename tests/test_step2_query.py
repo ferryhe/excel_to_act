@@ -627,4 +627,4 @@ def test_cli_requires_source_id_and_advertises_query(package: dict[str, Any], tm
     assert oversized_result.exit_code == 1 and json.loads(oversized_result.stdout)["status"] == "oversized"
     catalogue = json.loads(runner.invoke(app, ["step2", "tools"]).stdout)
     reader = next(item for item in catalogue["reader_commands"] if item["name"] == "step2.query")
-    assert reader["inputs"] and reader["outputs"] and reader["next"] == ["views.validate"]
+    assert reader["inputs"] and reader["outputs"] and reader["next"] == ["step2.trace", "views.validate"]

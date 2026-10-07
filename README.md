@@ -59,6 +59,7 @@ excel-to-act step2 validate --index output/step2_index/index.json --step1-root D
 excel-to-act step2 prepare --index output/step2_index/index.json --step1-root DIR --out output/reading [--scope analysis_scope.json] [--resume] [--dry-run]
 excel-to-act step2 query --manifest output/reading/manifest.json --source-id SOURCE --kind overview
 excel-to-act step2 query --manifest output/reading/manifest.json --source-id SOURCE --kind cell --sheet PremiumTable --target B7
+excel-to-act step2 trace --manifest output/reading/manifest.json --source-id SOURCE --kind name --target GP --direction upstream --out trace-packet.json
 excel-to-act views validate --views evidence-packet.json --output claims.json
 output/step2_index/index.json
 output/step2_index/INDEX.md
@@ -66,7 +67,7 @@ output/step2_index/INDEX.md
 
 `step2 prepare` validates the saved native index without adding an indexing recovery attempt, then writes a source/run-bound reading package with separate views, static dependency evidence, and paired English handoffs. Without `--scope`, all source sheets are retained. Preparation reads saved inventory and formula facts; it does not execute macros or recalculate formulas. The Step 2 batch index is distinct from the legacy per-workbook `artifact_index.json` shown below.
 
-For progressive evidence reading, select the exact `source_id` from the prepared manifest, query `overview`, then request only the needed sheet, cell, range, name, control, VBA module, or feature. Queries verify the selected prepared evidence and return complete records in bounded pages; a cursor resumes at the next undelivered record. Keep the evidence packet and validate citations with `views validate`. Validation checks provenance consistency only, not semantic or numerical correctness. It does not expand dependencies; Issue #32 trace is not available here. Do not repeat the same query without new evidence or a changed selector.
+For progressive evidence reading, select the exact `source_id` from the prepared manifest, query `overview`, then request only the needed sheet, cell, range, name, control, VBA module, or feature. Queries return complete records in bounded pages; a cursor resumes at the next undelivered record. Follow supported dependencies with `step2 trace`: upstream follows formula-cell → referenced-input edges, downstream finds consumers through cells, names and ranges, and both combines them. Defaults depth 8/nodes 100/edges 200 ensure a finite read. Structural derivations keep provenance; unresolved paths, frontier and excluded-sheet boundaries stay explicit. Keep the packet and validate citations with `views validate`. Validation proves provenance only; cached results and VBA declarations do not prove recalculation or execution. See [the exploration specification](docs/design/step2_trace_exploration.md) for replay and independent-review instructions.
 
 If the output directory is inside the input directory, discovery excludes that output subtree and records the excluded path in the batch's `discovery` information. Identical input and output directories produce an explicit error.
 
