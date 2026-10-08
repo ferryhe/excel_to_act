@@ -35,7 +35,7 @@ This is a selection review for a **project already in progress**, not pre-projec
 | Rule classification and confirmation prompts | `src/excel_to_act/classify/`, `src/excel_to_act/confirm/` | Implemented in legacy `inspect`; optional Step 1 tools exist | Rule outputs and human questions, not README Step 3's broader semantic analysis |
 | Storage/orchestration/interfaces/reporting | `src/excel_to_act/store/local_store.py`, `src/excel_to_act/orchestrator/phase1.py`, `src/excel_to_act/interfaces/cli.py`, `src/excel_to_act/report/handoff.py` | Implemented | Cross-layer services; report output spans stages (see B1) |
 | Plugin protocols | `src/excel_to_act/plugins/contracts.py` | 6 Protocols, **no OracleRunner** | Add one for L3 in §7 |
-| Optional dependencies | `pyproject.toml [project.optional-dependencies].formula` | `formulas>=1.3` + `xlcalculator>=0.5` bundled together | §7 records the research concern; this Issue makes no dependency change |
+| Optional dependencies | `pyproject.toml [project.optional-dependencies]` | `formulas>=1.3` is isolated in `oracle-formulas`; `xlcalculator>=0.5` is in `xlcalc` | §7 records the research concern; see the Issue #9 decision record for the default dependency gate |
 
 ---
 
@@ -71,7 +71,7 @@ Evaluate tools that **"understand Excel formulas and calculate them / compile th
 | **Function coverage** | Availability of LOOKUP / INDEX / MATCH / OFFSET / financial functions commonly used in actuarial models |
 | **Artifact form** | Does it produce an auditable, versionable intermediate representation? |
 | **Structural coverage** | Availability of defined names / structured references / volatile / circular / styles |
-| **License** | Project convention: **avoid GPL/AGPL-style copyleft in the core dependency path** |
+| **License** | Project policy: **exclude GPL, AGPL, and EUPL license families from the default runtime dependency closure** |
 | **Activity** | Date of the most recent release |
 | **Suggested layer** | Placement recommendations are aligned with normative B1 (L0 ingestion / L3 validation / reference only) |
 
@@ -245,13 +245,13 @@ Predecessor to `xlcalculator`, deprecated. Do not use.
 |---|---|---|---|
 | MIT | openpyxl, xlcalculator, fastexcel | **Allowed** | No copyleft propagation |
 | PSF | stdlib zipfile/xml | **Allowed** | Standard library |
-| EUPL 1.1+ | formulas | **No** | Copyleft; lower risk for internal use, legal review required for distribution with artifacts |
-| GPLv3 | pycel, Gridmonger | **No** | Conflicts with project convention |
+| EUPL 1.1+ | formulas | **No** | Excluded from the default runtime closure by project policy |
+| GPLv3 | pycel, Gridmonger | **No** | Excluded from the default runtime closure by project policy |
 | MPL 2.0 | LibreOffice, orcus/ixion | N/A | Out-of-process invocation or reference only; not linked |
 | BSD-3 | xlwings | No | Depends on Excel COM |
 
-> **Stricter interpretation:** The plan says "Avoid **GPL/AGPL** core dependencies." This document also classifies **EUPL 1.1+** as prohibited from core dependencies; this is a **stricter interpretation** that F1 ADR must confirm and that must be reflected in the corresponding section of `docs/plans/phase1_excel_decomposition_plan.md`.
-> **Transitive dependencies:** The table covers direct dependencies only. Transitive dependencies such as `schedula` for `formulas` and numpy/openpyxl for `xlcalculator` **must also be verified** (see §8).
+> **Project dependency-selection policy:** The default runtime closure excludes GPL, AGPL, and EUPL license families. This is a project policy, not legal advice or a legal conclusion. CI checks installed package metadata for the default runtime closure; see the Issue #9 decision record for metadata sources and mixed-license handling.
+> **Optional extras:** The default runtime gate excludes opted-in packages. Their transitive dependencies require separate review before adoption; the `oracle-formulas` extra is exercised in CI for calculation compatibility but remains outside the default closure.
 
 ---
 
@@ -280,7 +280,7 @@ The current implementation uses regex (`graph/builder.py:20`) and has three prob
 
 **⚠ L3 boundary:** Cached-value collection is implemented, but the numerical comparison workflow is not. #7 requires a saved workbook cache and a distinct actual recalculation result; copying a cache is not an oracle. This pre-generation workbook-baseline check is not the later post-generation code-equivalence comparison.
 
-**⚠ Current extras:** `pyproject.toml` declares `formula = ["formulas>=1.3", "xlcalculator>=0.5"]`, bundling an EUPL package and an MIT package in the same extra, contrary to this document's isolation recommendation. This remains a research observation, not an architecture change in this Issue.
+**Default dependency policy:** `formulas` is excluded from the default install and remains available only through the explicit `oracle-formulas` extra; `xlcalculator` remains separate in `xlcalc`. CI checks the installed default runtime packages and fails closed on missing or unclassifiable license metadata. The Issue #9 decision record documents the mixed-license rule and metadata sources.
 
 **Issue #10 deferral:** There is no concrete Docling/markitdown integration use case now, and the existing `openpyxl` + OOXML path has direct work items for known gaps. The focused parser-fidelity comparison is incomplete; latest third-party versions have not been reassessed, so this survey does not show that their fidelity is disproven. Reopen only for a concrete workbook use case current ingestion/views cannot serve, then pin versions and compare fixtures against that use case's fidelity requirements. No new parser research was performed for this update.
 
@@ -289,11 +289,11 @@ The current implementation uses regex (`graph/builder.py:20`) and has three prob
 ## 8. Items to Verify (Open Questions)
 
 1. Exact license and formula/format-reading capabilities of `fastexcel` / `python-calamine` → test before adoption.
-2. Boundary under EUPL between "internal use vs. distribution with artifacts" for `formulas` → legal confirmation needed (→ F1).
+2. If a future distribution bundles the opt-in `formulas` backend, assess that specific decision separately; the current dependency policy makes no legal conclusion.
 3. Failure modes of `formulas` on workbooks containing VBA / pivot tables → test with fixtures.
-4. **Python version feasibility:** `requires-python = ">=3.11"` has no upper bound; the CI core dependency matrix tests 3.11/3.12/3.13; optional dependencies are not yet in that install matrix. Test whether `pip install formulas / xlcalculator / fastexcel` installs and imports successfully.
+4. **Python version feasibility:** `requires-python = ">=3.11"` has no upper bound; CI tests the default runtime and `oracle-formulas` fixture on Python 3.11/3.12/3.13. Other optional dependencies and future Python versions have not been tested.
 5. Whether the built-in **openpyxl tokenizer** (`openpyxl.formula.tokenizer`, openpyxl≥3.1) covers A1 / cross-sheet / structured references / defined names → if so, prefer it for reference parsing and replace regex.
-6. **Transitive dependency licenses:** `formulas` → `schedula`, etc.; `xlcalculator` → numpy, etc.
+6. **Optional dependency licenses:** the default runtime closure is gated in CI; transitive licenses for unselected optional extras such as `xlcalculator` remain unverified before adoption.
 7. How the oracle degrades to a warning rather than an error when **cached values are missing** (workbook has never been recalculated and saved by Excel).
 8. License and API stability of `msoffcrypto-tool`; formula/format coverage of `.xlsb` by `pyxlsb`.
 9. Which fidelity dimensions `openpyxl`'s `read_only=True` mode specifically loses → test.
@@ -309,8 +309,8 @@ The current implementation uses regex (`graph/builder.py:20`) and has three prob
 | Cross-document scope/overlap review | **Partially complete** | B1, B2, B3, and C1 exist and are listed above | A2/A3 remain uncreated; review cross-document scope after they are available |
 | Aligned with repository state (references `src/` files) | **Complete** | §0 current-state table, §4.6 gap list, §7 existing/missing columns | — |
 | Placement recommendations map to specific files | **Complete** | §7 table's "Existing modules / Missing modules" columns | — |
-| Converted into actionable work (PR / extras adjustment) | **Not complete** | — | Add PR-13 to `docs/plans/pr_plan_phase1.md` (L3 oracle + `OracleRunner`, reusing implemented cached-value collection) and adjust `pyproject.toml` extras |
-| Version/license data is verifiable | **Partially complete** | PyPI metadata pages + GitHub README | §8.4/§8.6 need testing; `FlyingKoala` lacks an exact release date |
+| Converted into actionable work (PR / extras adjustment) | **Partially complete** | Issue #9 adds the default-runtime policy gate and validates `formulas` as the selected oracle | Add PR-13 to `docs/plans/pr_plan_phase1.md` for L3 oracle integration and `OracleRunner`; no extras adjustment is needed |
+| Version/license data is verifiable | **Partially complete** | CI declares Python 3.11/3.12/3.13; local checks on Python 3.11 passed | Cross-version CI results and optional-extra licenses beyond `oracle-formulas` remain to be verified; `FlyingKoala` lacks an exact release date |
 
 ---
 
