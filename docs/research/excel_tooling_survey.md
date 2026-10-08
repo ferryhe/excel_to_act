@@ -12,10 +12,10 @@
 |---|---|---|
 | A2 | `docs/research/docling_fidelity_assessment.md` | Not created |
 | A3 | `docs/research/llm_table_encoding.md` | Not created |
-| B1 | `docs/design/layered_architecture.md` | Not created |
-| B2 | `docs/design/agent_reading_contract.md` | Not created |
-| B3 | `docs/design/fidelity_rules.md` | Not created |
-| C1 | `docs/design/views_l1_compiler.md` | Not created |
+| B1 | `docs/design/layered_architecture.md` | Implemented; normative current-state map |
+| B2 | `docs/design/agent_reading_contract.md` | Implemented |
+| B3 | `docs/design/fidelity_rules.md` | Implemented |
+| C1 | `docs/design/views_l1_compiler.md` | Implemented |
 | E1/E2 | `docs/experiments/*` | Not created |
 | F1/F2 | `docs/adr/*` | Not created |
 
@@ -29,12 +29,13 @@ This is a selection review for a **project already in progress**, not pre-projec
 |---|---|---|---|
 | Manifest reader | `src/excel_to_act/ingest/openpyxl_reader.py` | Implemented | Confirmed in §4.6 |
 | OOXML package scanning | `src/excel_to_act/ingest/ooxml_package.py` | Implemented | §4.6b (omitted from v1 review; now added) |
-| Cell inventory | `src/excel_to_act/inventory/extractor.py` | Implemented | Confirmed in §4.6; dual-view load reads formulas and cached values, and records a warning when a cache is missing |
+| Cell inventory and exact source facts | `src/excel_to_act/inventory/extractor.py`, `src/excel_to_act/steps/step1/source_scan.py`, `src/excel_to_act/steps/step1/workflow.py` | Implemented | Normalized inventory and separately retained raw facts/cache fields; see #13 in the architecture map |
 | Dependency graph | `src/excel_to_act/graph/builder.py` | Implemented (regex parsing) | §6.5 concludes it needs replacement |
-| Classification/confirmation/storage/orchestration/CLI | `classify/`, `confirm/`, `store/local_store.py`, `orchestrator/phase1.py`, `interfaces/cli.py` | Implemented | Outside this document's scope (belongs to B1) |
-| Report | `src/excel_to_act/report/handoff.py` | Step 1 JSON/Markdown handoff implemented | General report generation is outside this document's scope (belongs to B1 / D2) |
+| Deterministic views and evidence navigation | `src/excel_to_act/views/__init__.py`, `src/excel_to_act/steps/step2/` | Implemented | Workbook/sheet/region views and source-bound evidence; see #14 in the architecture map |
+| Rule classification and confirmation prompts | `src/excel_to_act/classify/`, `src/excel_to_act/confirm/` | Implemented in legacy `inspect`; optional Step 1 tools exist | Rule outputs and human questions, not README Step 3's broader semantic analysis |
+| Storage/orchestration/interfaces/reporting | `src/excel_to_act/store/local_store.py`, `src/excel_to_act/orchestrator/phase1.py`, `src/excel_to_act/interfaces/cli.py`, `src/excel_to_act/report/handoff.py` | Implemented | Cross-layer services; report output spans stages (see B1) |
 | Plugin protocols | `src/excel_to_act/plugins/contracts.py` | 6 Protocols, **no OracleRunner** | Add one for L3 in §7 |
-| Optional dependencies | `pyproject.toml [project.optional-dependencies].formula` | `formulas>=1.3` + `xlcalculator>=0.5` bundled together | §7 recommends splitting them |
+| Optional dependencies | `pyproject.toml [project.optional-dependencies].formula` | `formulas>=1.3` + `xlcalculator>=0.5` bundled together | §7 records the research concern; this Issue makes no dependency change |
 
 ---
 
@@ -52,7 +53,7 @@ Evaluate tools that **"understand Excel formulas and calculate them / compile th
 |---|---|
 | Fidelity of "document parsers" such as Docling / markitdown / pandas rendering | **A2** |
 | Encoding / compression / sampling strategies for LLMs | **A3** |
-| **Formal definition** of the layered architecture and inter-layer contracts | **B1** (this document's §7 is only a **non-normative draft** to inform B1) |
+| **Formal definition** of the layered architecture and inter-layer contracts | **B1** (see [layered architecture](../design/layered_architecture.md); §7 here is a placement summary only) |
 | Final decision record on whether to adopt | **F1** |
 | Integration code and PR split for **new** tools | C-class module design / `docs/plans/pr_plan_phase1.md` (use `src/` as the authority for implemented behavior) |
 | Performance benchmarks | E3 (not created) |
@@ -72,7 +73,7 @@ Evaluate tools that **"understand Excel formulas and calculate them / compile th
 | **Structural coverage** | Availability of defined names / structured references / volatile / circular / styles |
 | **License** | Project convention: **avoid GPL/AGPL-style copyleft in the core dependency path** |
 | **Activity** | Date of the most recent release |
-| **Suggested layer** | Draft pending B1 confirmation (L0 ingestion / L3 validation / reference only) |
+| **Suggested layer** | Placement recommendations are aligned with normative B1 (L0 ingestion / L3 validation / reference only) |
 
 ---
 
@@ -81,7 +82,7 @@ Evaluate tools that **"understand Excel formulas and calculate them / compile th
 1. **No existing library can serve as the core.** The current options are all **calculation engines** (answering "what does it calculate?"); this project needs a **lossless extractor** (answering "what is in the workbook, where is it, and in what format?"). An engine discards source information; the extractor must preserve it.
 2. **The strongest option, `formulas`, is also the riskiest dependency:** it has the highest coverage (90.1%) and is the most active, but its license is **EUPL 1.1+ (copyleft)**.
 3. **`pycel` is ruled out:** GPLv3 + inactive since 2021.
-4. **The in-house core ingestion layer (openpyxl) is implemented.** This document confirms that choice and identifies optional enhancements (stdlib package scanning, replacing regex with a tokenizer) and a validation path (L3 oracle).
+4. **The in-house core ingestion layer is implemented.** `openpyxl` reads workbook structures, and the Python standard library scans OOXML package parts. Future improvements include replacing regex formula-reference parsing with a tokenizer; L3 numerical verification remains a separate planned path.
 5. **The current implementation does not yet realize openpyxl's full fidelity potential** (see the gap list in §4.6) — that is the real bottleneck to achieving "fidelity," not library selection.
 
 ---
@@ -267,19 +268,21 @@ The current implementation uses regex (`graph/builder.py:20`) and has three prob
 
 ---
 
-## 7. Placement Recommendations (**Non-normative Draft, Pending B1 Confirmation**)
+## 7. Placement Recommendations (summary; B1 is normative)
 
 | Layer | Choice | Existing modules | Missing modules |
 |---|---|---|---|
-| **L0 Ingestion** | `openpyxl` + stdlib `zipfile`/XML (core); `fastexcel` for side-path acceleration only | `ingest/openpyxl_reader.py`, `ingest/ooxml_package.py`, `inventory/extractor.py` | `inventory/layout.py`, `inventory/opaque.py`, `ingest/calamine_reader.py` |
-| **L1 View** | **In-house; no ready-made option** | None (only `SourceLocation` in `schemas/artifacts.py`) | Recommend adding `view/` + `ViewSlice` contract |
-| **L2 Semantic reasoning** | In-house | `classify/rules.py`, `classify/classifier.py`, `confirm/templates.py` | No actual semantic reasoning module; `ActuarialHint` (6 values) differs from the plan's 10 hints |
-| **L3 Validation oracle** | `formulas` (optional dependency, isolated) + LibreOffice (out of process) + **cached-value comparison (preferred, no dependency)** | Formula cached-value collection implemented; numerical reconciliation and reporting still missing | `validation/{formulas_oracle,libreoffice_oracle}.py` + `OracleRunner` protocol + `ValidationReport` |
-| Outside layers (B1 must address) | — | `store/local_store.py`, `orchestrator/phase1.py`, `interfaces/cli.py` implemented | `report/markdown.py` missing (`jinja2` is declared but unused) |
+| **L0 Facts** | `openpyxl` + stdlib OOXML scanning | `ingest/`, `inventory/`, `steps/step1/source_scan.py`, `steps/step1/workflow.py` | #5/#13 remaining acceptance; no directory refactor implied |
+| **L1 Deterministic views** | In-house, source-bound deterministic projection | `graph/builder.py`, `views/__init__.py`, `steps/step2/`, `schemas/step2_prepare.py`, `schemas/step2_query.py` | No new `view/` package or shared `ViewSlice` wrapper needed |
+| **L2 Rule / semantic interpretation** | Current rules and human confirmation prompts | `classify/rules.py`, `classify/classifier.py`, `confirm/templates.py` | Broader README Step 3 semantic workflow remains a target; runtime enums are narrower than plan prose |
+| **L3 Numerical verification** | Saved cache plus one actual recalculation source (#7) | Cache collection in `ingest/cached_values.py` | `validation/`, `OracleRunner`, and `ValidationReport` do not exist; generated-code equivalence is a separate later check |
+| Cross-layer services | Persist, coordinate, expose interfaces, share contracts, render reports | `store/local_store.py`, `orchestrator/phase1.py`, `interfaces/cli.py`, `schemas/`, `plugins/`, `report/handoff.py` | Reports can span phases; do not force them into one layer |
 
-**⚠ Prerequisite for cached-value comparison:** Dual-view loading with `data_only=True` and the `cached_value` field are implemented; if a workbook has not been recalculated by Excel, a usable cache may still be missing, and a warning will be recorded. Cached-value collection is available, but the L3 reconciliation workflow is not implemented yet.
+**⚠ L3 boundary:** Cached-value collection is implemented, but the numerical comparison workflow is not. #7 requires a saved workbook cache and a distinct actual recalculation result; copying a cache is not an oracle. This pre-generation workbook-baseline check is not the later post-generation code-equivalence comparison.
 
-**⚠ Current extras:** `pyproject.toml` declares `formula = ["formulas>=1.3", "xlcalculator>=0.5"]`, bundling an EUPL package and an MIT package in the same extra, contrary to this document's isolation recommendation. Recommend splitting into `oracle-formulas` (EUPL, explicit opt-in) and `xlcalc` (MIT).
+**⚠ Current extras:** `pyproject.toml` declares `formula = ["formulas>=1.3", "xlcalculator>=0.5"]`, bundling an EUPL package and an MIT package in the same extra, contrary to this document's isolation recommendation. This remains a research observation, not an architecture change in this Issue.
+
+**Issue #10 deferral:** There is no concrete Docling/markitdown integration use case now, and the existing `openpyxl` + OOXML path has direct work items for known gaps. The focused parser-fidelity comparison is incomplete; latest third-party versions have not been reassessed, so this survey does not show that their fidelity is disproven. Reopen only for a concrete workbook use case current ingestion/views cannot serve, then pin versions and compare fixtures against that use case's fidelity requirements. No new parser research was performed for this update.
 
 ---
 
@@ -303,7 +306,7 @@ The current implementation uses regex (`graph/builder.py:20`) and has three prob
 |---|---|---|---|
 | Each tool (§4.1–§4.8) has a three-line conclusion | **Complete** | Each section 4.1–4.8b has a three-line conclusion block | — |
 | Main calculation-engine candidates are covered | **Complete** (13 tools / 11 sections) | Entire §4; §4.9 contains fallback references | Not included: SheetJS, pandas, xlrd (none is positioned as "Excel → code/evaluation") |
-| No overlap with A2/A3/B1/B2/B3/C1 | **Partially complete** | §1 Out of scope states the non-normative boundary | Six related documents have not been created; **review after their creation** |
+| Cross-document scope/overlap review | **Partially complete** | B1, B2, B3, and C1 exist and are listed above | A2/A3 remain uncreated; review cross-document scope after they are available |
 | Aligned with repository state (references `src/` files) | **Complete** | §0 current-state table, §4.6 gap list, §7 existing/missing columns | — |
 | Placement recommendations map to specific files | **Complete** | §7 table's "Existing modules / Missing modules" columns | — |
 | Converted into actionable work (PR / extras adjustment) | **Not complete** | — | Add PR-13 to `docs/plans/pr_plan_phase1.md` (L3 oracle + `OracleRunner`, reusing implemented cached-value collection) and adjust `pyproject.toml` extras |

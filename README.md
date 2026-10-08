@@ -28,20 +28,20 @@ flowchart TD
     H["handoff.json + handoff.md<br/>Step 1's sole exit"]
     S2["Step 2 · Artifact Index<br/>Index and summarize artifacts for downstream agents"]
     O2[("output/step2_index/<br/>INDEX.md + index.json")]
-    S3["Step 3 · Semantic Analysis<br/>Module classification / domain tags / structure contracts"]
+    S3["Step 3 · Semantic Analysis (target)<br/>Domain analysis / structure contracts"]
     O3[("output/step3_analysis/")]
+    B0["Pre-generation workbook-baseline check (#7)<br/>Saved cache vs actual recalculation"]
     S4["Step 4 · Structured Python Generation"]
     O4[("output/step4_generation/")]
-    S5["Step 5 · Validation &amp; Reconciliation<br/>Numerical reconciliation across multiple oracles"]
-    O5[("output/step5_validation/")]
+    B1["Post-generation code-equivalence<br/>Generated code vs workbook baseline"]
 
-    IN --> S0 --> S1 --> O1 --> V --> H --> S2 --> O2 --> S3 --> O3 --> S4 --> O4 --> S5 --> O5
+    IN --> S0 --> S1 --> O1 --> V --> H --> S2 --> O2 --> S3 --> O3 --> B0 --> S4 --> O4 --> B1
 
     style S1 fill:#dff5e1,stroke:#2e7d32,stroke-width:2px
     style O1 fill:#eef7ff,stroke:#1565c0
 ```
 
-**Implementation status**: Steps 0–2 are partly implemented (human Step 1 lives in `steps/step1/`; shared modules live in `ingest/`, `inventory/`, `graph/`, `classify/`, `confirm/`, `store/`, `orchestrator/`, and `interfaces/`). Step 2 also provides a batch navigation index at `output/step2_index/index.json` and `INDEX.md`; this is separate from the legacy per-workbook `artifact_index.json` produced by `store/local_store.py`. Step 3 is within the plan's Phase 1 scope and partly implemented in `classify/`. Step 1's JSON and Markdown handoffs are implemented; **Steps 4–5 have not started**.
+**Implementation status**: The legacy single-workbook `inspect` workflow already builds a graph, emits rule classifications and human confirmation questions, checks structural completeness, and writes a handoff. The current human Step 1/2 path converts and checks source facts, indexes handoffs, compiles deterministic views, and supports evidence queries/traces. README Step 3 describes a broader semantic target; the existing rule classifications are not that full analysis. Step 2's batch `index.json`/`INDEX.md` differs from legacy `artifact_index.json`. The JSON and Markdown handoffs are implemented; **Python generation and numerical validation have not started**. See [the layered architecture](docs/design/layered_architecture.md) for current contracts and target boundaries.
 
 The diagram shows the complete target route, including unfinished steps. The current human entry point is `excel-to-act step1 convert <raw-directory> --out <output-directory>`. Legacy `inspect` remains available for the single-workbook Phase 1 workflow.
 
@@ -119,7 +119,8 @@ Each batch produces `batches/<batch-id>/batch_handoff.{json,md}`. Each source ha
 |---|---|
 | Steps 0–3 | **Within the plan's Phase 1 scope** (ingest → inventory → graph → classify → confirm → store → report) |
 | Step 4 (generate Python) | Explicitly excluded by the plan's "Non-goals" |
-| Step 5 (reconciliation) | LibreOffice/xlwings are mentioned as future oracles, without a schedule |
+| Workbook-baseline check (#7) | Pre-generation comparison of saved workbook cache with an actual recalculation result; not yet implemented |
+| Generated-code equivalence | Separate post-Step-4 comparison against the accepted workbook baseline; future work |
 
 ---
 
@@ -132,10 +133,10 @@ Tool status: `implemented` means a corresponding implementation exists in `src/`
 | 0 | `intake-agent` | Identify file authenticity and parseability; report an error when blocked | `scan_ooxml_package` `OpenpyxlWorkbookReader.read_manifest` (`detect_format`/`decrypt_probe` are targets) | Partial |
 | **1** | **`decomposition-agent`** | **Extract all content by type without semantic decisions** | See the Step 1 tool diagram below | Partial |
 | **1b** | `completeness-agent` | Independently verify output coverage of the input and produce a handoff | `verify_completeness`, `build_handoff`, `render_handoff_markdown` | Implemented |
-| 2 | `index-agent` | Index and summarize Step 1 artifacts | `_write_index` (implemented); `build_index`/`summarize_artifacts` are targets | Partial |
+| 2 | `index-agent` | Index and summarize Step 1 artifacts | `src/excel_to_act/steps/step2/workflow.py:build_index` and its `_write_index` are implemented for `step1.v1` / `step1.batch.v1`, writing batch `index.json` and `INDEX.md`; the separate `summarize_artifacts` helper remains a target. Legacy `src/excel_to_act/store/local_store.py:LocalArtifactStore._write_index` writes per-workbook `artifact_index.json`. | Partial (separate summary helper remains a target) |
 | 3 | `analysis-agent` | Classify modules, tag domains, and confirm boundaries | `classify/rules.py`+`classifier.py`, `confirm/templates.py` (implemented) | Partial |
 | 4 | `generation-agent` | Generate structured Python with provenance | `emit_module` / `emit_package` (targets) | Target |
-| 5 | `validation-agent` | Numerical regression and reconciliation across multiple oracles | `cached_value` / `formulas_oracle` / `libreoffice_oracle` (targets, issue #7) | Target |
+| 5 | `validation-agent` | Compare the saved workbook cache with an actual recalculation before generation (#7); check generated-code equivalence separately after Step 4 | `cached_value` (implemented); `ValidationReport` and one recalculation adapter (planned #7); code-equivalence check (later target) | Target |
 
 ### Step 1 internal flow
 
@@ -359,7 +360,7 @@ The `Tool` column distinguishes dependency libraries from in-house parsers.
 
 Implementation constraints (fixed to avoid rework):
 
-1. Extracted edges **must be written into `FormulaGraph`**, using `GraphEdge.relationship = "vba_ref"`. **Do not create another contract or edge type**: two node namespaces in `dependency_graph.json` would prevent Step 5 reconciliation from closing.
+1. Extracted edges **must be written into `FormulaGraph`**, using `GraphEdge.relationship = "vba_ref"`. **Do not create another contract or edge type**: two node namespaces in `dependency_graph.json` would prevent reference reconciliation from closing.
 2. Literal matching misses `Cells(r, c)`, `"B" & i` concatenation, and indirect addressing through variables/named ranges. Results must include `confidence`. Statically unresolved references must be recorded as `vba_ref_unresolved` and sent to confirmation without claiming certainty.
 
 ### H. Semantic signal layer
@@ -400,14 +401,9 @@ What-if data tables are already collected from worksheet XML as described in gro
 
 Power Pivot data models, pivot-cache binaries, chart rendering, embedded media, encrypted content, signatures.
 
-### K. Known contract drift (outside content classification, but affects coverage credibility)
+### K. Planning vocabulary and implemented runtime contract
 
-| Definition source | Definition count | Implementation | Difference |
-|---|---|---|---|
-| `phase1_excel_decomposition_plan.md:67-80` module category | 12 | `schemas/artifacts.py:180-189`, 9 values | Missing `workbook_meta` / `sheet_structure` / `calculation_chain` / `macro_or_code` |
-| `phase1_excel_decomposition_plan.md:88-97` actuarial hint | 10 | `artifacts.py:192-199`, 6 values | Missing `expense` / `claim_or_benefit` / `reserve` / `discount_curve` |
-
-Recorded in `docs/issues/backlog.md`; not expanded again here.
+The module-category and actuarial-hint lists in the Phase 1 plan are proposed planning vocabulary, not requirements for runtime enum members. The implemented `ModuleCategory` contract has nine values (`input`, `data_table`, `formula_block`, `lookup_block`, `output`, `presentation`, `external_dependency`, `unsupported_opaque`, `other`); the implemented `ActuarialHint` contract has six (`assumption`, `rate_table`, `cashflow`, `projection`, `output`, `unknown`). Their definitions are in `src/excel_to_act/schemas/artifacts.py:273-292`. The plan lists 12 proposed module labels at `docs/plans/phase1_excel_decomposition_plan.md:67-80` and 10 proposed hint labels at `docs/plans/phase1_excel_decomposition_plan.md:88-97`; these differences do not indicate missing runtime enum values.
 
 ---
 
@@ -441,14 +437,14 @@ The directory sketch and notes below retain the earlier roadmap proposal. They d
 
 ```text
 excel_to_act/
-  src/excel_to_act/          Library core (layering unchanged; L0-L3 definitions await issue #11)
+  src/excel_to_act/          Library core (layering unchanged; normative layer definitions: docs/design/layered_architecture.md)
     interfaces/              CLI + API + agent entry points
     orchestrator/            Step state machine
     plugins/                 Replaceable tool contracts and registry
     ingest/ inventory/ graph/ classify/ confirm/ store/ report/ schemas/
     tools/                   Step 1 tool catalogue (importable, distributed with the package)
       step0_intake/  step1_decomposition/  step2_index/ ...
-    validation/              Step 5 oracle runners (awaiting issue #7)
+    validation/              Planned checks: #7 workbook baseline before generation; code equivalence after generation
   agents/                    Agent definitions per step: capabilities / tools / IO contracts
     step1_decomposition.agent.md ...
   skills/                    Skill packages installable for external agents
@@ -471,10 +467,10 @@ Notes:
 
 ## 7. Phase boundaries
 
-- Steps 0–2 perform decomposition, indexing, and summaries **without semantic decisions**.
-- Step 3 (approximately the plan's Phase 1 classification) may decide what a module represents, with confirmation and overrides through `confirm/`.
-- Reconciliation (Step 5) must pass before Python generation (Step 4).
-- Current Phase 1 writes seven data JSON files, `run_metadata.json`, and `handoff.md` by workbook and run ID, with root aliases (see §3.1). It does **not** use the directory layout in §3.2.
+- Human Steps 1–2 perform source decomposition, indexing, deterministic views, and evidence navigation without semantic decisions. Legacy `inspect` separately performs heuristic classification and builds confirmation questions.
+- README Step 3 is the broader semantic-analysis target. Current legacy classifications use the runtime enums documented in [the layered architecture](docs/design/layered_architecture.md); they do not establish confirmed domain meaning.
+- Before Step 4 generation, #7 checks the saved workbook baseline against a distinct actual recalculation result. After Step 4, generated-code equivalence is a separate later comparison against that workbook baseline; neither comparison is implemented yet.
+- The legacy `inspect` run writes its Phase 1 artifact set by workbook and run ID (see §3.1); human Step 1/2 use their separate source and reading-package contracts. Neither path implements the target directory tree in §3.2.
 
 ## See also
 
