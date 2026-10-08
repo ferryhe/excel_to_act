@@ -19,8 +19,9 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 
-from excel_to_act.ingest.data_table import sheet_xml_parts
+from excel_to_act.ingest.data_table import PACKAGE_READ_ERRORS, sheet_xml_parts
 
 CellValue = str | int | float | bool | None
 
@@ -71,8 +72,18 @@ def read_cached_values(workbook_path: Path) -> CachedValueMap:
 
     workbook_path = workbook_path.expanduser().resolve()
     values: CachedValueMap = {}
-    empty_string_caches = _empty_string_formula_caches(workbook_path)
-    wb = load_workbook(workbook_path, data_only=True, read_only=True)
+    try:
+        empty_string_caches = _empty_string_formula_caches(workbook_path)
+    except PACKAGE_READ_ERRORS as exc:
+        raise InvalidFileException(
+            f"Could not read workbook formula-cache package parts: {type(exc).__name__}: {exc}"
+        ) from exc
+    try:
+        wb = load_workbook(workbook_path, data_only=True, read_only=True)
+    except Exception as exc:
+        raise InvalidFileException(
+            f"openpyxl could not read workbook: {type(exc).__name__}: {exc}"
+        ) from exc
     try:
         for ws in wb.worksheets:
             # In read-only mode the iteration bounds come from the declared
@@ -84,7 +95,20 @@ def read_cached_values(workbook_path: Path) -> CachedValueMap:
                     ws.calculate_dimension(force=True)
                 except UnboundLocalError:  # openpyxl's dimension scan finds no cells
                     continue
-            for row in ws.iter_rows():
+                except Exception as exc:
+                    raise InvalidFileException(
+                        f"openpyxl could not read workbook rows: {type(exc).__name__}: {exc}"
+                    ) from exc
+            rows = iter(ws.iter_rows())
+            while True:
+                try:
+                    row = next(rows)
+                except StopIteration:
+                    break
+                except Exception as exc:
+                    raise InvalidFileException(
+                        f"openpyxl could not read workbook rows: {type(exc).__name__}: {exc}"
+                    ) from exc
                 for cell in row:
                     if cell.value is None:
                         continue

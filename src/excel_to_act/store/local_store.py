@@ -217,6 +217,31 @@ class LocalArtifactStore:
         self._copy_latest_aliases(metadata)
         return metadata
 
+    def write_failed_run(
+        self, manifest: WorkbookManifest, completeness: CompletenessReport, metadata: RunMetadata
+    ) -> RunMetadata:
+        """Persist only evidence available when input reading failed."""
+
+        run_dir = self.run_dir(metadata.workbook_sha256, metadata.run_id)
+        metadata.artifacts = [
+            self.write_json("workbook_manifest.json", manifest, run_dir),
+            self.write_json("completeness.json", completeness, run_dir),
+        ]
+        metadata.completeness_status = completeness.status
+        metadata.completed_at = datetime.now(UTC)
+        metadata.artifacts.append(self.write_json("run_metadata.json", metadata, run_dir))
+        metadata.artifacts.append(self._write_index(metadata, run_dir))
+        metadata.artifacts[-2] = self.write_json("run_metadata.json", metadata, run_dir)
+        self._copy_latest_aliases(metadata)
+        for name in (
+            "inventory.json",
+            "dependency_graph.json",
+            "module_classification.json",
+            "confirmation_template.json",
+        ):
+            (self.out_dir / name).unlink(missing_ok=True)
+        return metadata
+
     def append_artifacts(self, metadata: RunMetadata, artifacts: list[ArtifactMetadata]) -> RunMetadata:
         """Register artifacts produced after the main run and refresh metadata/index.
 

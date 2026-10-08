@@ -173,7 +173,7 @@ flowchart LR
 
 ### 3.1 当前实现
 
-旧单工作簿 `inspect` CLI 是 `excel-to-act inspect <workbook> --out <dir>`，且 `dir_okay=False`——该命令不接受目录入参；目录批次由上文新增的 `excel-to-act step1 convert` 处理。每次 `inspect` 运行写出七个数据 JSON、`run_metadata.json` 和供人阅读的 `handoff.md`：
+旧单工作簿 `inspect` CLI 是 `excel-to-act inspect <workbook> --out <dir>`。若输入路径是目录，`inspect` 会返回受控的读取错误并写出仅含诊断的失败运行产物；目录批次由上文新增的 `excel-to-act step1 convert` 处理。成功的 `inspect` 运行写出七个数据 JSON、`run_metadata.json` 和供人阅读的 `handoff.md`：
 
 ```text
 <out>/workbooks/<workbook_sha256>/<run_id>/
@@ -191,7 +191,7 @@ flowchart LR
 <out>/<artifact>               # 最新运行产物的便捷别名（包括 handoff.md）
 ```
 
-根目录会复制最新运行的产物作为便捷别名；`handoff.md` 和 `handoff.json` 也会复制到根目录。
+仅诊断失败的运行会写出 `workbook_manifest.json`、`completeness.json`、`handoff.json`、`handoff.md` 和 `run_metadata.json`，以及索引；不会生成 `inventory.json`、`dependency_graph.json`、`module_classification.json` 或 `confirmation_template.json`。根目录别名只反映最新一次运行：失败运行会移除这四个缺失产物的旧别名，之前成功运行的产物仍保留在各自的规范运行目录中。
 
 ### 3.2 目标布局（Step 1）
 

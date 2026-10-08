@@ -180,7 +180,7 @@ The legacy `inspect` workflow **does not yet have** `verify_coverage`. Its `Cove
 
 ### 3.1 Current implementation
 
-The legacy single-workbook `inspect` CLI is `excel-to-act inspect <workbook> --out <dir>`, with `dir_okay=False`: it does not accept a directory input. Directory batches use the new `excel-to-act step1 convert` described above. Each `inspect` run writes seven data JSON files, `run_metadata.json`, and a human-readable `handoff.md`:
+The legacy single-workbook `inspect` CLI is `excel-to-act inspect <workbook> --out <dir>`. If the input is a directory, `inspect` reports a controlled read error and writes diagnostic-only failed-run artifacts. Directory batches use the new `excel-to-act step1 convert` described above. A successful `inspect` run writes seven data JSON files, `run_metadata.json`, and a human-readable `handoff.md`:
 
 ```text
 <out>/workbooks/<workbook_sha256>/<run_id>/
@@ -198,7 +198,7 @@ The legacy single-workbook `inspect` CLI is `excel-to-act inspect <workbook> --o
 <out>/<artifact>               # Convenience alias for the latest run's artifacts, including handoff.md
 ```
 
-The latest run's artifacts are copied to the root as convenience aliases, including `handoff.md` and `handoff.json`.
+A diagnostic-only failed run writes `workbook_manifest.json`, `completeness.json`, `handoff.json`, `handoff.md`, and `run_metadata.json`, plus the indexes. It does not produce `inventory.json`, `dependency_graph.json`, `module_classification.json`, or `confirmation_template.json`. Root-level aliases reflect only the latest run: aliases for those four absent artifacts are removed on failure, while earlier successful artifacts remain in their canonical per-run directory.
 
 ### 3.2 Target layout (Step 1)
 

@@ -33,6 +33,7 @@ htmlcov/
 *.xlsb
 *.xls
 !examples/**
+!tests/fixtures/encrypted.xlsx
 
 # Local env / secrets
 .env
