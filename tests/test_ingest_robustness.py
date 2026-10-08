@@ -263,15 +263,16 @@ def test_failed_inspect_writes_diagnostic_only_and_stops_downstream(
             next(a.path for a in reloaded.artifacts if a.name == "completeness.json"),
             CompletenessReport,
         )
-        if case in {"malformed-calc-id", "malformed-style-index", "malformed-chart-xml"}:
+        if case in {"malformed-calc-id", "malformed-style-index"}:
             assert "InvalidFileException" in feature.description
             assert (
                 "TypeError" in feature.description
                 if case == "malformed-calc-id"
                 else "IndexError" in feature.description
-                if case == "malformed-style-index"
-                else "XMLSyntaxError" in feature.description
             )
+        elif case == "malformed-chart-xml":
+            assert "InvalidFileException" in feature.description
+            assert "openpyxl could not read workbook:" in feature.description
         else:
             assert "SourceScanError" in feature.description
             assert "xl/workbook.xml" in feature.description
@@ -482,7 +483,7 @@ def test_malformed_chart_after_success_clears_stale_aliases_and_stops_downstream
     assert result.exit_code == 1, result.output
     assert "Traceback" not in result.output
     assert "Reason: Could not read workbook: InvalidFileException" in result.output
-    assert "XMLSyntaxError" in result.output
+    assert "openpyxl could not read workbook:" in result.output
     assert "Diagnostic:" in result.output
     assert not (out / "inventory.json").exists()
     assert successful_inventory.exists()
@@ -505,7 +506,8 @@ def test_malformed_chart_after_success_clears_stale_aliases_and_stops_downstream
     )
     completeness_path = next(a.path for a in failed_run.artifacts if a.name == "completeness.json")
     assert f"Diagnostic: {completeness_path}" in result.output
-    assert "XMLSyntaxError" in manifest.unsupported_features[0].description
+    assert manifest.unsupported_features[0].severity == UnsupportedSeverity.error
+    assert "openpyxl could not read workbook:" in manifest.unsupported_features[0].description
     assert completeness.status == "fail"
     assert handoff.status == "fail"
     _assert_handoff_artifact_hashes(handoff)
