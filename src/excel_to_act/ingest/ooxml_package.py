@@ -62,6 +62,8 @@ def scan_ooxml_package(workbook_path: Path) -> tuple[list[PackagePart], list[Uns
     with zipfile.ZipFile(workbook_path) as zf:
         content_types = _content_types(zf)
         for info in zf.infolist():
+            if info.is_dir():
+                continue
             name = info.filename
             marker = next((desc for token, desc in OPAQUE_MARKERS.items() if token in name), None)
             loc = SourceLocation(workbook_path=str(workbook_path), ooxml_part=name, object_type="ooxml_part", object_id=name)

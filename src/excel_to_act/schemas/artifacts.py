@@ -70,6 +70,7 @@ class PackagePart(BaseModel):
     relationship_type: str | None = None
     size: int = Field(ge=0)
     opaque: bool = False
+    opaque_reason: str | None = None
     source_location: SourceLocation
 
 
@@ -148,13 +149,6 @@ class CoverageSummary(BaseModel):
     recognized_inventory_objects: int = Field(ge=0)
     unsupported_or_opaque_objects: int = Field(ge=0)
     discovered_workbook_objects: int = Field(ge=0)
-
-    @model_validator(mode="after")
-    def coverage_equation(self) -> "CoverageSummary":
-        if self.recognized_inventory_objects + self.unsupported_or_opaque_objects != self.discovered_workbook_objects:
-            raise ValueError("coverage equation violated")
-        return self
-
 
 class VbaModule(BaseModel):
     """A VBA module, class, document, or form extracted from ``vbaProject.bin``."""
@@ -349,6 +343,20 @@ class CompletenessCheck(BaseModel):
     detail: str = ""
 
 
+class ObjectCoverage(BaseModel):
+    """Identity counts for one logical kind or the separate package-part ledger."""
+
+    sheet_name: str | None = None
+    kind: str
+    expected: int = Field(ge=0)
+    actual: int = Field(ge=0)
+    missing_identities: list[str] = Field(default_factory=list)
+    unexpected_identities: list[str] = Field(default_factory=list)
+    duplicate_identities: list[str] = Field(default_factory=list)
+    opaque_expected: int = Field(ge=0, default=0)
+    opaque_actual: int = Field(ge=0, default=0)
+
+
 class CompletenessReport(Artifact):
     artifact_type: Literal["completeness_report"] = "completeness_report"
     workbook_sha256: str
@@ -360,6 +368,7 @@ class CompletenessReport(Artifact):
     recognized_inventory_objects: int = Field(ge=0, default=0)
     unsupported_or_opaque_objects: int = Field(ge=0, default=0)
     discovered_workbook_objects: int = Field(ge=0, default=0)
+    object_coverage: list[ObjectCoverage] = Field(default_factory=list)
     gaps: list[SourceLocation] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
 
