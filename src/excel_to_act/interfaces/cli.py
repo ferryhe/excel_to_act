@@ -41,7 +41,7 @@ def main() -> None:
 
 @app.command()
 def inspect(
-    workbook: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True, help=".xlsx/.xlsm workbook to inspect"),
+    workbook: Path = typer.Argument(..., help=".xlsx/.xlsm workbook to inspect"),
     out: Path = typer.Option(Path("artifacts"), "--out", "-o", help="Output directory for Phase 1 JSON artifacts"),
 ) -> None:
     """Inspect a workbook and produce Phase 1 artifacts."""
@@ -55,7 +55,14 @@ def inspect(
         typer.echo(f"Handoff: {handoff}")
     typer.echo(f"Completeness: {status}")
     if status == "fail":
-        typer.echo("Completeness check failed; see completeness.json for blocking gaps.", err=True)
+        completeness = next((a.path for a in metadata.artifacts if a.name == "completeness.json"), "completeness.json")
+        try:
+            blockers = json.loads(Path(completeness).read_text(encoding="utf-8")).get("blocking_reasons", [])
+            reason = blockers[0] if blockers else "Input could not be read or the output is incomplete."
+        except (OSError, ValueError, IndexError, TypeError):
+            reason = "Input could not be read or the output is incomplete."
+        typer.echo(f"Reason: {reason}", err=True)
+        typer.echo(f"Diagnostic: {completeness}", err=True)
         raise typer.Exit(code=1)
 
 

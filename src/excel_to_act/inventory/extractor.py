@@ -8,10 +8,11 @@ from typing import Any
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell
 from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
 from excel_to_act.ingest.cached_values import read_cached_values
-from excel_to_act.ingest.data_table import read_data_tables
+from excel_to_act.ingest.data_table import PACKAGE_READ_ERRORS, read_data_tables
 from excel_to_act.ingest.form_controls import read_form_controls
 from excel_to_act.schemas import (
     CellInventory,
@@ -42,17 +43,32 @@ class OpenpyxlInventoryExtractor:
 
     def extract(self, workbook_path: Path, manifest: WorkbookManifest) -> WorkbookInventory:
         workbook_path = workbook_path.expanduser().resolve()
-        wb = load_workbook(workbook_path, data_only=False, read_only=False, keep_vba=workbook_path.suffix.lower() == ".xlsm")
-        cached_values = read_cached_values(workbook_path)
-        data_tables = read_data_tables(workbook_path)
-        form_controls = read_form_controls(workbook_path)
-        sheets: list[SheetInventory] = []
-        workbook_ranges: list[RangeInventory] = []
-        unsupported = list(manifest.unsupported_features)
-        recognized = 0
-        formula_cells = 0
-        cached_hits = 0
         try:
+            wb = load_workbook(workbook_path, data_only=False, read_only=False, keep_vba=workbook_path.suffix.lower() == ".xlsm")
+        except Exception as exc:
+            raise InvalidFileException(
+                f"openpyxl could not read workbook: {type(exc).__name__}: {exc}"
+            ) from exc
+        try:
+            cached_values = read_cached_values(workbook_path)
+            try:
+                data_tables = read_data_tables(workbook_path)
+            except PACKAGE_READ_ERRORS as exc:
+                raise InvalidFileException(
+                    f"Could not read workbook data-table package parts: {type(exc).__name__}: {exc}"
+                ) from exc
+            try:
+                form_controls = read_form_controls(workbook_path)
+            except PACKAGE_READ_ERRORS as exc:
+                raise InvalidFileException(
+                    f"Could not read workbook form-control package parts: {type(exc).__name__}: {exc}"
+                ) from exc
+            sheets: list[SheetInventory] = []
+            workbook_ranges: list[RangeInventory] = []
+            unsupported = list(manifest.unsupported_features)
+            recognized = 0
+            formula_cells = 0
+            cached_hits = 0
             for i, ws in enumerate(wb.worksheets):
                 sheet = SheetInventory(
                     source_location=_loc(workbook_path, "sheet", ws.title, i),

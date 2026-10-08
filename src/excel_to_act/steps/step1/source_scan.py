@@ -104,6 +104,14 @@ def _text(element: ET.Element | None) -> str | None:
     return "".join(element.itertext())
 
 
+def _rich_text_content(element: ET.Element, part: str) -> str:
+    try:
+        parsed = Text.from_tree(element)
+    except Exception as exc:
+        raise SourceScanError(f"{part}: openpyxl could not parse rich text: {exc}") from exc
+    return parsed.content or ""
+
+
 def _parse_scalar(raw: str | None, cell_type: str | None) -> Any:
     if raw is None:
         return None
@@ -127,7 +135,7 @@ def _resolve_shared_strings(zf: zipfile.ZipFile, workbook_rels: list[dict[str, s
         return []
     parsed_parts.add(part)
     root = _required_xml(zf, part)
-    return [Text.from_tree(si).content or "" for si in root if _local(si.tag) == "si"]
+    return [_rich_text_content(si, part) for si in root if _local(si.tag) == "si"]
 
 
 def _shared_string_at(shared_strings: list[str], raw_index: str | None, *, part: str, address: str) -> str:
@@ -235,6 +243,15 @@ def scan_step1_source(path: Path) -> dict[str, Any]:
             if _local(sheet_element.tag) != "sheet":
                 continue
             name = sheet_element.attrib.get("name", "")
+            if not name:
+                raise SourceScanError("xl/workbook.xml: worksheet is missing its required name")
+            sheet_id = sheet_element.attrib.get("sheetId", "")
+            try:
+                int(sheet_id)
+            except ValueError as exc:
+                raise SourceScanError(
+                    f"xl/workbook.xml: worksheet {name!r} has invalid sheetId {sheet_id!r}"
+                ) from exc
             relation = rel_by_id.get(sheet_element.attrib.get(f"{DOC_REL}id", ""), {})
             part = relation.get("part", "")
             if not part or part not in names:
@@ -268,7 +285,7 @@ def scan_step1_source(path: Path) -> dict[str, Any]:
                 cell_type = cell_node.attrib.get("t")
                 raw_value = _text(value_node)
                 inline_text = _text(inline_node)
-                normalized_inline_text = Text.from_tree(inline_node).content if inline_node is not None else None
+                normalized_inline_text = _rich_text_content(inline_node, part) if inline_node is not None else None
                 raw_formula = formula_node.text if formula_node is not None else None
                 formula_attrs = dict(formula_node.attrib) if formula_node is not None else {}
                 formula = None

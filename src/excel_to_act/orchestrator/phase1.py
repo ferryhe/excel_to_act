@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from openpyxl.utils.exceptions import InvalidFileException
+
 from excel_to_act.classify.classifier import RuleBasedClassifier
 from excel_to_act.confirm.templates import ConfirmationTemplateBuilder
 from excel_to_act.graph.builder import RegexFormulaGraphBuilder
@@ -16,6 +18,10 @@ from excel_to_act.inventory.vba_links import build_vba_edges, extract_vba_cell_l
 from excel_to_act.report.handoff import build_handoff, render_handoff_markdown
 from excel_to_act.schemas import (
     ConfirmationTemplate,
+    CompletenessCheck,
+    CompletenessReport,
+    CompletenessStatus,
+    CoverageSummary,
     FormulaGraph,
     ModuleClassification,
     RunMetadata,
@@ -46,18 +52,73 @@ class Phase1Orchestrator:
     def run(self, workbook_path: Path, out_dir: Path) -> RunMetadata:
         started = datetime.now(UTC)
         manifest: WorkbookManifest = self.reader.read_manifest(workbook_path)
-        inventory: WorkbookInventory = self.extractor.extract(workbook_path, manifest)
+        metadata = RunMetadata(run_id=f"{started:%Y%m%dT%H%M%S}-{uuid4().hex[:8]}", workbook_sha256=manifest.sha256, started_at=started)
+        errors = [feature for feature in manifest.unsupported_features if feature.severity == UnsupportedSeverity.error]
+        store = LocalArtifactStore(out_dir)
+        if not errors:
+            try:
+                inventory: WorkbookInventory = self.extractor.extract(workbook_path, manifest)
+            except InvalidFileException as exc:
+                manifest.unsupported_features.append(
+                    UnsupportedFeature(
+                        feature_type="input_read_error",
+                        description=f"Could not read workbook: {type(exc).__name__}: {exc}",
+                        source_location=SourceLocation(
+                            workbook_path=str(workbook_path.expanduser().resolve()),
+                            object_type="workbook",
+                        ),
+                        severity=UnsupportedSeverity.error,
+                        opaque=False,
+                    )
+                )
+                errors = [manifest.unsupported_features[-1]]
+
+        if errors:
+            reason = "; ".join(feature.description for feature in errors)
+            completeness = CompletenessReport(
+                workbook_sha256=manifest.sha256,
+                status=CompletenessStatus.fail,
+                checks=[CompletenessCheck(name="input_readable", passed=False, severity=UnsupportedSeverity.error, detail=reason)],
+                blocking_reasons=[reason],
+            )
+            metadata.completeness_status = completeness.status
+            metadata = store.write_failed_run(manifest, completeness, metadata)
+            inventory = WorkbookInventory(
+                workbook_sha256=manifest.sha256,
+                unsupported_features=manifest.unsupported_features,
+                coverage=CoverageSummary(
+                    recognized_inventory_objects=0,
+                    unsupported_or_opaque_objects=0,
+                    discovered_workbook_objects=0,
+                ),
+            )
+            handoff = build_handoff(
+                manifest, inventory, FormulaGraph(), ModuleClassification(), ConfirmationTemplate(), completeness, metadata
+            )
+            handoff.summary = {}
+            handoff.coverage = None
+            handoff.next_step = "rerun_inspect"
+            handoff.next_actions = [
+                "Resolve the input error and rerun inspect before proceeding.",
+                "Not produced: inventory.json, dependency_graph.json, module_classification.json, confirmation_template.json.",
+            ]
+            run_dir = store.run_dir(metadata.workbook_sha256, metadata.run_id)
+            return store.append_artifacts(
+                metadata,
+                [
+                    store.write_json("handoff.json", handoff, run_dir),
+                    store.write_text("handoff.md", render_handoff_markdown(handoff), run_dir),
+                ],
+            )
+
         graph: FormulaGraph = self.graph_builder.build(inventory)
         self._integrate_vba(workbook_path, inventory, graph)
         classification: ModuleClassification = self.classifier.classify(inventory, graph)
         confirmation: ConfirmationTemplate = self.confirmation_builder.build(classification)
-        metadata = RunMetadata(run_id=f"{started:%Y%m%dT%H%M%S}-{uuid4().hex[:8]}", workbook_sha256=manifest.sha256, started_at=started)
-
         # Completeness is verified before anything is persisted, and the handoff is
         # written last so it can point at every artifact path.
         completeness = verify_completeness(manifest, inventory, graph, classification)
         metadata.completeness_status = completeness.status
-        store = LocalArtifactStore(out_dir)
         metadata = store.write_run(manifest, inventory, graph, classification, confirmation, metadata, completeness=completeness)
         run_dir = store.run_dir(metadata.workbook_sha256, metadata.run_id)
         handoff = build_handoff(manifest, inventory, graph, classification, confirmation, completeness, metadata)

@@ -135,6 +135,7 @@ def build_handoff(
             sha256=artifact.sha256,
         )
         for artifact in metadata.artifacts
+        if artifact.name not in {"run_metadata.json", "artifact_index.json"}
     ]
 
     # inventory.unsupported_features already includes the manifest features.
@@ -202,13 +203,18 @@ def render_handoff_markdown(handoff: Handoff) -> str:
     """
 
     workbook = Path(handoff.workbook_path).name if handoff.workbook_path else "(unknown)"
+    artifact_names = {artifact.name for artifact in handoff.artifacts}
+    detail = (
+        "Full detail lives in `inventory.json` / `dependency_graph.json`."
+        if {"inventory.json", "dependency_graph.json"} <= artifact_names
+        else "Diagnostic detail lives in `workbook_manifest.json` / `completeness.json`."
+    )
     lines = [
         f"# Handoff · {handoff.step} → {handoff.next_step}",
         "",
         f"**{workbook}** · status **{handoff.status}** · run `{handoff.run_id}`",
         "",
-        "> Human summary; machines read `handoff.json` in the same directory. "
-        "Full detail lives in `inventory.json` / `dependency_graph.json`.",
+        f"> Human summary; machines read `handoff.json` in the same directory. {detail}",
         "",
     ]
 
