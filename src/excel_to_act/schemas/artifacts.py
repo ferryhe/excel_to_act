@@ -373,6 +373,37 @@ class CompletenessReport(Artifact):
     blocking_reasons: list[str] = Field(default_factory=list)
 
 
+class ValidationDifference(BaseModel):
+    sheet: str
+    address: str
+    baseline: str | int | float | bool | None
+    actual: str | int | float | bool | None
+    tolerance: float = Field(ge=0)
+    reason: str
+
+
+class ValidationCoverage(BaseModel):
+    formula_cells: int = Field(ge=0)
+    cached_cells: int = Field(ge=0)
+    recalculated_cells: int = Field(ge=0)
+    compared_cells: int = Field(ge=0)
+    missing_cache: list[str] = Field(default_factory=list)
+    unsupported_formula: list[str] = Field(default_factory=list)
+
+
+class ValidationReport(Artifact):
+    artifact_type: Literal["validation_report"] = "validation_report"
+    workbook_sha256: str
+    baseline_source: Literal["saved_workbook_cache"] = "saved_workbook_cache"
+    actual_source: Literal["formulas"] = "formulas"
+    cache_freshness: Literal["unknown"] = "unknown"
+    status: Literal["pass", "fail", "incomplete", "not_run"] = "not_run"
+    absolute_tolerance: float = Field(default=1e-9, ge=0)
+    coverage: ValidationCoverage
+    differences: list[ValidationDifference] = Field(default_factory=list)
+    diagnostics: list[str] = Field(default_factory=list)
+
+
 class HandoffArtifactRef(BaseModel):
     name: str
     path: str
@@ -396,6 +427,7 @@ class Handoff(Artifact):
     run_id: str | None = None
     produced_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     status: CompletenessStatus = CompletenessStatus.ok
+    numerical_status: Literal["pass", "fail", "incomplete", "not_run"] = "not_run"
     # One-glance counts (sheets / cells / formula_cells / edges / ...). Machine
     # readable so Step 2 can index it, and rendered as the TL;DR in handoff.md.
     summary: dict[str, int] = Field(default_factory=dict)

@@ -24,6 +24,7 @@ from excel_to_act.schemas import (
     WorkbookInventory,
     WorkbookManifest,
     VbaHandoff,
+    ValidationReport,
 )
 from excel_to_act.schemas.artifacts import SCHEMA_VERSION
 
@@ -35,6 +36,7 @@ ARTIFACT_NAMES: list[tuple[str, str]] = [
     ("module_classification", "module_classification.json"),
     ("confirmation_template", "confirmation_template.json"),
     ("completeness", "completeness.json"),
+    ("validation_report", "validation_report.json"),
     ("handoff", "handoff.json"),
 ]
 
@@ -45,6 +47,7 @@ _MODEL_BY_FILE: dict[str, type[BaseModel]] = {
     "module_classification.json": ModuleClassification,
     "confirmation_template.json": ConfirmationTemplate,
     "completeness.json": CompletenessReport,
+    "validation_report.json": ValidationReport,
     "handoff.json": Handoff,
     "checkbox_bindings.json": CheckboxBindings,
     "activex_events.json": ActiveXEvents,
@@ -194,6 +197,7 @@ class LocalArtifactStore:
         confirmation: ConfirmationTemplate,
         metadata: RunMetadata,
         completeness: CompletenessReport | None = None,
+        validation: ValidationReport | None = None,
     ) -> RunMetadata:
         run_dir = self.run_dir(metadata.workbook_sha256, metadata.run_id)
         written = [
@@ -206,6 +210,8 @@ class LocalArtifactStore:
         if completeness is not None:
             written.append(self.write_json("completeness.json", completeness, run_dir))
             metadata.completeness_status = completeness.status
+        if validation is not None:
+            written.append(self.write_json("validation_report.json", validation, run_dir))
         metadata.artifacts = written
         metadata.completed_at = datetime.now(UTC)
         meta = self.write_json("run_metadata.json", metadata, run_dir)
@@ -238,6 +244,7 @@ class LocalArtifactStore:
             "dependency_graph.json",
             "module_classification.json",
             "confirmation_template.json",
+            "validation_report.json",
         ):
             (self.out_dir / name).unlink(missing_ok=True)
         return metadata

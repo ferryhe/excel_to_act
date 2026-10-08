@@ -46,6 +46,10 @@ jobs:
           "$RUNNER_TEMP/runtime-venv/bin/python" -c "import importlib.util; assert importlib.util.find_spec('formulas') is None"
           "$RUNNER_TEMP/runtime-venv/bin/python" tools/check_runtime_licenses.py
 
+      - name: Verify numerical validation degrades without the optional backend
+        run: |
+          PYTHONPATH=src "$RUNNER_TEMP/runtime-venv/bin/python" -c "from pathlib import Path; from excel_to_act.schemas import WorkbookInventory, CoverageSummary, SheetInventory, SourceLocation, CellInventory; from excel_to_act.verify.numerical import validate_workbook; s=SheetInventory(source_location=SourceLocation(sheet_name='S', object_type='sheet'), name='S', index=0, max_row=1, max_column=1, cells=[CellInventory(source_location=SourceLocation(sheet_name='S', address='A1', object_type='cell'), address='A1', row=1, column=1, kind='formula', formula='=1+1')]); i=WorkbookInventory(workbook_sha256='test', sheets=[s], coverage=CoverageSummary(recognized_inventory_objects=1, unsupported_or_opaque_objects=0, discovered_workbook_objects=1)); r=validate_workbook(Path('unused.xlsx'), i); assert r.status == 'not_run' and r.coverage.compared_cells == 0"
+
   formulas-oracle:
     name: formulas oracle / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest

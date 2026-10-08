@@ -41,7 +41,7 @@ flowchart TD
     style O1 fill:#eef7ff,stroke:#1565c0
 ```
 
-**落地状态**：旧版单工作簿 `inspect` 已生成依赖图、规则分类和供人工确认的问题，并执行结构完整性检查、写出 handoff。当前人工 Step 1/2 流程转换并检查源事实、为 handoff 建索引、编译确定性视图，并支持证据查询和追踪。README Step 3 描述的是更广泛的语义分析目标；现有规则分类不等于完整语义分析。Step 2 批次 `index.json`/`INDEX.md` 与旧版 `artifact_index.json` 不同。JSON 与 Markdown handoff 已实现；**Python 生成和数值校验尚未开始**。当前契约和目标边界见[分层架构](docs/design/layered_architecture.md)。
+**落地状态**：旧版单工作簿 `inspect` 已生成依赖图、规则分类和供人工确认的问题，执行结构完整性检查及独立的缓存与可选 `formulas` 重算比较，并在 handoff 中分别记录结构与数值状态。当前人工 Step 1/2 流程转换并检查源事实、为 handoff 建索引、编译确定性视图，并支持证据查询和追踪。README Step 3 描述的是更广泛的语义分析目标；现有规则分类不等于完整语义分析。Step 2 批次 `index.json`/`INDEX.md` 与旧版 `artifact_index.json` 不同。**Python 生成和生成后等价性检查仍是后续工作**。当前契约和目标边界见[分层架构](docs/design/layered_architecture.md)。
 
 上图展示完整目标路线，包含尚未完成的步骤；当前人工入口是 `excel-to-act step1 convert <raw-directory> --out <output-directory>`，旧 `inspect` 仍用于单工作簿 Phase 1 流程。
 
@@ -112,7 +112,7 @@ excel-to-act step1 vba evaluate .\model.xlsm --out .\controls
 |---|---|
 | Step 0–3 | **plan Phase 1 范围内**（ingest → inventory → graph → classify → confirm → store → report） |
 | Step 4（生成 Python） | plan 「Non-goals」明确排除 |
-| 工作簿基准检查（#7） | 生成前将已保存的工作簿缓存与实际重算结果比较；尚未实现 |
+| 工作簿基准检查（#7） | 旧版 `inspect` 将已保存的公式缓存与可选 `formulas` 实际重算结果比较，并保存 `validation_report.json`；缺失覆盖会明确标记 |
 | 生成代码等价性 | Step 4 之后对照已接受的工作簿基准单独比较；未来工作 |
 
 ---
@@ -129,7 +129,7 @@ excel-to-act step1 vba evaluate .\model.xlsm --out .\controls
 | 2 | `index-agent` | 为 Step 1 handoff 建索引并生成导航摘要 | `src/excel_to_act/steps/step2/workflow.py:build_index` 及其 `_write_index` 已实现，支持 `step1.v1` / `step1.batch.v1`，写入批次 `index.json` 和 `INDEX.md`；独立的 `summarize_artifacts` helper 仍为目标。旧版 `src/excel_to_act/store/local_store.py:LocalArtifactStore._write_index` 写入每工作簿的 `artifact_index.json`。 | 部分（独立摘要 helper 仍为目标） |
 | 3 | `analysis-agent` | 模块分类、域标签、边界确认 | `classify/rules.py`+`classifier.py`、`confirm/templates.py`（已实现） | 部分 |
 | 4 | `generation-agent` | 生成结构化 Python（保留溯源） | `emit_module` / `emit_package`（目标） | 目标 |
-| 5 | `validation-agent` | 生成前比较已保存的工作簿缓存与实际重算结果（#7）；Step 4 后另行检查生成代码等价性 | `cached_value`（已实现）；`ValidationReport` 与一个重算适配器（#7 计划）；代码等价性检查（后续目标） | 目标 |
+| 5 | `validation-agent` | 生成前比较已保存的工作簿缓存与实际重算结果（#7）；Step 4 后另行检查生成代码等价性 | 旧版 `inspect` 已有 `ValidationReport` 和 `formulas` 适配器；完整 Agent 流程与代码等价性检查仍是目标 | 部分实现 |
 
 ### Step 1 内部流程
 
@@ -437,7 +437,7 @@ excel_to_act/
     ingest/ inventory/ graph/ classify/ confirm/ store/ report/ schemas/
     tools/                   —— Step 1 工具登记目录（可导入、随包分发）
       step0_intake/  step1_decomposition/  step2_index/ ...
-    validation/              —— 计划检查：生成前 #7 工作簿基准；生成后代码等价性
+    validation/              —— 目标流程：旧版 #7 比较位于 verify/numerical.py；代码等价性留待后续
   agents/                    每步 agent 定义：能力 / 可用 tools / IO 契约
     step1_decomposition.agent.md ...
   skills/                    可安装给外部 agent 的 skill 包
@@ -450,7 +450,7 @@ excel_to_act/
 
 要点：
 
-- `tools/` **放在 `src/excel_to_act/` 下**，而不是仓库根级目录：`pyproject.toml` 的 `packages.find where = ["src"]` 不会打包根级 Python 包。每个 tool 实现 `plugins/contracts.py` 的现有 6 个 Protocol（`WorkbookReader`/`InventoryExtractor`/`GraphBuilder`/`Classifier`/`ConfirmationBuilder`/`ArtifactStore`）；`OracleRunner` 待 issue #7 新增
+- 可打包的能力代码**放在 `src/excel_to_act/` 下**，而不是仓库根级目录：`pyproject.toml` 的 `packages.find where = ["src"]` 不会打包根级 Python 包。`plugins/contracts.py` 的现有 6 个 Protocol 保持不变；#7 的单一 `formulas` 适配器由 `verify/numerical.py` 直接调用。
 - `plugins/registry.py` 的全局 `registry` 目前**仅测试使用**，生产模块尚未注册 —— "注册进 registry"仍是目标态
 - `agents/` 里每个 agent 文件写死：能力边界、可调用 tools、输入/输出 artifact、禁止事项
 - `skills/` 需要 `package-data`/`include-package-data` 才会随 wheel 分发，当前无此配置，待补
@@ -462,7 +462,7 @@ excel_to_act/
 
 - 人工 Step 1/2 执行源文件分解、索引、确定性视图和证据导航，不做语义判断。旧版 `inspect` 则单独执行启发式分类并生成确认问题。
 - README Step 3 是更广泛的语义分析目标。当前旧版分类只使用[分层架构](docs/design/layered_architecture.md)中定义的运行时枚举，不代表已确认的领域含义。
-- Step 4 生成之前，#7 会将已保存的工作簿基准与独立的实际重算结果比较。Step 4 之后，生成代码等价性是对照工作簿基准的另一项后续检查；目前两项都未实现。
+- 旧版 `inspect` 已将已保存的公式缓存与独立的可选 `formulas` 重算结果比较，并记录缓存新鲜度未知及未覆盖单元格。Step 4 之后的生成代码等价性仍是后续工作。
 - 旧版 `inspect` 按工作簿和 run ID 写出 Phase 1 产物（见 §3.1）；人工 Step 1/2 使用独立的源文件与 reading package 契约。两者均未实现 §3.2 的目标目录树。
 
 ## 参见

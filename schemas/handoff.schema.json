@@ -136,6 +136,17 @@
       "$ref": "#/$defs/CompletenessStatus",
       "default": "pass"
     },
+    "numerical_status": {
+      "default": "not_run",
+      "enum": [
+        "pass",
+        "fail",
+        "incomplete",
+        "not_run"
+      ],
+      "title": "Numerical Status",
+      "type": "string"
+    },
     "summary": {
       "additionalProperties": {
         "type": "integer"

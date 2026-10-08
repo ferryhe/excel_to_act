@@ -33,7 +33,7 @@ Make the decomposition artifacts reliable first, then proceed with Agent views a
 | #11 | To be written | P1; required conventions first | Existing layers, cross-layer services, and artifact boundaries |
 | #14 | Not started; includes #12 | P1 | Minimal executable views and Agent reference validation |
 | #9 | Partially implemented | P1 | Core dependency boundary and actual compatibility of the selected backend |
-| #7 | Not started | P1 | Cached baseline plus one real recalculation source |
+| #7 | Implemented in branch; review/merge pending | P1 | Legacy `inspect` compares saved caches with optional `formulas` results and records coverage |
 | #10 | Closed as deferred | Reopen as needed | No current integration need; this does not mean the focused research is complete |
 | #12 | Closed after merging into #14 | With #14 | Reading/write-back contract and all positive/negative examples moved to #14 |
 
@@ -206,7 +206,7 @@ Dependencies: the required source and field conventions in #11/#13; final integr
 
 Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P1.
 
-Cache ingestion and boundary regression for [#4](https://github.com/ferryhe/excel_to_act/issues/4) were merged into main in PR #15/#16 and accepted; validation/, OracleRunner, and ValidationReport have not yet been implemented. The project currently has no in-house formula-evaluation results; copying a cache and comparing it with the same cache does not count as independent numerical verification.
+Cache ingestion and boundary regression for [#4](https://github.com/ferryhe/excel_to_act/issues/4) were merged into main in PR #15/#16 and accepted. The legacy `inspect` path now has `verify/numerical.py` and `ValidationReport`: it compares saved caches with optional, actual `formulas` recalculation and records coverage gaps. The separate human Step 1/2 and post-generation workflows do not consume this report yet. Copying a cache and comparing it with the same cache does not count as independent numerical verification.
 
 ### What to do
 
