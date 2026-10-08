@@ -61,6 +61,77 @@
       "title": "CompletenessStatus",
       "type": "string"
     },
+    "ObjectCoverage": {
+      "description": "Identity counts for one logical kind or the separate package-part ledger.",
+      "properties": {
+        "sheet_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sheet Name"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "expected": {
+          "minimum": 0,
+          "title": "Expected",
+          "type": "integer"
+        },
+        "actual": {
+          "minimum": 0,
+          "title": "Actual",
+          "type": "integer"
+        },
+        "missing_identities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Identities",
+          "type": "array"
+        },
+        "unexpected_identities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Unexpected Identities",
+          "type": "array"
+        },
+        "duplicate_identities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Duplicate Identities",
+          "type": "array"
+        },
+        "opaque_expected": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Opaque Expected",
+          "type": "integer"
+        },
+        "opaque_actual": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Opaque Actual",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "expected",
+        "actual"
+      ],
+      "title": "ObjectCoverage",
+      "type": "object"
+    },
     "SourceLocation": {
       "description": "Original workbook location for a discovered object.",
       "properties": {
@@ -140,6 +211,18 @@
           ],
           "default": null,
           "title": "Ooxml Part"
+        },
+        "source_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Identity"
         }
       },
       "required": [
@@ -214,6 +297,13 @@
       "minimum": 0,
       "title": "Discovered Workbook Objects",
       "type": "integer"
+    },
+    "object_coverage": {
+      "items": {
+        "$ref": "#/$defs/ObjectCoverage"
+      },
+      "title": "Object Coverage",
+      "type": "array"
     },
     "gaps": {
       "items": {

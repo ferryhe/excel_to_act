@@ -13,7 +13,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 
 from excel_to_act.ingest.ooxml_package import scan_ooxml_package
 from excel_to_act.schemas import SheetManifest, SourceLocation, UnsupportedFeature, UnsupportedSeverity, WorkbookManifest
-from excel_to_act.steps.step1.source_scan import SourceScanError, scan_step1_source
+from excel_to_act.steps.step1.source_scan import SourceScanError, object_identity, scan_step1_source
 
 WORKBOOK_READ_ERRORS = (
     OSError,
@@ -69,8 +69,17 @@ class OpenpyxlWorkbookReader:
             # The Step 1 scanner already identifies unreadable required OOXML
             # parts; reuse it so inspect cannot turn a broken package into an
             # apparently empty workbook.
-            scan_step1_source(workbook_path)
+            source_scan = scan_step1_source(workbook_path)
             parts, unsupported = scan_ooxml_package(workbook_path)
+            for part in parts:
+                source_part = source_scan["parts"][part.name]
+                part.opaque = source_part["opaque"]
+                part.opaque_reason = source_part["opaque_reason"]
+                part.source_location.source_identity = object_identity("package_part", part.name)
+            for feature in unsupported:
+                name = feature.source_location.ooxml_part
+                if name in source_scan["parts"]:
+                    feature.opaque = source_scan["parts"][name]["opaque"]
             try:
                 wb = load_workbook(workbook_path, data_only=False, read_only=False, keep_vba=workbook_path.suffix.lower() == ".xlsm")
             except Exception as exc:

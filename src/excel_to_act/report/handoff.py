@@ -138,14 +138,22 @@ def build_handoff(
         if artifact.name not in {"run_metadata.json", "artifact_index.json"}
     ]
 
-    # inventory.unsupported_features already includes the manifest features.
+    # The package ledger is the source of truth for unresolved parts. Diagnostics
+    # may repeat a part or describe a warning without representing another object.
     all_features = inventory.unsupported_features + graph.unsupported_features
-    # Only genuinely unparseable parts count as opaque; warnings such as
-    # "missing_cached_values" are recoverable and must not inflate this number.
-    opaque_features = [feature for feature in all_features if feature.opaque]
+    opaque_parts = {part.name: part for part in manifest.package_parts if part.opaque}
+    opaque_objects = {
+        feature.source_location.source_identity: feature
+        for feature in all_features
+        if feature.opaque and feature.source_location.source_identity
+        and feature.source_location.ooxml_part not in opaque_parts
+    }
     opaque_summary = [
         {"feature_type": feature_type, "count": count}
-        for feature_type, count in Counter(feature.feature_type for feature in opaque_features).most_common()
+        for feature_type, count in Counter(
+            [part.opaque_reason or "unresolved package part" for part in opaque_parts.values()]
+            + [feature.feature_type for feature in opaque_objects.values()]
+        ).most_common()
     ]
 
     blockers = list(completeness.blocking_reasons)
