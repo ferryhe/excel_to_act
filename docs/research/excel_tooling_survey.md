@@ -310,7 +310,7 @@ The current implementation uses regex (`graph/builder.py:20`) and has three prob
 | Aligned with repository state (references `src/` files) | **Complete** | §0 current-state table, §4.6 gap list, §7 existing/missing columns | — |
 | Placement recommendations map to specific files | **Complete** | §7 table's "Existing modules / Missing modules" columns | — |
 | Converted into actionable work (PR / extras adjustment) | **Partially complete** | Issue #9 adds the default-runtime policy gate and validates `formulas` as the selected oracle | Add PR-13 to `docs/plans/pr_plan_phase1.md` for L3 oracle integration and `OracleRunner`; no extras adjustment is needed |
-| Version/license data is verifiable | **Partially complete** | CI declares Python 3.11/3.12/3.13; local checks on Python 3.11 passed | Cross-version CI results and optional-extra licenses beyond `oracle-formulas` remain to be verified; `FlyingKoala` lacks an exact release date |
+| Version/license data is verifiable | **Partially complete** | CI run 37736277722 passed all nine license/oracle/core jobs on Python 3.11/3.12/3.13 | Optional-extra licenses beyond `oracle-formulas` remain unverified; `FlyingKoala` lacks an exact release date |
 
 ---
 

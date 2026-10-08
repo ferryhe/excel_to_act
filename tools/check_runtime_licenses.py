@@ -62,6 +62,12 @@ def _validate_expression(value: str, source: str) -> None:
         position = match.end()
     if value[position:].strip() or not tokens:
         raise LicenseCheckError(f"malformed license expression in {source}: {value}")
+    if any(
+        token not in {"(", ")"}
+        and not re.fullmatch(r"[A-Za-z0-9]+(?:[-.][A-Za-z0-9]+)*", token)
+        for token in tokens
+    ):
+        raise LicenseCheckError(f"malformed license identifier in {source}: {value}")
 
     index = 0
 
@@ -165,6 +171,12 @@ def self_test() -> None:
         [("License-Expression", "MIT BSD-3-Clause")],
         [("License-Expression", "MIT | BSD-3-Clause")],
         [("License-Expression", "(MIT OR BSD-3-Clause")],
+        [("License-Expression", "Apache--2.0")],
+        [("License-Expression", "MIT OR Apache--2.0")],
+        [("License-Expression", "BSD---3-Clause")],
+        [("License-Expression", "MIT+")],
+        [("License-Expression", "MIT.")],
+        [("License-Expression", "Apache-2.0.")],
         [("License-Expression", "MIT WITH Apache-2.0")],
         [("License-Expression", "(MIT) WITH LLVM-exception")],
         [("License", "GNU General Public License v3")],
@@ -180,6 +192,8 @@ def self_test() -> None:
         raise AssertionError(f"checker accepted violating/unknown metadata: {sample!r}")
     check_metadata("valid-mixed-sample", [("License-Expression", "MIT OR BSD-3-Clause")])
     check_metadata("valid-exception-sample", [("License-Expression", "MIT WITH LLVM-exception")])
+    check_metadata("valid-apache-sample", [("License-Expression", "Apache-2.0")])
+    check_metadata("legacy-license-sample", [("License", "MIT License")])
     print("License checker rejects prohibited, malformed, unknown, and missing metadata samples.")
 
 
