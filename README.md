@@ -12,7 +12,7 @@ First principle: **lossless decomposition before understanding and generation**.
 recognized_inventory_objects + unsupported_or_opaque_objects = discovered_workbook_objects
 ```
 
-> ⚠️ Scope: this global invariant **is not yet enforced by the legacy `inspect` workflow**. `inventory/extractor.py:100` sets `discovered` directly to `recognized + opaque`, making the equality a tautology. Several parts are neither collected nor marked opaque (see the "silent omissions" in §4). The current human Step 1, `step1 convert`, independently verifies the supported objects and OOXML parts declared on this page; this does not mean every Excel feature has been semantically parsed. Legacy gaps remain documented in `docs/issues/backlog.md`, issue #5, and §4 I.
+> ⚠️ Scope: `CoverageSummary.discovered_workbook_objects` is populated from the independent OOXML source scan, and the recognized count is based on matched source identities. The summary counts alone do not prove identity-by-identity coverage. Since #5 / [PR #38](https://github.com/ferryhe/excel_to_act/pull/38), legacy `inspect` runs `verify_completeness`, which compares source and inventory identities, validates stored counts, fails on omissions, and exits nonzero. Human Step 1 has its own logical-object and OOXML-part ledgers. These checks do not mean every Excel feature has been semantically parsed. See [the Phase 1.5 backlog and status](docs/issues/backlog.md) and §4 I.
 
 ---
 
@@ -172,7 +172,7 @@ flowchart LR
     PKG --> OPA --> COV
 ```
 
-The legacy `inspect` workflow **does not yet have** `verify_coverage`. Its `CoverageSummary.discovered` is the tautology `recognized + opaque`, so it cannot provide independent coverage. The current `step1 coverage` command separately compares logical objects and package parts using the OOXML source census and output identities.
+Legacy `inspect` populates `CoverageSummary.discovered_workbook_objects` from the independent OOXML source scan, and counts recognized objects by matched source identities. Those summary counts alone do not establish identity-by-identity coverage; `verify_completeness` compares source and inventory identities, validates stored counts, saves mismatch diagnostics, and exits nonzero on omissions ([#5 / PR #38](https://github.com/ferryhe/excel_to_act/pull/38)). The human `step1 coverage` command has separate logical-object and package-part ledgers. Neither path means all Excel features are semantically parsed.
 
 ---
 
@@ -238,7 +238,7 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 
 Decomposition **must be checked for completeness before producing the handoff**. This is Step 1's exit and the only entry downstream agents need to read.
 
-`verify_completeness()` in `verify/completeness.py` **does not reuse** `WorkbookInventory.coverage`, whose `discovered` is the tautology `recognized + opaque`. Instead, it **independently recounts source objects from the package** (nonempty cells in worksheet XML plus package-part enumeration) and compares them with the output:
+`verify_completeness()` in `verify/completeness.py` does not rely on `WorkbookInventory.coverage` totals alone. `discovered_workbook_objects` comes from the independent source scan, but summary counts cannot prove identity-by-identity coverage. The check independently discovers source objects from the package, compares source and inventory identities, validates stored counts, and fails when objects are missing:
 
 | Check | Criterion | Severity |
 |---|---|---|
@@ -247,7 +247,7 @@ Decomposition **must be checked for completeness before producing the handoff**.
 | `content_parts_accounted` | Every content part **has output evidence** (e.g. `xl/tables/` requires a `table` range) or is marked opaque | error |
 | `formulas_linked` | Every formula cell has an outgoing edge or a `formula_reference_parse` record | warning |
 | `metadata_parts_accounted` | Metadata parts such as `docProps/` that are not yet modeled | info |
-| `coverage_arithmetic` | Whether `recognized + opaque` equals independently recounted `discovered` | info |
+| `coverage_arithmetic` | Whether recognized/discovered object totals agree with stored coverage counts. Separate per-kind `*_identities` checks match identities and detect missing, unexpected, or duplicate objects; `verify_completeness` runs both. Package parts use a separate ledger. | error |
 
 > A part is considered "collected" based on **corresponding output evidence**, rather than its path prefix. Otherwise, removing extraction logic would not trigger a failed check.
 
@@ -286,7 +286,7 @@ The top of `handoff.md` sketches the workbook (sheets / cells / formula cells / 
 | Document properties | `docProps/*.xml` | **Missing**: should be collected, rather than marked opaque (parseable) |
 | Custom XML / Power Query `DataMashup` | `customXml/` | Opaque (markers added; see group I); M code itself is unparsed |
 | Digital signatures | `_xmlsignatures/` | Opaque (markers added; see group I) |
-| Encrypted / damaged files | `EncryptedPackage` | **Confirmed hard-constraint violation**: `ZipFile()` in `ingest/ooxml_package.py:51` has no exception handling and raises an uncaught exception (issue #8, P0). Required behavior: report an error without crashing |
+| Encrypted / damaged files | `EncryptedPackage` | **Handled as a controlled failure**: PR #37 saves diagnostic-only failed-run artifacts and returns a controlled nonzero CLI exit. No decryption is performed ([Issue #8](https://github.com/ferryhe/excel_to_act/issues/8); [PR #37](https://github.com/ferryhe/excel_to_act/pull/37)) |
 
 ### B. Workbook structure layer
 
@@ -467,7 +467,7 @@ Notes:
 
 ## 7. Phase boundaries
 
-- Human Steps 1–2 perform source decomposition, indexing, deterministic views, and evidence navigation without semantic decisions. Legacy `inspect` separately performs heuristic classification and builds confirmation questions.
+- Human Steps 1–2 perform source decomposition, indexing, deterministic views, and evidence navigation without semantic decisions. Legacy `inspect` separately performs heuristic classification and builds confirmation questions. Phase 1.5 is tracked in [Issue #3](https://github.com/ferryhe/excel_to_act/issues/3); this PR aligns the backlog and closes the Epic once merged.
 - README Step 3 is the broader semantic-analysis target. Current legacy classifications use the runtime enums documented in [the layered architecture](docs/design/layered_architecture.md); they do not establish confirmed domain meaning.
 - Legacy `inspect` now checks saved formula caches against distinct optional `formulas` recalculation and records unknown cache freshness and uncovered cells. After Step 4, generated-code equivalence is a separate later comparison against the workbook baseline.
 - The legacy `inspect` run writes its Phase 1 artifact set by workbook and run ID (see §3.1); human Step 1/2 use their separate source and reading-package contracts. Neither path implements the target directory tree in §3.2.
@@ -477,4 +477,4 @@ Notes:
 - `docs/plans/phase1_excel_decomposition_plan.md` (Phase 1 plan, approximately Steps 0–3 here)
 - `docs/plans/pr_plan_phase1.md` (PR breakdown and acceptance criteria)
 - `docs/research/excel_tooling_survey.md` (A1: conclusions on existing tools)
-- `docs/issues/backlog.md` (Issue source, organized as task / deliverables / validation)
+- `docs/issues/backlog.md` (Phase 1.5 Epic closeout and Issue source)

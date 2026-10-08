@@ -12,7 +12,7 @@ Excel-to-actuarial-model tooling：**CLI + API + agent-ready**，可按 skill �
 recognized_inventory_objects + unsupported_or_opaque_objects = discovered_workbook_objects
 ```
 
-> ⚠️ 范围说明：上述全局不变量**在旧 `inspect` 流程中尚未真正生效**——`inventory/extractor.py:100` 把 `discovered` 直接写成 `recognized + opaque`，是恒等式；且一批部件既未采集也未标 opaque（见 §4 的"静默丢失"）。当前人工 Step 1 `step1 convert` 会独立复核本页声明的支持对象和 OOXML 部件范围；它不代表所有 Excel 功能都已语义解析。旧流程缺口仍见 `docs/issues/backlog.md` issue #5 与 §4 I。
+> ⚠️ 范围说明：`CoverageSummary.discovered_workbook_objects` 来自独立 OOXML 源扫描，recognized 数量也按匹配到的源身份统计；仅有汇总计数不能证明逐个身份都已覆盖。自 #5 / [PR #38](https://github.com/ferryhe/excel_to_act/pull/38) 起，旧 `inspect` 会运行 `verify_completeness`，比较源与 inventory 身份、校验存储计数，发现漏项时失败并以非零码退出。人工 Step 1 有独立的逻辑对象账本和 OOXML 部件账本。这些检查不表示所有 Excel 功能都已语义解析。见[Phase 1.5 待办与状态](docs/issues/backlog.md)及 §4 I。
 
 ---
 
@@ -165,7 +165,7 @@ flowchart LR
     PKG --> OPA --> COV
 ```
 
-旧 `inspect` 流程的 `verify_coverage` **尚不存在**：该流程的 `CoverageSummary.discovered` 是 `recognized + opaque` 的恒等式，不能作为独立覆盖率。当前 `step1 coverage` 命令使用 OOXML 源清单和输出身份单独核对逻辑对象与包部件。
+旧 `inspect` 的 `CoverageSummary.discovered_workbook_objects` 来自独立 OOXML 源扫描，recognized 数量按匹配到的源身份统计。仅有汇总计数不能证明逐个身份都已覆盖；`verify_completeness` 会比较源与 inventory 身份、校验存储计数、保存差异诊断，并在漏项时以非零码退出（[#5 / PR #38](https://github.com/ferryhe/excel_to_act/pull/38)）。人工 `step1 coverage` 使用独立的逻辑对象和包部件账本。两条路径都不表示所有 Excel 功能均已语义解析。
 
 ---
 
@@ -231,7 +231,7 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 
 分解结束后 **必须先做完备性检查，再产出 handoff**。这是 Step 1 的出口，也是下游 agent 唯一需要读的入口。
 
-`verify/completeness.py` 的 `verify_completeness()` **不复用** `WorkbookInventory.coverage`——它的 `discovered` 是 `recognized + opaque` 的恒等式，证明不了任何事。而是**直接从包里重算对象全集**（worksheet XML 数非空单元格 + 枚举包部件），再与产出比对：
+`verify/completeness.py` 的 `verify_completeness()` 不会只依赖 `WorkbookInventory.coverage` 汇总计数。`discovered_workbook_objects` 来自独立源扫描，但汇总计数不能证明逐个身份都匹配。该检查会从包中独立发现源对象、比较源与 inventory 身份、校验存储计数，并在对象缺失时失败：
 
 | 检查 | 判据 | 严重级 |
 |---|---|---|
@@ -240,7 +240,7 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 | `content_parts_accounted` | 每个内容部件**有产出证据**（如 `xl/tables/` 必须存在 `table` 类型的 range）或已标 opaque | error |
 | `formulas_linked` | 每个公式格有出边，或有 `formula_reference_parse` 记录 | warning |
 | `metadata_parts_accounted` | `docProps/` 等尚未建模的元数据部件 | info |
-| `coverage_arithmetic` | `recognized + opaque` 是否等于独立重算的 `discovered` | info |
+| `coverage_arithmetic` | recognized/discovered 对象总数是否与存储的覆盖计数一致。各类型独立的 `*_identities` 检查负责匹配身份并发现缺失、多余或重复对象；`verify_completeness` 会执行两类检查。包部件单独核算。 | error |
 
 > 部件是否"已采集"不看路径前缀，而看**产出里有没有对应证据**——否则哪天采集逻辑被删掉，检查也不会报警。
 
@@ -279,7 +279,7 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 | 文档属性 | `docProps/*.xml` | **缺失**：应采集，不是标 opaque（可解析） |
 | 自定义 XML / Power Query `DataMashup` | `customXml/` | opaque（token 已补，见 I 组）；M 代码本身未解析 |
 | 数字签名 | `_xmlsignatures/` | opaque（token 已补，见 I 组） |
-| 加密 / 损坏文件 | `EncryptedPackage` | **已确认违反硬约束**：`ingest/ooxml_package.py:51` 的 `ZipFile()` 无异常保护，会抛未捕获异常（issue #8，P0）。要求：报 error，不 panic |
+| 加密 / 损坏文件 | `EncryptedPackage` | **已作为受控失败处理**：PR #37 保存仅含诊断的失败运行产物，并让 CLI 以受控非零码退出。不执行解密（[Issue #8](https://github.com/ferryhe/excel_to_act/issues/8)；[PR #37](https://github.com/ferryhe/excel_to_act/pull/37)） |
 
 ### B. 工作簿结构层
 
@@ -460,7 +460,7 @@ excel_to_act/
 
 ## 7. Phase 边界
 
-- 人工 Step 1/2 执行源文件分解、索引、确定性视图和证据导航，不做语义判断。旧版 `inspect` 则单独执行启发式分类并生成确认问题。
+- 人工 Step 1/2 执行源文件分解、索引、确定性视图和证据导航，不做语义判断。旧版 `inspect` 则单独执行启发式分类并生成确认问题。Phase 1.5 由 [Issue #3](https://github.com/ferryhe/excel_to_act/issues/3) 跟踪；本 PR 对齐 backlog 并在合入后关闭该 Epic。
 - README Step 3 是更广泛的语义分析目标。当前旧版分类只使用[分层架构](docs/design/layered_architecture.md)中定义的运行时枚举，不代表已确认的领域含义。
 - 旧版 `inspect` 已将已保存的公式缓存与独立的可选 `formulas` 重算结果比较，并记录缓存新鲜度未知及未覆盖单元格。Step 4 之后的生成代码等价性仍是后续工作。
 - 旧版 `inspect` 按工作簿和 run ID 写出 Phase 1 产物（见 §3.1）；人工 Step 1/2 使用独立的源文件与 reading package 契约。两者均未实现 §3.2 的目标目录树。
@@ -470,4 +470,4 @@ excel_to_act/
 - `docs/plans/phase1_excel_decomposition_plan.md`（Phase 1 方案，≈ 本文件 Step 0–3）
 - `docs/plans/pr_plan_phase1.md`（PR 切分与验收）
 - `docs/research/excel_tooling_survey.md`（A1 · 现成库选型结论）
-- `docs/issues/backlog.md`（issue 源，三段式：做什么 / 提交物 / 怎么检查）
+- `docs/issues/backlog.md`（Phase 1.5 Epic 收尾与 Issue 源）
