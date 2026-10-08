@@ -202,8 +202,8 @@ def main() -> int:
 
     failures = []
     for distribution in metadata.distributions():
-        if distribution.metadata.get("Name", "").casefold() in {"pip", "excel-to-act"}:
-            continue  # pip bootstraps the venv; excel-to-act is the root, not a dependency.
+        if distribution.metadata.get("Name", "").casefold() in {"pip", "setuptools", "excel-to-act"}:
+            continue  # pip/setuptools bootstrap the venv; excel-to-act is the closure root.
         try:
             check_distribution(distribution)
         except LicenseCheckError as error:
