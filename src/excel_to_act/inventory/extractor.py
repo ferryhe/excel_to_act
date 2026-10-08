@@ -8,6 +8,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell
+from openpyxl.styles.numbers import is_date_format
 from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
@@ -100,7 +101,9 @@ class OpenpyxlInventoryExtractor:
                 f"openpyxl could not read workbook: {type(exc).__name__}: {exc}"
             ) from exc
         try:
-            cached_values = read_cached_values(workbook_path)
+            cached_types: dict[tuple[str, str], str] = {}
+            numeric_cache_texts: dict[tuple[str, str], str] = {}
+            cached_values = read_cached_values(workbook_path, cached_types, numeric_cache_texts)
             try:
                 data_tables = read_data_tables(workbook_path)
             except PACKAGE_READ_ERRORS as exc:
@@ -168,6 +171,9 @@ class OpenpyxlInventoryExtractor:
                                 style_id=getattr(cell, "style_id", None),
                                 cached_value=cached_values.get(cache_key) if has_cached else None,
                                 cached_value_available=has_cached,
+                                ooxml_cell_type=cached_types.get(cache_key) if has_cached else None,
+                                date_serial_text=(numeric_cache_texts.get(cache_key) if has_cached and
+                                                  is_date_format(cell.number_format or "") else None),
                             )
                         )
                         recognized += 1

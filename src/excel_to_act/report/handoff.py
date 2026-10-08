@@ -22,6 +22,7 @@ from excel_to_act.schemas import (
     UnsupportedSeverity,
     WorkbookInventory,
     WorkbookManifest,
+    ValidationReport,
 )
 
 _KIND_BY_FILE = {
@@ -31,6 +32,7 @@ _KIND_BY_FILE = {
     "module_classification.json": "classification",
     "confirmation_template.json": "confirmation",
     "completeness.json": "completeness",
+    "validation_report.json": "validation",
     "handoff.json": "handoff",
     "run_metadata.json": "metadata",
     "artifact_index.json": "index",
@@ -44,6 +46,7 @@ _KIND_LABEL = {
     "classification": "module classification",
     "confirmation": "open questions",
     "completeness": "completeness checks",
+    "validation": "numerical comparisons",
     "metadata": "run metadata",
     "index": "run index",
     "other": "other",
@@ -101,6 +104,7 @@ def _count_for(
     classification: ModuleClassification,
     confirmation: ConfirmationTemplate,
     completeness: CompletenessReport,
+    validation: ValidationReport | None,
 ) -> int | None:
     if name == "workbook_manifest.json":
         return len(manifest.package_parts)
@@ -114,6 +118,8 @@ def _count_for(
         return len(confirmation.questions)
     if name == "completeness.json":
         return len(completeness.checks)
+    if name == "validation_report.json" and validation is not None:
+        return validation.coverage.compared_cells
     return None
 
 
@@ -125,13 +131,14 @@ def build_handoff(
     confirmation: ConfirmationTemplate,
     completeness: CompletenessReport,
     metadata: RunMetadata,
+    validation: ValidationReport | None = None,
 ) -> Handoff:
     artifacts = [
         HandoffArtifactRef(
             name=artifact.name,
             path=artifact.path,
             kind=_KIND_BY_FILE.get(artifact.name, "other"),
-            count=_count_for(artifact.name, manifest, inventory, graph, classification, confirmation, completeness),
+            count=_count_for(artifact.name, manifest, inventory, graph, classification, confirmation, completeness, validation),
             sha256=artifact.sha256,
         )
         for artifact in metadata.artifacts
@@ -186,6 +193,10 @@ def build_handoff(
         next_actions.append(f"Answer {len(confirmation.questions)} confirmation question(s) before Step 3")
     if completeness.status == "fail":
         next_actions.append("Resolve the blockers above before any downstream consumer trusts inventory.json")
+    if validation is not None and validation.status != "pass":
+        next_actions.append(
+            f"Numerical validation is {validation.status}; review validation_report.json before model generation"
+        )
     next_actions.append("Step 2: build the agent-facing index from the artifacts above")
 
     return Handoff(
@@ -193,6 +204,7 @@ def build_handoff(
         workbook_path=manifest.workbook_path,
         run_id=metadata.run_id,
         status=completeness.status,
+        numerical_status=validation.status if validation is not None else "not_run",
         summary=build_summary(inventory, graph),
         artifacts=artifacts,
         coverage=inventory.coverage,
@@ -220,7 +232,7 @@ def render_handoff_markdown(handoff: Handoff) -> str:
     lines = [
         f"# Handoff · {handoff.step} → {handoff.next_step}",
         "",
-        f"**{workbook}** · status **{handoff.status}** · run `{handoff.run_id}`",
+        f"**{workbook}** · structural **{handoff.status}** · numerical **{handoff.numerical_status}** · run `{handoff.run_id}`",
         "",
         f"> Human summary; machines read `handoff.json` in the same directory. {detail}",
         "",

@@ -102,7 +102,7 @@ This list is a planning vocabulary, not the runtime enum contract. The implement
 
 ## Repository architecture
 
-This plan records the intended Phase 1 sequence, not the complete current runtime map. The legacy `inspect` path already runs rule classification, confirmation-question generation, structural completeness checks, and handoff. The newer human `step1`/`step2` path performs source conversion/checks, indexing, deterministic views, and evidence navigation. README Step 3's broader semantic analysis, Python generation, and numerical validation are not complete. See [layered architecture and artifact boundaries](../design/layered_architecture.md) for implemented files, actual artifact contracts, and planned boundaries.
+This plan records the intended Phase 1 sequence, not the complete current runtime map. The legacy `inspect` path runs rule classification, confirmation-question generation, structural completeness checks, numerical cache-versus-recalculation comparison, and handoff. The newer human `step1`/`step2` path performs source conversion/checks, indexing, deterministic views, and evidence navigation. README Step 3's broader semantic analysis and Python generation are not complete. See [layered architecture and artifact boundaries](../design/layered_architecture.md) for implemented files, actual artifact contracts, and planned boundaries.
 
 ```text
 src/excel_to_act/
@@ -299,7 +299,7 @@ excel-to-act --help
 
 ## Mapping to the README pipeline
 
-The README divides the long-term roadmap into Steps 0–5. This plan's Phase 1 **targets Steps 0–3** (ingest → inventory → graph → classify → confirm → store → report); it does not mean the broader README Step 3 semantic analysis is already implemented. The legacy `inspect` path has rule classification and confirmation questions, while human Step 1/2 focuses on decomposition and evidence navigation. The README's Step 4 (Python generation) is excluded by this plan's "Non-goals" section; #7's saved-cache versus actual-recalculation workbook-baseline check is a pre-generation gate, distinct from later post-generation code-equivalence, and remains unimplemented.
+The README divides the long-term roadmap into Steps 0–5. This plan's Phase 1 **targets Steps 0–3** (ingest → inventory → graph → classify → confirm → store → report); it does not mean the broader README Step 3 semantic analysis is already implemented. The legacy `inspect` path has rule classification, confirmation questions, and #7's pre-generation saved-cache versus actual-recalculation check, while human Step 1/2 focuses on decomposition and evidence navigation. The README's Step 4 (Python generation) is excluded by this plan's "Non-goals" section; post-generation code-equivalence remains later work.
 
 ### Current artifact layout vs. the Step 1 target
 

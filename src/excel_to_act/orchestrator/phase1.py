@@ -33,6 +33,7 @@ from excel_to_act.schemas import (
 )
 from excel_to_act.store.local_store import LocalArtifactStore
 from excel_to_act.verify.completeness import verify_completeness
+from excel_to_act.verify.numerical import validate_workbook
 
 
 class Phase1Artifacts(tuple):
@@ -118,10 +119,13 @@ class Phase1Orchestrator:
         # Completeness is verified before anything is persisted, and the handoff is
         # written last so it can point at every artifact path.
         completeness = verify_completeness(manifest, inventory, graph, classification)
+        validation = validate_workbook(workbook_path, inventory)
         metadata.completeness_status = completeness.status
-        metadata = store.write_run(manifest, inventory, graph, classification, confirmation, metadata, completeness=completeness)
+        metadata = store.write_run(manifest, inventory, graph, classification, confirmation, metadata,
+                                   completeness=completeness, validation=validation)
         run_dir = store.run_dir(metadata.workbook_sha256, metadata.run_id)
-        handoff = build_handoff(manifest, inventory, graph, classification, confirmation, completeness, metadata)
+        handoff = build_handoff(manifest, inventory, graph, classification, confirmation, completeness,
+                                metadata, validation=validation)
         return store.append_artifacts(
             metadata,
             [

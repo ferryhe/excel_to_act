@@ -41,7 +41,7 @@ flowchart TD
     style O1 fill:#eef7ff,stroke:#1565c0
 ```
 
-**Implementation status**: The legacy single-workbook `inspect` workflow already builds a graph, emits rule classifications and human confirmation questions, checks structural completeness, and writes a handoff. The current human Step 1/2 path converts and checks source facts, indexes handoffs, compiles deterministic views, and supports evidence queries/traces. README Step 3 describes a broader semantic target; the existing rule classifications are not that full analysis. Step 2's batch `index.json`/`INDEX.md` differs from legacy `artifact_index.json`. The JSON and Markdown handoffs are implemented; **Python generation and numerical validation have not started**. See [the layered architecture](docs/design/layered_architecture.md) for current contracts and target boundaries.
+**Implementation status**: The legacy single-workbook `inspect` workflow builds a graph, emits rule classifications and human confirmation questions, checks structural completeness, compares saved formula caches with optional `formulas` recalculation, and writes a handoff with separate structural and numerical statuses. The current human Step 1/2 path converts and checks source facts, indexes handoffs, compiles deterministic views, and supports evidence queries/traces. README Step 3 describes a broader semantic target; the existing rule classifications are not that full analysis. Step 2's batch `index.json`/`INDEX.md` differs from legacy `artifact_index.json`. **Python generation and post-generation equivalence remain future work.** See [the layered architecture](docs/design/layered_architecture.md) for current contracts and target boundaries.
 
 The diagram shows the complete target route, including unfinished steps. The current human entry point is `excel-to-act step1 convert <raw-directory> --out <output-directory>`. Legacy `inspect` remains available for the single-workbook Phase 1 workflow.
 
@@ -119,7 +119,7 @@ Each batch produces `batches/<batch-id>/batch_handoff.{json,md}`. Each source ha
 |---|---|
 | Steps 0–3 | **Within the plan's Phase 1 scope** (ingest → inventory → graph → classify → confirm → store → report) |
 | Step 4 (generate Python) | Explicitly excluded by the plan's "Non-goals" |
-| Workbook-baseline check (#7) | Pre-generation comparison of saved workbook cache with an actual recalculation result; not yet implemented |
+| Workbook-baseline check (#7) | Legacy `inspect` compares saved formula caches with optional `formulas` recalculation and stores `validation_report.json`; missing coverage stays explicit |
 | Generated-code equivalence | Separate post-Step-4 comparison against the accepted workbook baseline; future work |
 
 ---
@@ -136,7 +136,7 @@ Tool status: `implemented` means a corresponding implementation exists in `src/`
 | 2 | `index-agent` | Index and summarize Step 1 artifacts | `src/excel_to_act/steps/step2/workflow.py:build_index` and its `_write_index` are implemented for `step1.v1` / `step1.batch.v1`, writing batch `index.json` and `INDEX.md`; the separate `summarize_artifacts` helper remains a target. Legacy `src/excel_to_act/store/local_store.py:LocalArtifactStore._write_index` writes per-workbook `artifact_index.json`. | Partial (separate summary helper remains a target) |
 | 3 | `analysis-agent` | Classify modules, tag domains, and confirm boundaries | `classify/rules.py`+`classifier.py`, `confirm/templates.py` (implemented) | Partial |
 | 4 | `generation-agent` | Generate structured Python with provenance | `emit_module` / `emit_package` (targets) | Target |
-| 5 | `validation-agent` | Compare the saved workbook cache with an actual recalculation before generation (#7); check generated-code equivalence separately after Step 4 | `cached_value` (implemented); `ValidationReport` and one recalculation adapter (planned #7); code-equivalence check (later target) | Target |
+| 5 | `validation-agent` | Compare the saved workbook cache with an actual recalculation before generation (#7); check generated-code equivalence separately after Step 4 | Legacy `inspect` has `ValidationReport` and a `formulas` adapter; the broader agent workflow and code-equivalence check remain targets | Partial |
 
 ### Step 1 internal flow
 
@@ -444,7 +444,7 @@ excel_to_act/
     ingest/ inventory/ graph/ classify/ confirm/ store/ report/ schemas/
     tools/                   Step 1 tool catalogue (importable, distributed with the package)
       step0_intake/  step1_decomposition/  step2_index/ ...
-    validation/              Planned checks: #7 workbook baseline before generation; code equivalence after generation
+    validation/              Target workflow: legacy #7 comparison lives in verify/numerical.py; code equivalence comes later
   agents/                    Agent definitions per step: capabilities / tools / IO contracts
     step1_decomposition.agent.md ...
   skills/                    Skill packages installable for external agents
@@ -457,7 +457,7 @@ excel_to_act/
 
 Notes:
 
-- `tools/` **belongs under `src/excel_to_act/`**, rather than the repository root: `packages.find where = ["src"]` in `pyproject.toml` does not package root-level Python packages. Each tool implements one of the 6 existing Protocols in `plugins/contracts.py` (`WorkbookReader`/`InventoryExtractor`/`GraphBuilder`/`Classifier`/`ConfirmationBuilder`/`ArtifactStore`); `OracleRunner` awaits issue #7.
+- `tools/` **belongs under `src/excel_to_act/`** for packaged capability code, rather than the repository root: `packages.find where = ["src"]` in `pyproject.toml` does not package root-level Python packages. The existing 6 Protocols in `plugins/contracts.py` remain unchanged; the single #7 `formulas` adapter is called directly from `verify/numerical.py`.
 - The global `registry` in `plugins/registry.py` is currently **used only by tests**; production modules are not registered yet. Registration remains a target.
 - Each file in `agents/` defines fixed capability boundaries, callable tools, input/output artifacts, and prohibitions.
 - `skills/` needs `package-data`/`include-package-data` to be included in wheels. That configuration is currently absent and remains to be added.
@@ -469,7 +469,7 @@ Notes:
 
 - Human Steps 1–2 perform source decomposition, indexing, deterministic views, and evidence navigation without semantic decisions. Legacy `inspect` separately performs heuristic classification and builds confirmation questions.
 - README Step 3 is the broader semantic-analysis target. Current legacy classifications use the runtime enums documented in [the layered architecture](docs/design/layered_architecture.md); they do not establish confirmed domain meaning.
-- Before Step 4 generation, #7 checks the saved workbook baseline against a distinct actual recalculation result. After Step 4, generated-code equivalence is a separate later comparison against that workbook baseline; neither comparison is implemented yet.
+- Legacy `inspect` now checks saved formula caches against distinct optional `formulas` recalculation and records unknown cache freshness and uncovered cells. After Step 4, generated-code equivalence is a separate later comparison against the workbook baseline.
 - The legacy `inspect` run writes its Phase 1 artifact set by workbook and run ID (see §3.1); human Step 1/2 use their separate source and reading-package contracts. Neither path implements the target directory tree in §3.2.
 
 ## See also
