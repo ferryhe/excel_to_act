@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.11+, openpyxl, Python stdlib OOXML zip/XML scanning, Pydantic, NetworkX, Typer, pytest, optional formulas/xlcalculator behind plugin interfaces.
 
+> **Status note:** This is the original proposed PR sequence, not a list of work still missing. The legacy `inspect` workflow implements the manifest/inventory/graph, rule classification, confirmation questions, structural completeness report, store and handoff path. Human Step 1/2 now provides a separate source conversion/check, batch index, deterministic reading views and evidence navigation. Rule classifications are not the broader semantic-analysis target in README Step 3. Current file status and artifact contracts are maintained in [layered architecture](../design/layered_architecture.md).
+
 ---
 
 ## Current confirmation needed
@@ -28,6 +30,8 @@ This PR plan avoids depending on that answer.
 4. Unsupported Excel features are recorded, not ignored.
 5. Formula graph work parses dependencies only; no formula evaluation and no Python generation in Phase 1.
 6. Plugin stages exchange typed artifact contracts, not raw openpyxl objects across the whole pipeline.
+
+Structural completeness and numerical verification are separate gates. #5's `CompletenessReport` checks source/output accounting; #7's planned `ValidationReport` compares saved workbook caches with an actual recalculation result. That pre-generation workbook-baseline check is distinct from post-generation code-equivalence, which requires generated output and is a later target.
 
 ## PR overview
 

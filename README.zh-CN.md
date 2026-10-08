@@ -28,20 +28,20 @@ flowchart TD
     H["handoff.json + handoff.md<br/>Step 1 唯一出口"]
     S2["Step 2 · Artifact Index<br/>为后续 agent 建产物索引与摘要"]
     O2[("output/step2_index/<br/>INDEX.md + index.json")]
-    S3["Step 3 · Semantic Analysis<br/>模块分类 / 域标签 / 结构规约"]
+    S3["Step 3 · Semantic Analysis（目标）<br/>域分析 / 结构规约"]
     O3[("output/step3_analysis/")]
+    B0["生成前工作簿基准检查（#7）<br/>已保存缓存 vs 实际重算"]
     S4["Step 4 · Structured Python Generation"]
     O4[("output/step4_generation/")]
-    S5["Step 5 · Validation &amp; Reconciliation<br/>多 oracle 数值对账"]
-    O5[("output/step5_validation/")]
+    B1["生成后代码等价性对账<br/>生成代码 vs 工作簿基准"]
 
-    IN --> S0 --> S1 --> O1 --> V --> H --> S2 --> O2 --> S3 --> O3 --> S4 --> O4 --> S5 --> O5
+    IN --> S0 --> S1 --> O1 --> V --> H --> S2 --> O2 --> S3 --> O3 --> B0 --> S4 --> O4 --> B1
 
     style S1 fill:#dff5e1,stroke:#2e7d32,stroke-width:2px
     style O1 fill:#eef7ff,stroke:#1565c0
 ```
 
-**落地状态**：Step 0–2 已部分落地（人工 Step 1 位于 `steps/step1/`；共享模块位于 `ingest/` `inventory/` `graph/` `classify/` `confirm/` `store/` `orchestrator/` `interfaces/`）。Step 2 另提供批次导航索引，默认写入 `output/step2_index/index.json` 和 `INDEX.md`；它与 `store/local_store.py` 生成的旧版单工作簿 `artifact_index.json` 是不同文件。Step 3 属 plan 的 Phase 1 范围、已部分落地（`classify/`）。Step 1 的 JSON 与 Markdown handoff 已实现；**Step 4–5 未开工**。
+**落地状态**：旧版单工作簿 `inspect` 已生成依赖图、规则分类和供人工确认的问题，并执行结构完整性检查、写出 handoff。当前人工 Step 1/2 流程转换并检查源事实、为 handoff 建索引、编译确定性视图，并支持证据查询和追踪。README Step 3 描述的是更广泛的语义分析目标；现有规则分类不等于完整语义分析。Step 2 批次 `index.json`/`INDEX.md` 与旧版 `artifact_index.json` 不同。JSON 与 Markdown handoff 已实现；**Python 生成和数值校验尚未开始**。当前契约和目标边界见[分层架构](docs/design/layered_architecture.md)。
 
 上图展示完整目标路线，包含尚未完成的步骤；当前人工入口是 `excel-to-act step1 convert <raw-directory> --out <output-directory>`，旧 `inspect` 仍用于单工作簿 Phase 1 流程。
 
@@ -112,7 +112,8 @@ excel-to-act step1 vba evaluate .\model.xlsm --out .\controls
 |---|---|
 | Step 0–3 | **plan Phase 1 范围内**（ingest → inventory → graph → classify → confirm → store → report） |
 | Step 4（生成 Python） | plan 「Non-goals」明确排除 |
-| Step 5（对账） | plan 仅提到 LibreOffice/xlwings 未来 oracle，未排期 |
+| 工作簿基准检查（#7） | 生成前将已保存的工作簿缓存与实际重算结果比较；尚未实现 |
+| 生成代码等价性 | Step 4 之后对照已接受的工作簿基准单独比较；未来工作 |
 
 ---
 
@@ -125,10 +126,10 @@ excel-to-act step1 vba evaluate .\model.xlsm --out .\controls
 | 0 | `intake-agent` | 识别文件真伪与可解析性，阻断则报 error | `scan_ooxml_package` `OpenpyxlWorkbookReader.read_manifest`（`detect_format`/`decrypt_probe` 目标） | 部分 |
 | **1** | **`decomposition-agent`** | **按内容类型全覆盖分类提取，不做语义判断** | 见下方 Step 1 工具图 | 部分 |
 | **1b** | `completeness-agent` | 独立验证输出是否覆盖输入，产出 handoff | `verify_completeness`、`build_handoff`、`render_handoff_markdown` | 已实现 |
-| 2 | `index-agent` | 为 Step 1 产物建索引与摘要 | `_write_index`（已实现）；`build_index`/`summarize_artifacts` 目标 | 部分 |
+| 2 | `index-agent` | 为 Step 1 handoff 建索引并生成导航摘要 | `src/excel_to_act/steps/step2/workflow.py:build_index` 及其 `_write_index` 已实现，支持 `step1.v1` / `step1.batch.v1`，写入批次 `index.json` 和 `INDEX.md`；独立的 `summarize_artifacts` helper 仍为目标。旧版 `src/excel_to_act/store/local_store.py:LocalArtifactStore._write_index` 写入每工作簿的 `artifact_index.json`。 | 部分（独立摘要 helper 仍为目标） |
 | 3 | `analysis-agent` | 模块分类、域标签、边界确认 | `classify/rules.py`+`classifier.py`、`confirm/templates.py`（已实现） | 部分 |
 | 4 | `generation-agent` | 生成结构化 Python（保留溯源） | `emit_module` / `emit_package`（目标） | 目标 |
-| 5 | `validation-agent` | 多 oracle 数值回归与对账 | `cached_value` / `formulas_oracle` / `libreoffice_oracle`（目标，issue #7） | 目标 |
+| 5 | `validation-agent` | 生成前比较已保存的工作簿缓存与实际重算结果（#7）；Step 4 后另行检查生成代码等价性 | `cached_value`（已实现）；`ValidationReport` 与一个重算适配器（#7 计划）；代码等价性检查（后续目标） | 目标 |
 
 ### Step 1 内部流程
 
@@ -352,7 +353,7 @@ output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
 
 落地约束（写死，避免返工）：
 
-1. 抽出的边**必须写进 `FormulaGraph`**，用 `GraphEdge.relationship = "vba_ref"`，**禁止另造契约或新边类型**——否则 `dependency_graph.json` 出现两套节点空间，Step 5 对账无法闭合
+1. 抽出的边**必须写进 `FormulaGraph`**，用 `GraphEdge.relationship = "vba_ref"`，**禁止另造契约或新边类型**——否则 `dependency_graph.json` 出现两套节点空间，引用关系无法闭合
 2. 字面量匹配会漏：`Cells(r, c)`、`"B" & i` 拼接、经变量/命名区域间接寻址。抽取结果必须带 `confidence`，无法静态确定的记为 `vba_ref_unresolved` 并进 confirmation，不得假装确定性
 
 ### H. 语义信号层
@@ -393,14 +394,9 @@ docProps/*.xml                文档属性（可解析）
 
 Power Pivot 数据模型、透视缓存二进制、图表渲染、嵌入媒体、加密内容、签名。
 
-### K. 已知契约漂移（不属于内容分类，但影响"全覆盖"的可信度）
+### K. 规划词汇与已实现的运行时契约
 
-| 定义来源 | 定义数 | 代码实现 | 差异 |
-|---|---|---|---|
-| `phase1_excel_decomposition_plan.md:67-80` module category | 12 | `schemas/artifacts.py:180-189` 9 个 | 缺 `workbook_meta` / `sheet_structure` / `calculation_chain` / `macro_or_code` |
-| `phase1_excel_decomposition_plan.md:88-97` actuarial hint | 10 | `artifacts.py:192-199` 6 个 | 缺 `expense` / `claim_or_benefit` / `reserve` / `discount_curve` |
-
-已记入 `docs/issues/backlog.md`，本清单不重复展开。
+Phase 1 计划中的模块类别和精算提示列表是提案/规划词汇，并不要求运行时枚举包含这些成员。当前已实现的 `ModuleCategory` 契约有 9 个值（`input`、`data_table`、`formula_block`、`lookup_block`、`output`、`presentation`、`external_dependency`、`unsupported_opaque`、`other`）；已实现的 `ActuarialHint` 契约有 6 个值（`assumption`、`rate_table`、`cashflow`、`projection`、`output`、`unknown`）。定义见 `src/excel_to_act/schemas/artifacts.py:273-292`。计划在 `docs/plans/phase1_excel_decomposition_plan.md:67-80` 列出 12 个拟议模块标签，并在 `docs/plans/phase1_excel_decomposition_plan.md:88-97` 列出 10 个拟议提示标签；这些差异不表示运行时枚举缺少成员。
 
 ---
 
@@ -434,14 +430,14 @@ tests/
 
 ```text
 excel_to_act/
-  src/excel_to_act/          库核心（分层不变；L0-L3 定义待 issue #11）
+  src/excel_to_act/          库核心（分层不变；规范性分层定义见 docs/design/layered_architecture.md）
     interfaces/              CLI + API + agent 入口
     orchestrator/            step 状态机
     plugins/                 可替换工具契约与注册表
     ingest/ inventory/ graph/ classify/ confirm/ store/ report/ schemas/
     tools/                   —— Step 1 工具登记目录（可导入、随包分发）
       step0_intake/  step1_decomposition/  step2_index/ ...
-    validation/              —— Step 5 oracle runners（待 issue #7）
+    validation/              —— 计划检查：生成前 #7 工作簿基准；生成后代码等价性
   agents/                    每步 agent 定义：能力 / 可用 tools / IO 契约
     step1_decomposition.agent.md ...
   skills/                    可安装给外部 agent 的 skill 包
@@ -464,10 +460,10 @@ excel_to_act/
 
 ## 7. Phase 边界
 
-- Step 0–2：只做分解、索引、摘要，**不做语义决策**
-- Step 3（≈ plan Phase 1 的 classify）允许判断"这是什么模块"，且必须可确认、可覆盖（经 `confirm/`）
-- 生成 Python（Step 4）之前必须通过对账（Step 5）
-- 当前 Phase 1 按工作簿与运行 ID 写出七个数据 JSON、`run_metadata.json`、`handoff.md`，并提供根目录别名（见 §3.1）；**不是** §3.2 的分目录布局
+- 人工 Step 1/2 执行源文件分解、索引、确定性视图和证据导航，不做语义判断。旧版 `inspect` 则单独执行启发式分类并生成确认问题。
+- README Step 3 是更广泛的语义分析目标。当前旧版分类只使用[分层架构](docs/design/layered_architecture.md)中定义的运行时枚举，不代表已确认的领域含义。
+- Step 4 生成之前，#7 会将已保存的工作簿基准与独立的实际重算结果比较。Step 4 之后，生成代码等价性是对照工作簿基准的另一项后续检查；目前两项都未实现。
+- 旧版 `inspect` 按工作簿和 run ID 写出 Phase 1 产物（见 §3.1）；人工 Step 1/2 使用独立的源文件与 reading package 契约。两者均未实现 §3.2 的目标目录树。
 
 ## 参见
 
