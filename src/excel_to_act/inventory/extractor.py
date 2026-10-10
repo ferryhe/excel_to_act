@@ -197,10 +197,10 @@ class OpenpyxlInventoryExtractor:
                         kind="table",
                         metadata={
                             "display_name": table.displayName,
+                            "columns": table_columns,
                             "header_row_count": table.headerRowCount,
                             "totals_row_count": totals_row_count,
                             "totals_row_shown": table.totalsRowShown,
-                            "columns": table_columns,
                         },
                     ))
                     recognized += 1

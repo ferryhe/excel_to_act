@@ -55,8 +55,7 @@ _ARTIFACT_FILES = (
     "activex_events.json",
     "vba_handoff.json",
 )
-_SOURCE_METRIC_FIELDS = (
-    "logical_objects_total",
+_SOURCE_METRIC_FIELDS = ("logical_objects_total",
     "logical_objects_accounted",
     "traceability_ratio",
     "parsed_objects_total",
@@ -1651,40 +1650,14 @@ _TOOLS: list[dict[str, Any]] = [
     {"name": "report.handoff", "command": "step1 tool report.handoff --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["fresh human and machine handoff"], "next": ["step1.finalize"]},
     {"name": "step1.auto_recover", "command": "step1 auto-recover --run RUN_DIR --max-attempts 3", "inputs": {"run": "per-source run directory", "max_attempts": "integer from 1 to 3"}, "outputs": ["bounded persisted recovery history and fresh checks"], "next": ["step1.check", "step1.finalize"]},
     {"name": "step1.finalize", "command": "step1 finalize --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["fresh quality report and unique promoted final folder when accepted"], "next": ["step2_index"]},
+    {"name": "step1.report", "command": "step1 report --run FINAL_RUN --out WORKFLOW", "inputs": {"run": "finalized per-source run"}, "outputs": ["full promotion-ledger and source-hash-bound import checkpoint"], "next": ["workflow status", "workflow confirm --stage 1"]},
 ]
 
 
 def tool_catalog() -> dict[str, Any]:
-    return {
-        "tool": "step1.tools",
-        "status": "ok",
-        "source": None,
-        "run_id": None,
-        "coverage_scope": _coverage_scope(),
-        "standalone_control_commands": [
-            {
-                "family": family,
-                "identify": f"step1 {family} identify WORKBOOK",
-                "convert": f"step1 {family} convert WORKBOOK --out DIR [--dry-run]",
-                "evaluate": f"step1 {family} evaluate WORKBOOK --out DIR",
-                "behavior": "Static source inspection and handoff; macros are never executed. Dry run creates and changes no output.",
-            }
-            for family in ("checkbox", "activex", "vba")
-        ],
-        "metrics_contract": {
-            "state_field": "metrics_state",
-            "states": {"measured": "A fresh source scan supplied the current denominators and ratios.", "unavailable": "A fresh source scan could not be validated; source-derived totals, counts, ratios, and deviations are null."},
-            "zero_denominator": "Numeric zero is used only when a fresh scan measured an empty denominator; empty corpora still fail.",
-            "gate": "Unavailable metrics never satisfy thresholds, including thresholds set to zero; source/read blockers prevent finalization.",
-        },
-        "artifacts": [],
-        "metrics": {"tool_count": len(_TOOLS)},
-        "diagnostics": [],
-        "retryable": False,
-        "next_tool": None,
-        "tools": _TOOLS,
-    }
+    from excel_to_act.steps.step1.tools import tool_catalog as catalog
 
+    return catalog()
 
 def _load_run_inventory(run_dir: Path) -> WorkbookInventory:
     return WorkbookInventory.model_validate(_read_json(run_dir / "inventory.json"))

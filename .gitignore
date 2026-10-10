@@ -26,8 +26,7 @@ htmlcov/
 # Current CLI default: excel-to-act inspect <workbook> --out artifacts
 /artifacts/
 
-# Workbooks are never committed (see docs/plans/pr_plan_phase1.md);
-# sanitized fixtures under examples/ are the exception.
+# Keep source workbooks out of version control; curated examples and test fixtures are explicit exceptions.
 *.xlsx
 *.xlsm
 *.xlsb

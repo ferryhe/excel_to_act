@@ -8,6 +8,30 @@ from typer.testing import CliRunner
 from excel_to_act.interfaces.cli import app
 
 
+
+def test_step2_checkpoint_null_metadata_is_unknown_but_keeps_zero_false_and_literal_none() -> None:
+    import copy
+    from excel_to_act.steps.step2.checkpoint import _checkpoint_markdown
+
+    payload = {
+        "status": "pass",
+        "source": {"source_path": None, "run_id": 0, "source_id": "None", "source_sha256": "source-hash"},
+        "index": {"status": None, "path": "index.json", "sha256": "index-hash",
+                  "metrics": {"entries_checked": 0, "artifacts_checked": None, "input_handoff_checked": False}},
+        "selected_entry": {"status": None, "ready_for_next_step": False},
+    }
+    original = copy.deepcopy(payload)
+    front = _checkpoint_markdown(payload, index_link="index.json").split("## Detailed index evidence", 1)[0]
+
+    assert "for `Not recorded`" in front
+    assert "`0`; source ID: `None`" in front
+    assert "Index validation: **Not recorded**" in front
+    assert "ready for next step: **False**" in front
+    assert "Index entries checked: 0; artifacts checked: Not recorded" in front
+    assert "Input handoffs checked: False" in front
+    assert "Python None" not in front
+    assert payload == original
+
 def test_step2_manual_and_named_tool_commands_share_state(tmp_path: Path) -> None:
     root, out = tmp_path / "step1", tmp_path / "index"
     root.mkdir()
@@ -52,6 +76,10 @@ def test_step2_tools_lists_initial_actions() -> None:
         "step2.handoff.resolve",
         "step2.index.build",
         "step2.index.validate",
+        "step2.report",
+        "workflow.status",
+        "workflow.confirm",
+        "workflow.reject",
     ]
 
 
@@ -283,10 +311,12 @@ def test_step2_tools_describe_all_actions_and_real_commands() -> None:
     assert result.exit_code == 0
     tools = json.loads(result.stdout)["tools"]
     assert {item["name"] for item in tools} == {
-        "step2.handoff.resolve", "step2.index.build", "step2.index.validate",
+        "step2.handoff.resolve", "step2.index.build", "step2.index.validate", "step2.report",
+        "workflow.status", "workflow.confirm", "workflow.reject",
     }
-    assert all(item["command"].startswith("step2 tool ") for item in tools)
     assert all(item.get("inputs") and item.get("outputs") and "next" in item for item in tools)
+    assert all(item["command"].startswith("step2 tool ") for item in tools[:3])
+    assert tools[3]["command"].startswith("step2 report ")
     assert tools[0]["next"] == ["step2.index.build"]
     assert tools[1]["next"] == ["step2.index.validate"]
     assert tools[2]["next"] == []

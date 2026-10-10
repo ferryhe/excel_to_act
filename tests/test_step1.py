@@ -252,7 +252,7 @@ def _make_typed_date_book(path: Path) -> Path:
             ET.SubElement(cell, MAIN + "f").text = formula
         if attributes.get("t") == "inlineStr":
             inline = ET.SubElement(cell, MAIN + "is")
-            ET.SubElement(inline, MAIN + "t").text = "文本"
+            ET.SubElement(inline, MAIN + "t").text = "\u6587\u672c"
         elif value is not None:
             ET.SubElement(cell, MAIN + "v").text = value
 
@@ -297,8 +297,8 @@ def _add_phonetic_string_cases(path: Path) -> tuple[bytes, bytes]:
     strings_xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2">\n'
-        "  <si>\n    <t>漢字</t>\n    <rPh sb=\"0\" eb=\"2\"><t>かんじ</t></rPh>\n    <phoneticPr fontId=\"1\"/>\n  </si>\n"
-        "  <si>\n    <r><rPr><b/></rPr><t>漢</t></r>\n    <r><t>字</t></r>\n    <rPh sb=\"0\" eb=\"2\"><t>かんじ</t></rPh>\n    <phoneticPr fontId=\"1\"/>\n  </si>\n"
+        "  <si>\n    <t>\u6f22\u5b57</t>\n    <rPh sb=\"0\" eb=\"2\"><t>\u304b\u3093\u3058</t></rPh>\n    <phoneticPr fontId=\"1\"/>\n  </si>\n"
+        "  <si>\n    <r><rPr><b/></rPr><t>\u6f22</t></r>\n    <r><t>\u5b57</t></r>\n    <rPh sb=\"0\" eb=\"2\"><t>\u304b\u3093\u3058</t></rPh>\n    <phoneticPr fontId=\"1\"/>\n  </si>\n"
         "</sst>"
     ).encode("utf-8")
     replacements: dict[str, bytes] = {}
@@ -318,7 +318,7 @@ def _add_phonetic_string_cases(path: Path) -> tuple[bytes, bytes]:
                 cell.remove(child)
             ET.SubElement(cell, MAIN + "v").text = str(index)
 
-        def inline(address: str, *, rich: bool = False, text: str | None = "漢字", spaces: bool = False) -> None:
+        def inline(address: str, *, rich: bool = False, text: str | None = "\u6f22\u5b57", spaces: bool = False) -> None:
             cell = cells[address]
             cell.attrib["t"] = "inlineStr"
             for child in list(cell):
@@ -328,10 +328,10 @@ def _add_phonetic_string_cases(path: Path) -> tuple[bytes, bytes]:
             if rich:
                 first = ET.SubElement(container, MAIN + "r")
                 ET.SubElement(first, MAIN + "rPr")
-                ET.SubElement(first, MAIN + "t").text = "漢"
+                ET.SubElement(first, MAIN + "t").text = "\u6f22"
                 first.tail = "\n  "
                 second = ET.SubElement(container, MAIN + "r")
-                ET.SubElement(second, MAIN + "t").text = "字"
+                ET.SubElement(second, MAIN + "t").text = "\u5b57"
                 second.tail = "\n  "
             else:
                 body = ET.SubElement(container, MAIN + "t")
@@ -340,7 +340,7 @@ def _add_phonetic_string_cases(path: Path) -> tuple[bytes, bytes]:
                 body.text = text
                 body.tail = "\n  "
             phonetic = ET.SubElement(container, MAIN + "rPh", {"sb": "0", "eb": "2"})
-            ET.SubElement(phonetic, MAIN + "t").text = "かんじ"
+            ET.SubElement(phonetic, MAIN + "t").text = "\u304b\u3093\u3058"
             phonetic.tail = "\n  "
             ET.SubElement(container, MAIN + "phoneticPr", {"fontId": "1"})
             container.tail = "\n  "
@@ -614,7 +614,7 @@ def test_invalid_shared_string_indexes_are_source_errors(tmp_path: Path, index: 
 def test_shared_string_indexes_keep_decimal_whitespace_and_sign_support(tmp_path: Path, index: str) -> None:
     source = _make_shared_string_index_case(tmp_path / "valid.xlsx", index, formula=False)
     scan = scan_step1_source(source)
-    assert next(cell for cell in scan["cells"] if cell["address"] == "A1")["normalized_value"] == "漢字"
+    assert next(cell for cell in scan["cells"] if cell["address"] == "A1")["normalized_value"] == "\u6f22\u5b57"
 
 
 def test_shared_string_index_zero_and_mixed_batch_failure_are_handled_truthfully(tmp_path: Path) -> None:
@@ -645,8 +645,8 @@ def test_shared_string_index_zero_and_mixed_batch_failure_are_handled_truthfully
     good_run = output / entries["valid.xlsx"]["run_path"]
     valid_facts = _read(good_run / "source_facts.json")
     fact_cells = {cell["address"]: cell for cell in valid_facts["cells"]}
-    assert fact_cells["A1"]["normalized_value"] == "漢字"
-    assert fact_cells["A2"]["normalized_cached_value"] == "漢字"
+    assert fact_cells["A1"]["normalized_value"] == "\u6f22\u5b57"
+    assert fact_cells["A2"]["normalized_cached_value"] == "\u6f22\u5b57"
     assert fact_cells["A2"]["cached_text"] == "0"
 
 
@@ -668,7 +668,7 @@ def test_date_serial_requires_numeric_source_type_and_raw_number(tmp_path: Path)
     assert source_cells["C1"]["number_format"] == "yyyy-mm-dd"
     assert source_cells["C1"]["date_serial_text"] is None
     assert source_cells["D1"]["normalized_value"] == "2024-01-02T00:00:00"
-    assert source_cells["E1"]["normalized_value"] == "文本"
+    assert source_cells["E1"]["normalized_value"] == "\u6587\u672c"
     assert source_cells["F1"]["normalized_value"] is True
     assert source_cells["G1"]["raw_value_text"] == "45293"
     assert source_cells["G1"]["date_serial_text"] == "45293"
@@ -705,7 +705,7 @@ def test_date_serial_requires_numeric_source_type_and_raw_number(tmp_path: Path)
 def test_directory_order_ties_have_stable_entries_handoff_and_next_tool(tmp_path: Path) -> None:
     raw = tmp_path / "tie-raw"
     raw.mkdir()
-    paths = [raw / "SS.xlsx", raw / "ß.xlsx"]
+    paths = [raw / "SS.xlsx", raw / "\u00df.xlsx"]
     for index, path in enumerate(paths):
         workbook = Workbook()
         workbook.active["A1"] = f"source {index}"
@@ -725,7 +725,7 @@ def test_directory_order_ties_have_stable_entries_handoff_and_next_tool(tmp_path
 
     forward = convert_in_order(paths, tmp_path / "out-forward")
     reverse = convert_in_order(list(reversed(paths)), tmp_path / "out-reverse")
-    expected_order = ["SS.xlsx", "ß.xlsx"]
+    expected_order = ["SS.xlsx", "\u00df.xlsx"]
     assert [entry["relative_path"] for entry in forward["entries"]] == expected_order
     assert [entry["relative_path"] for entry in reverse["entries"]] == expected_order
     assert forward["next_tool"]["name"] == reverse["next_tool"]["name"] == "step1.check"
@@ -750,12 +750,12 @@ def test_visible_shared_and_inline_text_ignores_phonetics_and_preserves_raw_xml(
     facts = _read(run / "source_facts.json")
     values = {cell["address"]: cell for cell in facts["cells"]}
     assert [values[f"A{row}"]["normalized_value"] for row in range(1, 7)] == [
-        "漢字", "漢字", "漢字", "漢字", "  spacing  ", ""
+        "\u6f22\u5b57", "\u6f22\u5b57", "\u6f22\u5b57", "\u6f22\u5b57", "  spacing  ", ""
     ]
     assert values["A1"]["raw_value_text"] == "0"
     assert values["A2"]["raw_value_text"] == "1"
-    assert values["A3"]["inline_string_text"].count("かんじ") == 1
-    assert values["A4"]["inline_string_text"].count("かんじ") == 1
+    assert values["A3"]["inline_string_text"].count("\u304b\u3093\u3058") == 1
+    assert values["A4"]["inline_string_text"].count("\u304b\u3093\u3058") == 1
     assert values["A3"]["raw_value_text"] is None
 
     assert values["D2"]["raw_formula_text"] == "B2*2"
@@ -771,7 +771,7 @@ def test_visible_shared_and_inline_text_ignores_phonetics_and_preserves_raw_xml(
 
     inventory = _read(run / "inventory.json")
     inventory_cell = next(cell for cell in inventory["sheets"][0]["cells"] if cell["address"] == "A1")
-    inventory_cell["value"] = "漢字かんじ"
+    inventory_cell["value"] = "\u6f22\u5b57\u304b\u3093\u3058"
     _write(run / "inventory.json", inventory)
     broken = execute_tool("step1.check", run)
     assert broken["status"] == "fail"

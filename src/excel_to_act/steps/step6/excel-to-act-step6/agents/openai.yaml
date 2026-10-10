@@ -1,0 +1,4 @@
+interface:
+  display_name: "Excel-to-Act Step 6"
+  short_description: "Draft and review Step 6 model conversion reports"
+  default_prompt: "Use $excel-to-act-step6 to prepare or review a source-grounded Step 6 model conversion report."

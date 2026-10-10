@@ -32,4 +32,4 @@ Example shared source fields:
 
 The runnable examples in `tests/test_views.py` include three valid claims (fact, derivation, and unverified), an opaque report without a guessed value, and invalid cases for missing `source_location`, unknown `view_id`, wrong run, and missing record. The view compiler retains full cross-sheet graph targets and unresolved-reference diagnostics. Consumers must not turn cross-sheet targets into local edges or infer opaque details.
 
-The #11 layer boundary needed here is small: L1 supplies deterministic source facts plus identity and location; a downstream reader may cite those facts or label its own derivation/unverified conclusion. This contract does not define semantic interpretation or numerical verification.
+The layer boundary is small: deterministic views supply source facts plus identity and location; a downstream reader may cite those facts or label its own derivation/unverified conclusion. This contract does not define semantic interpretation or numerical verification.

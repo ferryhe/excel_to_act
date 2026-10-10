@@ -171,7 +171,10 @@ class RegexFormulaGraphBuilder:
                         if cell.row == min_row and min_col <= cell.column <= max_col and cell.value is not None
                     ]
                     if len(header_cells) == width and all(header for header in header_cells):
-                        headers = header_cells
+                        # A single declared header row is supporting field evidence;
+                        # validated table-column metadata remains preferred.
+                        if not headers:
+                            headers = header_cells
                 except (ValueError, StopIteration):
                     pass
             if column and headers and column.casefold() not in {str(header).casefold() for header in headers}:
@@ -187,6 +190,7 @@ class RegexFormulaGraphBuilder:
                 source_location=table.source_location,
                 metadata={
                     "structured_reference": operand,
+                    "current_row": current_row,
                     "table": table.name,
                     "table_ref": table.address,
                     "sheet": table.source_location.sheet_name,

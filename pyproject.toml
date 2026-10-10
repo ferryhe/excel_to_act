@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 # License-sensitive extras are kept separate: never bundle EUPL/GPL-ish packages
-# with permissive ones behind a single opt-in (see docs/issues/backlog.md #9).
+# with permissive ones behind a single opt-in (see docs/design/decision_default_dependency_licenses.md).
 [project.optional-dependencies]
 vba = [
   "oletools>=0.60.2",  # BSD-3; olevba extracts xl/vbaProject.bin, XLM, DDE
@@ -45,6 +45,15 @@ where = ["src"]
 [tool.setuptools.package-data]
 "excel_to_act.steps.step1" = ["agent.md"]
 "excel_to_act.steps.step2" = ["agent.md"]
+"excel_to_act.steps.step3" = ["agent.md"]
+"excel_to_act.steps.step4" = ["agent.md"]
+"excel_to_act.steps.step5" = ["agent.md", "native_excel_oracle.ps1"]
+"excel_to_act.steps.step6" = [
+  "agent.md",
+  "excel-to-act-step6/SKILL.md",
+  "excel-to-act-step6/assets/conversion_report.md",
+  "excel-to-act-step6/agents/openai.yaml",
+]
 
 [tool.ruff]
 line-length = 100
