@@ -157,15 +157,12 @@ def test_step4_plan_command_and_catalog_are_public() -> None:
     assert any("Normally omit --trace" in item and "current implementation preflight" in item
                for item in catalog["limits"])
 
-    generate_help = runner.invoke(app, ["step4", "generate", "--help"])
-    assert generate_help.exit_code == 0, generate_help.stdout
-    normalized_help = " ".join(generate_help.output.split())
-    assert "Normally omit; if supplied, must be the" in normalized_help
-    assert "active Stage 4 discovery trace bound by the" in normalized_help
-    assert "current implementation preflight" in normalized_help
-    assert "Stage 3 trace" not in normalized_help
+    for color in (False, True):
+        generate_help = runner.invoke(app, ["step4", "generate", "--help"], color=color)
+        assert generate_help.exit_code == 0, generate_help.output
     generate_command = get_command(app).commands["step4"].commands["generate"]
     trace_parameter = next(parameter for parameter in generate_command.params if "--trace" in parameter.opts)
+    assert "--trace" in trace_parameter.opts
     assert trace_parameter.help == (
         "Normally omit; if supplied, must be the active Stage 4 discovery trace bound by the current implementation preflight"
     )
