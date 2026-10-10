@@ -1,4 +1,4 @@
-# Reviewed Conversion Workflow: Steps 1–6
+# CLI guide for the six-stage conversion workflow
 
 This guide describes the current six-stage CLI. Each stage writes a JSON artifact and a Markdown report. By default, each stage requires a separate Agent and human decision for the current report pair; an explicitly authorized TypeSafe review may replace the human reviewer for eligible later design and Stages 4–6. The Step 3 input-catalog subgate always requires an actual Agent and human decision, regardless of delegation. A TypeSafe receipt may be retained as a separate recommendation but cannot approve or reject that subgate. A human decision must come from an explicit user response. Do not create a receipt from an assumption, an earlier approval, or a synthetic test.
 

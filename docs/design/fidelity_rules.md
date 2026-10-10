@@ -1,8 +1,8 @@
 # Workbook inventory fidelity rules
 
-## Status
+## Contract
 
-Raw OOXML collection is already implemented and covered by the existing Step 1 tests. This issue completes the field rules, exported schema, and old-artifact readback check. It does not change collection.
+These rules define how workbook source facts are retained alongside normalized inventory fields. They apply to extraction, persisted artifacts, and readers of both current and older inventory records.
 
 ## Field rules
 

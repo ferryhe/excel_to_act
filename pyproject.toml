@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 # License-sensitive extras are kept separate: never bundle EUPL/GPL-ish packages
-# with permissive ones behind a single opt-in (see docs/issues/backlog.md #9).
+# with permissive ones behind a single opt-in (see docs/design/decision_default_dependency_licenses.md).
 [project.optional-dependencies]
 vba = [
   "oletools>=0.60.2",  # BSD-3; olevba extracts xl/vbaProject.bin, XLM, DDE

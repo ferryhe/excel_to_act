@@ -59,4 +59,4 @@ $BUNDLE = "output/WORKFLOW/stage4/bundles/revision-NNNN/bundle"
 python "$BUNDLE/model.py" --out "output/result.json"
 ```
 
-See the [six-step workflow](docs/plans/step3_step6_workflow.md), [generic Agent contracts](docs/design/generic_agent_contracts.md), [report contract](docs/design/model_conversion_report.md), and [Step 3 CLI guide](docs/step3_cli.md). Source workbooks and run evidence under `input/` and `output/` are local data. The README pair is bilingual; other authored project documentation is in English.
+See the [six-step workflow](docs/workflow.md), [CLI guide](docs/cli.md), [generic Agent contracts](docs/design/generic_agent_contracts.md), [result-driven analysis guide](docs/design/result_driven_analysis.md), and [report contract](docs/design/model_conversion_report.md). Source workbooks and run evidence under `input/` and `output/` are local data. The README pair is bilingual; other authored project documentation is in English.

@@ -4,7 +4,7 @@
 
 An agent should decompose a workbook once, verify the resulting facts, and then explore progressively through small evidence packets. Step 1 supplies source facts. Step 2 makes those facts accessible and preserves the approved scope. Step 3 interprets business behavior. Runtime observation and numerical reconciliation supply additional evidence when behavior depends on calculation or macros.
 
-The three Step 2 reading commands, `prepare`, `query` and `trace`, reuse extraction, indexing, views and graph code. The `views validate` command can validate evidence packets. Human and machine handoffs are generated together from the same validated inputs. These tools do not add a formula engine, general agent orchestration framework, or complete VBA parser.
+The Step 2 reading commands `prepare`, `query` and `trace` reuse extraction, indexing, views and graph code. `views validate` checks evidence packets. Human and machine handoffs are generated together from the same validated inputs. These tools do not add a formula engine, general agent orchestration framework, or complete VBA parser.
 
 ## Requirements
 
@@ -13,22 +13,20 @@ The three Step 2 reading commands, `prepare`, `query` and `trace`, reuse extract
 3. Carry user scope decisions and read-only dependencies into both human and machine handoffs.
 4. Preserve the distinction between source facts, static dependencies, interpretations and observed runtime results.
 5. Support progressive exploration of workbook structures such as controls and VBA entry points when present.
-6. Produce a concrete design that an independent subagent can review against current code and these requirements.
+6. Produce a concrete design that an independent reviewer can check against current code and these requirements.
 
-## Current capabilities and gaps
+## Current capabilities and limits
 
-The current runtime already has useful foundations. The missing layer is the repeatable reading workflow around them.
-
-| Capability | Current behavior | Workflow contract |
+| Capability | Current behavior | Reusable reading rule |
 | --- | --- | --- |
-| Step 1 extraction | Directory conversion, raw source facts, inventory, package preservation and independent checks | Retain the existing gates; add a concise agent continuation section to generated handoffs |
-| Control modules | Separate checkbox, ActiveX and VBA identify, convert and evaluate CLI groups; conversion supports dry-run | Expose these as discoverable module capabilities and reference their existing artifacts in reading packets |
-| Step 2 index | Source and batch handoff resolution, reference validation, bounded recovery and resume | Prepare a scope-aware reading bundle without changing source accounting |
-| L1 views | Workbook, sheet and recorded-region views; stable record IDs, chunks and source locations | Write separately addressable view files and return selected records without loading every view |
-| Formula graph | Static cell references, named references and supported table references; unresolved diagnostics | Bounded traversal plus literal name/range expansion and explicit incomplete results |
-| VBA evidence | Readable module sources, declared procedures, event associations and optional literal cell links | Query individual modules and expose unresolved dynamic targets; semantic workflow interpretation remains Step 3 |
-| Agent claims | Facts must exactly match supplied view records; derivations and unverified statements have separate labels | Validate claims against the actual delivered packet and its canonical source views |
-| Scoped AI handoffs | Human and machine packets are bound to the checked source, selected scope and reading manifest | Keep both handoffs consistent with validated source, scope and reading evidence |
+| Step 1 extraction | Directory conversion records raw facts, inventories, preserved package parts and fresh quality checks | Use the finalized source-bound handoff; keep optional graph and classification artifacts outside the factual quality gate |
+| Control modules | Checkbox, ActiveX and VBA tool groups identify, convert and evaluate supported records; conversion supports dry-run | Treat links and event associations as static declarations; use their bound artifacts and do not claim execution |
+| Step 2 index | Source and batch handoff resolution, reference validation, bounded recovery and resume | Preserve every source entry and its diagnostics; prepare a scope-bound reading bundle without changing source accounting |
+| L1 views | Workbook, sheet and recorded-region views have stable record IDs, chunks and source locations | Read selected views and complete records; do not infer unrecorded cells or business meaning from layout |
+| Formula graph | Static cell, name and supported table references with unresolved diagnostics | Trace supported references within explicit bounds and report frontiers or unresolved edges |
+| VBA evidence | Readable module sources, declared procedures, event associations and optional literal cell links | Query module evidence as needed; dynamic targets and runtime behavior remain unresolved without separate evidence |
+| Agent claims | Facts must exactly match supplied view records; derivations and unverified statements have separate labels | Validate claims against the delivered packet and its canonical source views |
+| Paired handoffs | Human and machine packets bind to the checked source, selected scope and reading manifest | Keep both handoffs consistent with validated source, scope and reading evidence |
 
 Primary implementation references:
 
@@ -44,7 +42,7 @@ Primary implementation references:
 
 The Step 2 index deliberately labels any non-empty usable index `partial`. `validation_status: pass` is the reference-integrity result. Preparation must not interpret the index usability label as a numerical or semantic assessment.
 
-## Fixed progression
+## Reference reading progression
 
 | Stage | Agent action | Evidence produced | Condition for continuing |
 | --- | --- | --- | --- |
@@ -58,13 +56,13 @@ The Step 2 index deliberately labels any non-empty usable index `partial`. `vali
 | 8 Semantic analysis | Describe the retained workflow and ask bounded TypeSafe questions where useful | Source-cited interpretations, module specifications and open questions | Step 3 conclusions remain reviewable and separated from facts |
 | 9 Independent review | Review the specifications and evidence; request missing packets through the same tools | Review findings tied to task requirements | Accepted findings are resolved and reviewed before downstream implementation |
 
-These are fixed stages, not a requirement to run every parser for every workbook. A workbook without VBA skips VBA interpretation. Opaque structures are prioritized by their relevance to a retained path. Excluded checkbox repairs do not enter the current conversion queue.
+This is a reusable evidence progression, not a requirement to run every parser for every workbook. A workbook without VBA skips VBA interpretation. Prioritize opaque structures by their relevance to the requested workflow and confirmed scope; preserve unsupported or excluded structures as limits rather than silently adding them to downstream work.
 
 ## CLI surface
 
-### Commands retained
+### Current command groups
 
-Keep `step1 tools`, `step1 agent`, `step1 convert`, `step1 check`, `step1 coverage`, `step1 fidelity`, `step1 finalize`, the recovery tools, all nine control-module commands, `step2 index`, `step2 validate`, `step2 tools`, `step2 agent`, `views compile` and `views validate`.
+The current CLI exposes `step1 tools`, `step1 agent`, `step1 convert`, `step1 check`, `step1 coverage`, `step1 fidelity`, `step1 finalize`, recovery tools, and separate identify/convert/evaluate groups for checkbox, ActiveX and VBA records. Step 2 exposes `index`, `validate`, `prepare`, `query`, `trace`, `report`, `tools`, and `agent`; `views compile` and `views validate` remain available for direct view workflows.
 
 Step 1 continues to scan the full source. Scope decisions affect downstream work, not extraction denominators. Existing `step1.v1` and `step1.batch.v1` handoffs remain the native inputs to indexing. The companion `ai.task_handoff.v1` is an agent reading contract and is not passed to the current native index parser.
 
@@ -98,7 +96,7 @@ If a required native source artifact is missing or changed, preparation blocks. 
 excel-to-act step2 query --manifest MANIFEST --source-id SOURCE --kind KIND [--target TARGET] [--sheet SHEET] [--range A1_RANGE] [--budget N] [--cursor CURSOR] [--out PACKET]
 ```
 
-Supported initial kinds are `overview`, `sheet`, `cell`, `range`, `name`, `control`, `vba` and `feature`.
+Supported query kinds are `overview`, `sheet`, `cell`, `range`, `name`, `control`, `vba` and `feature`.
 
 - `overview` lists source sheets, retained/excluded status, counts, available evidence and entry-point candidates from actual controls and VBA declarations.
 - `sheet` returns a mechanical overview and a bounded first page, not every cell on the sheet.
@@ -130,7 +128,7 @@ excel-to-act step2 trace --manifest MANIFEST --source-id SOURCE --kind KIND --ta
 
 The first trace targets are cells, ranges and defined names. Upstream means dependencies of the selected target; downstream means consumers. Existing formula edges run from the formula cell to its referenced input, so these meanings must be mapped deliberately rather than assuming conventional graph direction.
 
-The current graph ends at many name or range nodes. A usable trace must resolve unambiguous absolute A1 name destinations and relate referenced ranges to their stored members within the limits. Formula members can then continue the traversal. These added resolution relations are derived structural relations with declaration/operand evidence; they are not new source formula edges. Constant names can be terminal values. Relative, dynamic, external or unsupported multi-area definitions remain explicit unresolved boundaries.
+Trace resolves supported unambiguous absolute A1 name destinations and relates referenced ranges to their stored members within the limits. Formula members can continue the traversal. These resolution relations are derived structural relations with declaration/operand evidence; they are not source formula edges. Constant names can be terminal values. Relative, dynamic, external or unsupported multi-area definitions remain explicit unresolved boundaries.
 
 Reverse traversal must also find a selected cell referenced through a containing range or a resolved name. Returning an empty consumer list after checking only exact cell-node edges would give an incomplete answer without saying so.
 
@@ -138,19 +136,19 @@ The traversal tracks visited identities, honors depth/node/edge limits, reports 
 
 Literal VBA references may be attached as evidence when available. They do not establish read/write direction, execution order or a complete call graph. Expressions such as `Range(Var1)` are unresolved dynamic targets. Interpretation of their possible values and workflow belongs to Step 3; the current literal extractor must not label them resolved automatically.
 
-### Extend existing validation
+### Citation validation
 
 ```text
 excel-to-act views validate --views EVIDENCE_PACKET --output CLAIMS
 ```
 
-Keep support for the existing list-of-views format. Add normalization of the new packet envelope. Packet validation verifies its canonical view references and exact selected records before using the existing `validate_agent_output` rules. Only records actually delivered to the agent are eligible citations; a record elsewhere in the workbook is not automatically permitted.
+The validator supports the list-of-views format and the evidence-packet envelope. It verifies canonical view references and exact selected records before applying `validate_agent_output` rules. Only records delivered to the Agent are eligible citations; a record elsewhere in the workbook is not automatically permitted.
 
 Facts retain the complete `facts` object and `SourceLocation`. A proposed interpretation remains a derivation or unverified claim. Passing this check establishes source citation consistency, not the correctness of the business interpretation or numerical result. Validation failure produces a structured diagnostic and a non-zero CLI exit.
 
 ### Canonical control records
 
-Preparation must extend the view compiler to read the native index's checked `checkbox_bindings.json` and `activex_events.json` references. It validates their file hashes, typed models and workbook identity, then creates one `ViewRecord` per typed binding/control using the existing deterministic record helper. The record kinds are `checkbox_binding` and `activex_event`. Their `facts` are the complete serialized `CheckboxBinding` or `ActiveXControl`, including the binding status and explicit source parts. Existing inventory control records remain available; new reading records do not add objects to Step 1's logical accounting denominator.
+Preparation reads the native index's checked `checkbox_bindings.json` and `activex_events.json` references. It validates their file hashes, typed models and workbook identity, then creates one `ViewRecord` per typed binding/control using the deterministic record helper. The record kinds are `checkbox_binding` and `activex_event`. Their `facts` are the complete serialized `CheckboxBinding` or `ActiveXControl`, including binding status and explicit source parts. Existing inventory control records remain available; reading records do not add objects to Step 1's logical accounting denominator.
 
 Each canonical record belongs to its owner's sheet view. Its `SourceLocation` uses the recorded owner sheet, sheet part, shape identity and package-part fields, together with the validated source manifest. The binding/control object has no synthesized A1 address: its linked cell is a target in `facts`, not the control's source location. If an existing inventory source identity can be matched unambiguously, preserve it; otherwise use a stable declared control identity based on record kind, worksheet part and shape ID. Missing source metadata produces an explicit unavailable-provenance diagnostic rather than a guessed location.
 
@@ -176,7 +174,7 @@ reading/
 
 The source extraction artifacts and exported VBA files remain referenced instead of being copied again. Native source and promotion reports remain unchanged. A scope revision produces a new preparation revision; it does not edit checksum-bound final files or alter source measurements.
 
-The manifest stores source/run identity, native index hash, scope hash, compiler version/options, per-view hashes and compact lookup entries. Reuse existing `WorkbookView`, `ViewRecord`, `SourceLocation` and graph models. Add a typed scope and handoff/packet envelope only where the current ad hoc structures need validation. A file-backed manifest and per-view JSON are sufficient initially; a database is justified only by measured query costs.
+The manifest stores source/run identity, native index hash, scope hash, compiler version/options, per-view hashes and compact lookup entries. The typed scope and handoff/packet contracts validate their inputs and references. The current reading bundle uses a file-backed manifest and per-view JSON with the existing `WorkbookView`, `ViewRecord`, `SourceLocation` and graph models.
 
 Compile and parse the source inventory once per preparation revision. Persist the already-built graph rather than building it again for each trace. A query loads only the required view files and verifies their hashes against the bound manifest; it does not reload unrelated views for every question.
 
@@ -201,11 +199,11 @@ All reader commands return structured status, identity, metrics, diagnostics and
 
 Tool catalogues list implemented capabilities only. The Step 2 catalog's `reader_commands` section lists prepare/query/trace and references the view validator. Recovery-dispatch entries and their attempt history remain separate. Ordinary queries, cursor pages and traces do not consume the indexing recovery attempts.
 
-## Proposed agent instructions
+## Reusable agent instructions
 
 ### Step 1 agent
 
-Retain the existing source-fidelity and recovery instructions. Add these continuation requirements when the new reading workflow is available:
+Use the source-fidelity and recovery instructions in the packaged Step 1 Agent contract. When preparing a source handoff:
 
 1. Read the live tool catalogue and use the declared module commands. Extract facts from the full source without inferring business scope.
 2. Keep raw source fields authoritative. Separate missing caches, invalid links, preserved opaque parts and unsupported parsing from successful facts.

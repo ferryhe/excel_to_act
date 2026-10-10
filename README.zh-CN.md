@@ -59,4 +59,4 @@ $BUNDLE = "output/WORKFLOW/stage4/bundles/revision-NNNN/bundle"
 python "$BUNDLE/model.py" --out "output/result.json"
 ```
 
-参见[六步工作流](docs/plans/step3_step6_workflow.md)、[通用 Agent 约定](docs/design/generic_agent_contracts.md)、[报告约定](docs/design/model_conversion_report.md)和[Step 3 CLI 指南](docs/step3_cli.md)。`input/` 和 `output/` 下的源工作簿及运行证据属于本地数据。根目录 README 中英文版本为双语；其他作者编写的项目文档为英语。
+参见[六步工作流](docs/workflow.md)、[CLI 指南](docs/cli.md)、[通用 Agent 约定](docs/design/generic_agent_contracts.md)、[结果驱动分析指南](docs/design/result_driven_analysis.md)和[报告约定](docs/design/model_conversion_report.md)。`input/` 和 `output/` 下的源工作簿及运行证据属于本地数据。根目录 README 中英文版本为双语；其他作者编写的项目文档为英语。

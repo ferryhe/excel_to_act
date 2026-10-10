@@ -1,6 +1,6 @@
 # Step 2: Prepared Exploration
 
-Prepare → overview → small query → bounded trace → citation validation → Step 3 interpretation → fresh independent review. See [the exploration specification](../../../../docs/design/step2_trace_exploration.md) for the fixture/Pricing walkthrough and review instructions.
+Prepare → overview → targeted query → bounded trace → citation validation → Step 3 interpretation → fresh independent review. See [the progressive exploration contract](../../../../docs/design/progressive_excel_exploration.md) for current query, trace, scope, and evidence limits.
 
 ```text
 excel-to-act step2 trace --manifest MANIFEST --source-id SOURCE --kind cell|range|name --target TARGET [--sheet SHEET] --direction upstream|downstream|both [--max-depth N] [--max-nodes N] [--max-edges N] [--out PACKET]

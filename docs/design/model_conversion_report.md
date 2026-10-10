@@ -1,6 +1,6 @@
 # Step 6 model-conversion report contract
 
-Each primary stage checkpoint produces paired machine-readable JSON and a human-readable Markdown handover. Step 6 produces the final conversion pair. JSON keeps the accepted source facts, decisions, input files, coverage, comparison values, and original Step 3 questions; this change does not alter report schemas.
+Each primary stage checkpoint produces paired machine-readable JSON and a human-readable Markdown handover. Step 6 produces the final conversion pair. JSON keeps accepted source facts, decisions, input files, coverage, comparison values, and original Step 3 questions. The existing report schema and workflow ledger remain authoritative for their respective evidence.
 
 The reusable writing and review scaffold is packaged as the [Excel-to-Act Step 6 skill](../../src/excel_to_act/steps/step6/excel-to-act-step6/SKILL.md), with its report template in the skill's `assets/` folder. The CLI renderer remains the source of generated report structure and evidence.
 

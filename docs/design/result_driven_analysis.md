@@ -1,4 +1,4 @@
-# Step 3: Result-driven analysis and design
+# Result-driven analysis and design
 
 Step 3 starts from declared outputs and scenario scope, then traces the required calculations backward through current source-bound evidence. Use the current workflow's targets, inputs, equation families, axes, recurrences, and implementation boundaries. This document gives reusable analysis guidance; it contains no workbook-specific values or acceptance conclusions.
 
@@ -11,7 +11,7 @@ Step 3 starts from declared outputs and scenario scope, then traces the required
 5. Record alternatives, external-input boundaries, known-only coverage, unresolved interpretations, and validation work. Keep planned, generated, smoke-tested and Excel-compared results separate.
 6. Prepare the paired `analysis_design.json/.md`, check its source bindings and evidence, and hand it to the Agent and human review gates.
 
-The Step 3 CLI supports source preparation, field and dependency summaries, source queries and traces, source-candidate profiles, structural planning and checks. The [CLI guide](../step3_cli.md) describes current commands and data contracts. These tools navigate and validate evidence; they do not calculate formulas or establish Excel equivalence.
+The Step 3 CLI supports source preparation, field and dependency summaries, source queries and traces, source-candidate profiles, structural planning and checks. The [CLI guide](../cli.md) describes current commands and data contracts. These tools navigate and validate evidence; they do not calculate formulas or establish Excel equivalence.
 
 ## Target and path model
 
