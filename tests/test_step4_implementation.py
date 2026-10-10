@@ -5,9 +5,9 @@ import json
 from pathlib import Path
 
 import pytest
-from click import unstyle
 from openpyxl import Workbook
 from typer.testing import CliRunner
+from typer.main import get_command
 
 from excel_to_act.interfaces.cli import app
 from excel_to_act.steps.step3.calculation import CalculationBlocked
@@ -141,7 +141,8 @@ def test_step4_plan_command_and_catalog_are_public() -> None:
     runner = CliRunner()
     help_result = runner.invoke(app, ["step4", "plan", "--help"])
     assert help_result.exit_code == 0, help_result.stdout
-    assert "--implementation" in unstyle(help_result.stdout)
+    plan_command = get_command(app).commands["step4"].commands["plan"]
+    assert any("--implementation" in parameter.opts for parameter in plan_command.params)
 
     catalog_result = runner.invoke(app, ["step4", "tools"])
     assert catalog_result.exit_code == 0, catalog_result.stdout
