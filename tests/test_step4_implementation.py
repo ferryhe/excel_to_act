@@ -150,6 +150,25 @@ def test_step4_plan_command_and_catalog_are_public() -> None:
     tool = next(item for item in catalog["tools"] if item["name"] == "step4.plan")
     assert tool["command"] == "step4 plan --workflow DIR --implementation INPUT.json"
     assert any("does not approve or advance Stage 4" in item for item in catalog["limits"])
+    generation = next(item for item in catalog["tools"] if item["name"] == "step4.generate")
+    assert "modular standalone Python bundle" in generation["outputs"]
+    assert "[--trace CURRENT_PREFLIGHT_TRACE.json]" in generation["command"]
+    assert any("emits modular bundles only" in item for item in catalog["limits"])
+    assert any("Normally omit --trace" in item and "current implementation preflight" in item
+               for item in catalog["limits"])
+
+    generate_help = runner.invoke(app, ["step4", "generate", "--help"])
+    assert generate_help.exit_code == 0, generate_help.stdout
+    normalized_help = " ".join(generate_help.output.split())
+    assert "Normally omit; if supplied, must be the" in normalized_help
+    assert "active Stage 4 discovery trace bound by the" in normalized_help
+    assert "current implementation preflight" in normalized_help
+    assert "Stage 3 trace" not in normalized_help
+    generate_command = get_command(app).commands["step4"].commands["generate"]
+    trace_parameter = next(parameter for parameter in generate_command.params if "--trace" in parameter.opts)
+    assert trace_parameter.help == (
+        "Normally omit; if supplied, must be the active Stage 4 discovery trace bound by the current implementation preflight"
+    )
 
 
 def test_implementation_plan_json_roundtrip_binds_the_external_capture_path(tmp_path: Path) -> None:

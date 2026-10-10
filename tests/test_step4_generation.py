@@ -7,7 +7,6 @@ import pytest
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 from openpyxl.workbook.defined_name import DefinedName
-from openpyxl.worksheet.formula import ArrayFormula
 
 from excel_to_act.steps.conversion_workflow import (
     append_stage_artifact,
@@ -15,14 +14,12 @@ from excel_to_act.steps.conversion_workflow import (
     load_workflow,
     record_decision,
 )
-from excel_to_act.steps.step4 import discover_active_trace, generate_model
-from excel_to_act.steps.step4.generator import _ordered_active_addresses
+from excel_to_act.steps.step4 import generate_model
 from excel_to_act.steps.step4.discovery import (
     _approved_stored_empty_addresses,
     _cell_key,
     _record_external_override,
 )
-from excel_to_act.steps.step5 import validate_generated
 from excel_to_act.steps.step5.workflow import _copy_bundle_files, _verify_python
 
 
@@ -31,8 +28,7 @@ def _approve(workflow_dir: Path, stage: int) -> None:
         record_decision(workflow_dir, stage, reviewer, "approve", f"Synthetic fixture review for stage {stage}.")
 
 
-def _approved_gp_workflow(tmp_path: Path, *, array_formula: bool = False,
-                          formula_text: str | None = None) -> tuple[Path, Path]:
+def _approved_gp_workflow(tmp_path: Path) -> tuple[Path, Path]:
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     source_path = source_dir / "model.xlsx"
@@ -42,11 +38,8 @@ def _approved_gp_workflow(tmp_path: Path, *, array_formula: bool = False,
     main["A1"] = 3
     main["A2"] = 4
     premium = workbook.create_sheet("Premium")
-    formula = formula_text or ("=TRANSPOSE(Main!A1:A2)" if array_formula else "=Main!A1*2")
-    if array_formula:
-        premium["J1"] = ArrayFormula(ref="J1:K1", text=formula)
-    else:
-        premium["J1"] = formula
+    formula = "=Main!A1*2"
+    premium["J1"] = formula
     workbook.defined_names.add(DefinedName("GP", attr_text="'Premium'!$J$1"))
     workbook.save(source_path)
     workbook.close()
@@ -141,52 +134,64 @@ def test_external_override_keys_match_casefolded_trace_membership() -> None:
         _record_external_override(overrides, "qTaBlE!w5", {"value": 0.5})
 
 
-def test_generated_active_addresses_follow_formula_completion_order() -> None:
-    trace = {"completion_order": ["Main!A1", "Premium!J1", "Main!B1"]}
-    assert _ordered_active_addresses(trace, ["Main!B1", "Premium!J1"]) == ["Premium!J1", "Main!B1"]
-
-
-def test_discovery_generation_smoke_and_stage5_isolated_validation(tmp_path: Path) -> None:
+def test_incomplete_accepted_design_cannot_create_legacy_bundle_or_advance_stage4(tmp_path: Path) -> None:
     workflow_dir, source_path = _approved_gp_workflow(tmp_path)
+    before = (workflow_dir / "workflow.json").read_bytes()
+    _, before_manifest = load_workflow(workflow_dir)
+    before_revisions = list(before_manifest["stages"]["4"]["revisions"])
+    stage3 = before_manifest["stages"]["3"]["revisions"][-1]
+    stage3_json = workflow_dir / stage3["artifact"]["json"]
+    stage3_md = workflow_dir / stage3["artifact"]["md"]
+    stage3_hashes = (hashlib.sha256(stage3_json.read_bytes()).hexdigest(),
+                     hashlib.sha256(stage3_md.read_bytes()).hexdigest())
 
-    discovery = discover_active_trace(workflow_dir)
-    assert discovery["status"] == "pass", discovery
-    assert discovery["target_values"]["T_GP"]["value"] == 6
-    assert discovery["native_excel_called"] is False
-    assert discovery["formula_cache_inputs"] is False
+    result = generate_model(workflow_dir, tmp_path / "missing-trace.json")
 
-    generated = generate_model(workflow_dir)
-    assert generated["status"] == "pass", generated
-    assert generated["counts"]["formula_count"] == 1
-    bundle = Path(generated["bundle"]["path"])
-    assert bundle.is_relative_to(workflow_dir / "stage4" / "bundles")
-    assert not (bundle / source_path.name).exists()
-    assert Path(generated["artifact"]["json"]).parts[:2] == ("stage4", "revision-0001")
+    assert result["status"] == "blocked"
+    assert "modular bundles only" in result["reason"]
+    assert "Return to Step 3" in result["reason"]
+    assert "step4 plan" in result["reason"]
+    assert (workflow_dir / "workflow.json").read_bytes() == before
+    _, after_manifest = load_workflow(workflow_dir)
+    assert after_manifest["stages"]["4"]["revisions"] == before_revisions
+    assert (hashlib.sha256(stage3_json.read_bytes()).hexdigest(),
+            hashlib.sha256(stage3_md.read_bytes()).hexdigest()) == stage3_hashes
+    assert not (workflow_dir / "stage4" / "revision-0001" / "generation_report.json").exists()
+    assert not (workflow_dir / "stage4" / "bundles" / "revision-0001" / "bundle").exists()
+    assert source_path.is_file()
 
-    from excel_to_act.steps.conversion_workflow import read_json
-    generation_report = read_json(workflow_dir / generated["artifact"]["json"])
-    assert generation_report["smoke_execution"] == "pass"
-    assert generation_report["smoke"]["targets"]["GP"] == 6
-    assert generation_report["active_trace"]["source"] == "stage4_discovery"
-    assert generation_report["path_coverage"]["implemented_path_ids"] == ["R_ONE"]
-    generation_markdown = (workflow_dir / generated["artifact"]["md"]).read_text(encoding="utf-8")
-    assert "Covered source formula positions: 1" in generation_markdown
-    assert "Generated formula expressions:" not in generation_markdown
-    assert "Review decisions and current receipts are recorded in workflow.json." in generation_markdown
-    reader_front = generation_markdown.split("## Detailed generation evidence", 1)[0]
-    assert "## Requested targets" in reader_front
-    assert "**GP**" in reader_front and "Generated smoke result: `6.0`" in reader_front
-    assert "python model.py --out RESULT.json" in reader_front
-    assert "accepted design hash" not in reader_front
-    entry_line = next(line for line in reader_front.splitlines() if "Generated entry point:" in line)
-    relative_entry = entry_line.split("<", 1)[1].split(">", 1)[0]
-    report_dir = (workflow_dir / generated["artifact"]["md"]).parent
-    assert (report_dir / relative_entry).resolve().is_file()
 
-    _approve(workflow_dir, 4)
-    validation = validate_generated(workflow_dir)
-    assert validation["status"] == "pass", validation
-    assert validation["result_summary"]["targets"]["GP"] == 6
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({}, id="missing-design"),
+        pytest.param({"design": None}, id="null-design"),
+        pytest.param(
+            {"design": {"semantic_mapping_required": True},
+             "analysis": {"artifacts": {"semantic_plan": None, "semantic_check": None}}},
+            id="null-semantic-bindings",
+        ),
+        pytest.param(
+            {"design": {"semantic_mapping_required": True},
+             "analysis": {"artifacts": {"semantic_check": {"path": "check.json", "sha256": "check"}}}},
+            id="missing-semantic-plan",
+        ),
+        pytest.param(
+            {"design": {"semantic_mapping_required": True},
+             "analysis": {"artifacts": {"semantic_plan": {"path": "plan.json", "sha256": "plan"}}}},
+            id="missing-semantic-check",
+        ),
+    ],
+)
+def test_missing_modular_bindings_return_actionable_step3_guidance(payload: dict[str, object]) -> None:
+    from excel_to_act.steps.step4.generator import _require_modular_design
+
+    with pytest.raises(ValueError) as error:
+        _require_modular_design(payload)
+
+    assert "modular bundles only" in str(error.value)
+    assert "Return to Step 3" in str(error.value)
+    assert "step4 plan" in str(error.value)
 
 
 
@@ -243,42 +248,17 @@ def test_generation_reader_shows_ordered_non_scalar_values_and_unknowns_without_
     assert "[[1, 2], [3, 4]]" not in front
     assert json.dumps(payload, sort_keys=True) == before
 
-def test_native_array_anchor_is_emitted_as_a_formula_not_a_raw_leaf(tmp_path: Path) -> None:
-    workflow_dir, _source_path = _approved_gp_workflow(tmp_path, array_formula=True)
-    discovery = discover_active_trace(workflow_dir)
-    assert discovery["status"] == "pass", discovery
-    generated = generate_model(workflow_dir)
-    assert generated["status"] == "pass", generated
-    assert generated["counts"]["formula_count"] == 1
-    assert generated["counts"]["array_member_count"] == 1
-    assert generated["counts"]["raw_input_count"] == 2
-    from excel_to_act.steps.conversion_workflow import read_json
-    report = read_json(workflow_dir / generated["artifact"]["json"])
-    assert report["smoke"]["targets"]["GP"] == 3
-    assert report["path_coverage"]["implemented_path_ids"] == ["R_ONE"]
-
-
-def test_single_cell_reference_returned_from_if_is_scalarized(tmp_path: Path) -> None:
-    workflow_dir, _source_path = _approved_gp_workflow(
-        tmp_path, formula_text="=IF(TRUE,Main!A1,0)")
-    assert discover_active_trace(workflow_dir)["status"] == "pass"
-    generated = generate_model(workflow_dir)
-    assert generated["status"] == "pass", generated
-    from excel_to_act.steps.conversion_workflow import read_json
-    report = read_json(workflow_dir / generated["artifact"]["json"])
-    assert report["smoke"]["targets"]["GP"] == 3
-
-
 def test_step5_validates_and_copies_every_local_bundle_module(tmp_path: Path) -> None:
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     contents = {
-        "model.py": "from pricing import run\nfrom runtime import Runtime\n",
+        "model.py": "from pricing import run\nfrom modular_runtime import Runtime\n",
         "pricing.py": "from formula_families import compute\nfrom input_adapter import inputs\n",
         "formula_families.py": "def compute(value):\n    return value\n",
         "input_adapter.py": "def inputs():\n    return {}\n",
-        "runtime.py": "class Runtime:\n    pass\n",
+        "modular_runtime.py": "class Runtime:\n    pass\n",
         "source_values.json": "{}\n",
+        "input_layout.json": '{"external_bindings": []}\n',
         "source_map.json": "{}\n",
         "family_manifest.json": "{}\n",
     }
@@ -287,8 +267,9 @@ def test_step5_validates_and_copies_every_local_bundle_module(tmp_path: Path) ->
         path = bundle / name
         path.write_text(source, encoding="utf-8")
         file_hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-    manifest = {"files": file_hashes, "raw_input_addresses": [], "formula_addresses": ["Premium!J1"],
-                "formula_cache_inputs": False}
+    manifest = {"schema_version": "step4.modular_model.v1", "execution_kind": "modular",
+                "files": file_hashes, "raw_input_addresses": [], "formula_addresses": ["Premium!J1"],
+                "external_input_addresses": [], "external_input_count": 0, "formula_cache_inputs": False}
 
     assert _verify_python(bundle, manifest) == []
     destination = tmp_path / "isolated"

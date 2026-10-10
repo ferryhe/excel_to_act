@@ -4,14 +4,11 @@ import json
 from pathlib import Path
 
 import pytest
-from openpyxl import Workbook, load_workbook
 from typer.testing import CliRunner
 
 from excel_to_act.interfaces.cli import app
 from excel_to_act.steps import conversion_workflow as workflow
-from excel_to_act.steps.step4.generator import _emit, generate_model
-from excel_to_act.steps.step4.runtime import Runtime
-from excel_to_act.steps.step3.calculation import _Parser
+from excel_to_act.steps.step4.generator import generate_model
 from excel_to_act.steps.step3 import input_boundary
 
 
@@ -277,8 +274,11 @@ def test_step4_generation_never_deletes_preexisting_revision_directory(tmp_path:
 
     result = generate_model(root, tmp_path / "missing-trace.json")
     assert result["status"] == "blocked"
-    assert "already exists" in result["reason"]
+    assert "modular bundles only" in result["reason"]
     assert sentinel.read_text(encoding="utf-8") == "preserve this unrelated directory"
+    _, manifest = workflow.load_workflow(root)
+    assert manifest["stages"]["4"]["revisions"] == []
+    assert not (root / "stage4" / "bundles" / "revision-0001" / "bundle").exists()
 
 
 def test_stage4_rejection_to_stage3_invalidates_old_stage4_approval(tmp_path: Path) -> None:
@@ -842,27 +842,3 @@ def test_workflow_delegate_cli_emits_compact_json_and_rejects_unbound_auth(tmp_p
                                    "--authorization", str(wrong_path)])
     assert rejected.exit_code == 1
     assert json.loads(rejected.stdout)["status"] == "blocked"
-
-def test_emitted_formula_literals_use_python_boolean_blank_and_error_values(tmp_path: Path) -> None:
-    source_path = tmp_path / "literals.xlsx"
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Main"
-    sheet["A1"] = "=IF(FALSE,1/0,7)"
-    sheet["A2"] = "=IF(TRUE,,#N/A)"
-    sheet["A3"] = "=IFERROR(#N/A,3)"
-    workbook.save(source_path)
-    workbook.close()
-    source = load_workbook(source_path, data_only=False, read_only=True)
-    runtime = Runtime({}, {}, {}, {}, set(), [])
-    try:
-        cases = {"A1": 7, "A2": None, "A3": 3}
-        for address, expected in cases.items():
-            formula = source["Main"][address].value
-            expression = _emit(_Parser(formula, "Main").parse(), "Main", f"Main!{address}")
-            code = compile(f"def evaluate(env):\n    return {expression}\n", "generated_formula.py", "exec")
-            namespace: dict[str, object] = {}
-            exec(code, namespace)
-            assert namespace["evaluate"](runtime) == expected
-    finally:
-        source.close()

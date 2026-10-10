@@ -37,12 +37,12 @@ flowchart TD
 | 1 · 提取 | `step1 convert`、`check`、`finalize`、`report` | 保留的源文件部件、清单、`import_checkpoint.json/.md` |
 | 2 · 索引与读取 | `step2 index`、`validate`、`prepare`、`query`、`trace`、`report` | 索引、来源绑定的读取包、有界证据包与轨迹 |
 | 3 · 分析与设计 | `step3 prepare`、`fields`、`dependencies`、`input-catalog`、`query`、`trace`、`source-trace`、`profile`、`plan`、`check`、`report` | 已确认输入、目标、源候选、变量、方程、模块及 `analysis_design.json/.md` |
-| 4 · 生成 | `step4 capture-external`、`discover`、`plan`、`generate` | 独立运行包、源映射、单独的输入/元数据记录、生成报告 |
+| 4 · 生成 | `step4 capture-external`、`discover`、`plan`、`generate` | 模块化独立运行包、源映射、单独的输入/元数据记录、生成报告 |
 | 5 · 验证 | `step5 validate`、`oracle`、`reconcile` | 隔离执行证据、原生 Excel 捕获、数值对比报告 |
 | 6 · 报告 | `step6 report`、`skill`、`template` | 面向人的转换报告和 JSON 证据 |
 | 流程 | `workflow status`、`confirm`、`reject`、`delegate`、`typesafe` | 当前状态和绑定哈希的决定 |
 
-Step 3 从声明的结果倒推，并确认标量、向量、表格、原始输入和公式派生输入边界。Step 4 只为受支持且绑定清楚的设计生成代码。请检查当前工具目录和来源适配器所支持的公式与输入形状；本流程不是通用 Excel 编译器。公式缓存不是模型输入，提取阶段不会运行 VBA。Step 4 冒烟证据只证明运行包可执行。原生 Excel 对比需要 Windows 和 Microsoft Excel。已测试场景不代表所有参数组合覆盖、精算认证、反馈求解或 GPU 支持。
+Step 3 从声明的结果倒推，并确认标量、向量、表格、原始输入和公式派生输入边界。Step 4 仅在语义映射和实现预检通过后，为受支持且绑定清楚的设计生成模块化代码。请检查当前工具目录和来源适配器所支持的公式与输入形状；本流程不是通用 Excel 编译器。公式缓存不是模型输入，提取阶段不会运行 VBA。Step 4 冒烟证据只证明运行包可执行。原生 Excel 对比需要 Windows 和 Microsoft Excel。已测试场景不代表所有参数组合覆盖、精算认证、反馈求解或 GPU 支持。
 
 主要交接报告先说明待审阅决定、用途和范围、已验证结果、限制、未决问题、JSON/Markdown 证据链接以及下一步审阅操作。详细来源信息与历史留在证据附录中。缺失事实标为未知或“未记录”，不能写成零。`workflow.json` 是当前验收台账。
 

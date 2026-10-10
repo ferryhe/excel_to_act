@@ -23,7 +23,7 @@ from excel_to_act.steps.conversion_workflow import (
     read_json,
     require_stage_approved,
 )
-from excel_to_act.steps.step3.calculation import CalculationBlocked, CellRange, ExcelError, _Parser, _parse_reference
+from excel_to_act.steps.step3.calculation import _parse_reference
 from excel_to_act.steps.step4.implementation import load_current_implementation_plan
 from excel_to_act.steps.step4.modular_bundle import build_modular_bundle_files
 
@@ -33,82 +33,24 @@ def _key(address: str) -> str:
     return f"{sheet.casefold()}!{cell.replace('$', '').upper()}"
 
 
-def _json_literal(value: Any) -> Any:
-    if isinstance(value, ExcelError):
-        return {"excel_error": value.code}
-    if isinstance(value, CellRange):
-        return {"address": value.address}
-    if hasattr(value, "isoformat"):
-        return {"excel_datetime": value.isoformat(), "date_only": type(value).__name__ == "date"}
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    raise ValueError(f"source literal cannot be serialized without conversion: {type(value).__name__}")
-
-
-def _emit(node: Any, sheet: str, owner: str) -> str:
-    kind = node[0]
-    if kind == "literal":
-        return f"env.literal({repr(_json_literal(node[1]))})"
-    if kind == "reference":
-        ref = node[1]
-        if not isinstance(ref, CellRange):
-            raise CalculationBlocked(f"invalid reference node in {owner}")
-        return f"env.ref({ref.sheet!r}, {ref.min_row}, {ref.min_col}, {ref.max_row}, {ref.max_col})"
-    if kind == "name":
-        return f"env.name({node[1]!r}, {sheet!r})"
-    if kind == "unsupported_reference":
-        return f"env.unsupported({node[1]!r})"
-    if kind == "range":
-        left = _emit(node[1], sheet, owner)
-        right = _emit(node[2], sheet, owner)
-        return f"env.range_between(lambda: {left}, lambda: {right}, {owner!r})"
-    if kind == "unary":
-        expression = _emit(node[2], sheet, owner)
-        return f"env.unary({node[1]!r}, lambda: {expression})"
-    if kind == "binary":
-        left, right = _emit(node[2], sheet, owner), _emit(node[3], sheet, owner)
-        return f"env.binary({node[1]!r}, lambda: {left}, lambda: {right})"
-    if kind == "call":
-        args = ", ".join(f"lambda: {_emit(arg, sheet, owner)}" for arg in node[2])
-        return f"env.call({node[1]!r}, [{args}], {sheet!r}, {owner!r})"
-    raise CalculationBlocked(f"cannot emit parsed formula node {kind!r} at {owner}")
-
-
-def _find_defined_name(workbook: Any, name: str, scope: str) -> Any | None:
-    if scope == "workbook":
-        for candidate in workbook.defined_names.values():
-            if candidate.name.casefold() == name.casefold() and candidate.localSheetId is None:
-                return candidate
-        return None
-    try:
-        sheet_index = next(index for index, sheet in enumerate(workbook.worksheets)
-                           if sheet.title.casefold() == scope.casefold())
-    except StopIteration:
-        return None
-    for candidate in workbook.defined_names.values():
-        if candidate.name.casefold() == name.casefold() and candidate.localSheetId == sheet_index:
-            return candidate
-    local = workbook[scope].defined_names
-    return next((candidate for key, candidate in local.items() if key.casefold() == name.casefold()), None)
-
-
-def _ordered_active_addresses(trace: dict[str, Any], addresses: list[str]) -> list[str]:
-    """Use the source-bound evaluator's completion order to warm prerequisites first."""
-    canonical = {_key(address): address for address in addresses}
-    completed: list[str] = []
-    seen: set[str] = set()
-    order = trace.get("completion_order")
-    if not isinstance(order, list):
-        raise ValueError("active trace does not provide prerequisite-first completion_order")
-    for address in order:
-        key = _key(address) if isinstance(address, str) and "!" in address else None
-        if key in canonical and key not in seen:
-            completed.append(canonical[key])
-            seen.add(key)
-    if seen != set(canonical):
-        missing = sorted(canonical[key] for key in set(canonical) - seen)
-        raise ValueError("active trace completion_order omits formula addresses: " + ", ".join(missing[:12]))
-    return completed
+def _require_modular_design(stage3_payload: dict[str, Any]) -> None:
+    if not isinstance(stage3_payload, dict):
+        design = None
+        analysis = None
+    else:
+        design = stage3_payload.get("design")
+        analysis = stage3_payload.get("analysis", {})
+    artifacts = analysis.get("artifacts", {}) if isinstance(analysis, dict) else {}
+    plan = artifacts.get("semantic_plan", {}) if isinstance(artifacts, dict) else {}
+    check = artifacts.get("semantic_check", {}) if isinstance(artifacts, dict) else {}
+    if (not isinstance(design, dict) or not isinstance(plan, dict) or not isinstance(check, dict)
+            or design.get("semantic_mapping_required") is not True
+            or not plan.get("path") or not plan.get("sha256")
+            or not check.get("path") or not check.get("sha256")):
+        raise ValueError(
+            "Step 4 generates modular bundles only. Return to Step 3 and finish the semantic mapping and check, "
+            "then run `step4 plan` with the current implementation input before `step4 generate`."
+        )
 
 
 def _path_implementation_evidence(design: dict[str, Any], trace: dict[str, Any],
@@ -226,7 +168,8 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
         trace_source = "historical_stage3_evidence"
     else:
         if not discovery_path.is_file():
-            raise ValueError("trace must be Stage 3 hash-declared evidence or a fresh Stage 4 discovery result")
+            raise ValueError("trace must be the latest Stage 4 discovery bound by the current implementation preflight; "
+                             "normally omit `--trace` to use that discovery")
         discovery = read_json(discovery_path)
         if (discovery.get("schema_version") != "step4.discovery.v1" or discovery.get("status") != "pass"
                 or Path(discovery.get("active_trace_path", "")).resolve() != trace_path
@@ -253,7 +196,7 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
     if not target_names:
         raise ValueError("approved design does not identify a target name present in the active trace")
 
-    modular_required = design.get("semantic_mapping_required") is True
+    _require_modular_design(stage3_payload)
     semantic_plan_path: Path | None = None
     source_profile_path: Path | None = None
     semantic_map_path: Path | None = None
@@ -268,62 +211,58 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
     external_capture_artifact_sha256: str | None = None
     scenario_ids: list[str] = []
     scenario_guard: dict[str, Any] = {}
-    if modular_required:
-        if workflow_root is None:
-            raise ValueError("modular generation requires its workflow directory and a current implementation preflight")
-        analysis = stage3_payload.get("analysis", {})
-        artifacts = analysis.get("artifacts", {}) if isinstance(analysis, dict) else {}
-        plan_artifact = artifacts.get("semantic_plan", {}) if isinstance(artifacts, dict) else {}
-        check_artifact = artifacts.get("semantic_check", {}) if isinstance(artifacts, dict) else {}
-        if not isinstance(plan_artifact, dict) or not isinstance(check_artifact, dict):
-            raise ValueError("accepted modular design does not bind its semantic plan and check")
-        semantic_plan_path = Path(plan_artifact.get("path", "")).expanduser().resolve()
-        check_path = Path(check_artifact.get("path", "")).expanduser().resolve()
-        if (not semantic_plan_path.is_file()
-                or hash_file(semantic_plan_path) != plan_artifact.get("sha256")
-                or not check_path.is_file()
-                or hash_file(check_path) != check_artifact.get("sha256")):
-            raise ValueError("bound semantic plan or source-only check is missing or changed")
-        semantic_plan = read_json(semantic_plan_path)
-        semantic_check = read_json(check_path)
-        if semantic_plan.get("status") != "pass" or semantic_check.get("status") != "pass":
-            raise ValueError("accepted modular design has no passing source-only semantic plan/check")
-        if (semantic_check.get("semantic_plan_sha256") != plan_artifact.get("sha256")
-                or semantic_check.get("source_family_profile_sha256") != semantic_plan.get("evidence", {}).get(
-                    "source_family_profile", {}).get("sha256")):
-            raise ValueError("semantic check does not bind the current plan and source-family profile")
-        map_record = semantic_plan.get("semantic_map_input", {})
-        profile_record = semantic_plan.get("evidence", {}).get("source_family_profile", {})
-        semantic_map_path = Path(map_record.get("path", "")).expanduser().resolve()
-        source_profile_path = Path(profile_record.get("path", "")).expanduser().resolve()
-        if (not semantic_map_path.is_file() or hash_file(semantic_map_path) != map_record.get("sha256")
-                or not source_profile_path.is_file()
-                or hash_file(source_profile_path) != profile_record.get("sha256")):
-            raise ValueError("bound semantic map or source-family profile is missing or changed")
-        if (semantic_plan.get("source", {}).get("source_sha256") != source_hash
-                or semantic_check.get("semantic_map_input_sha256") != map_record.get("sha256")
-                or semantic_check.get("source_family_profile_sha256") != profile_record.get("sha256")):
-            raise ValueError("semantic plan/check source bindings differ from the approved workbook")
-        source_profile = read_json(source_profile_path)
-        implementation_record, implementation_path, implementation_sha256, validated = \
-            load_current_implementation_plan(workflow_root)
-        if Path(validated["trace_path"]).resolve() != trace_path:
-            raise ValueError("generation trace differs from the active trace bound by the current implementation preflight")
-        semantic_plan = validated["projected_plan"]
-        source_profile = validated["projected_profile"]
-        external_capture = validated["capture"]
-        external_capture_path = validated["capture_path"]
-        external_capture_artifact_sha256 = validated["capture_file_sha256"]
-        scenario_ids, scenario_guard = _saved_scenario_guard(design)
+    if workflow_root is None:
+        raise ValueError("modular generation requires its workflow directory and a current implementation preflight")
+    analysis = stage3_payload.get("analysis", {})
+    artifacts = analysis.get("artifacts", {}) if isinstance(analysis, dict) else {}
+    plan_artifact = artifacts.get("semantic_plan", {}) if isinstance(artifacts, dict) else {}
+    check_artifact = artifacts.get("semantic_check", {}) if isinstance(artifacts, dict) else {}
+    if not isinstance(plan_artifact, dict) or not isinstance(check_artifact, dict):
+        raise ValueError("accepted modular design does not bind its semantic plan and check")
+    semantic_plan_path = Path(plan_artifact.get("path", "")).expanduser().resolve()
+    check_path = Path(check_artifact.get("path", "")).expanduser().resolve()
+    if (not semantic_plan_path.is_file()
+            or hash_file(semantic_plan_path) != plan_artifact.get("sha256")
+            or not check_path.is_file()
+            or hash_file(check_path) != check_artifact.get("sha256")):
+        raise ValueError("bound semantic plan or source-only check is missing or changed")
+    semantic_plan = read_json(semantic_plan_path)
+    semantic_check = read_json(check_path)
+    if semantic_plan.get("status") != "pass" or semantic_check.get("status") != "pass":
+        raise ValueError("accepted modular design has no passing source-only semantic plan/check")
+    if (semantic_check.get("semantic_plan_sha256") != plan_artifact.get("sha256")
+            or semantic_check.get("source_family_profile_sha256") != semantic_plan.get("evidence", {}).get(
+                "source_family_profile", {}).get("sha256")):
+        raise ValueError("semantic check does not bind the current plan and source-family profile")
+    map_record = semantic_plan.get("semantic_map_input", {})
+    profile_record = semantic_plan.get("evidence", {}).get("source_family_profile", {})
+    semantic_map_path = Path(map_record.get("path", "")).expanduser().resolve()
+    source_profile_path = Path(profile_record.get("path", "")).expanduser().resolve()
+    if (not semantic_map_path.is_file() or hash_file(semantic_map_path) != map_record.get("sha256")
+            or not source_profile_path.is_file()
+            or hash_file(source_profile_path) != profile_record.get("sha256")):
+        raise ValueError("bound semantic map or source-family profile is missing or changed")
+    if (semantic_plan.get("source", {}).get("source_sha256") != source_hash
+            or semantic_check.get("semantic_map_input_sha256") != map_record.get("sha256")
+            or semantic_check.get("source_family_profile_sha256") != profile_record.get("sha256")):
+        raise ValueError("semantic plan/check source bindings differ from the approved workbook")
+    source_profile = read_json(source_profile_path)
+    implementation_record, implementation_path, implementation_sha256, validated = \
+        load_current_implementation_plan(workflow_root)
+    if Path(validated["trace_path"]).resolve() != trace_path:
+        raise ValueError("generation trace differs from the active trace bound by the current implementation preflight")
+    semantic_plan = validated["projected_plan"]
+    source_profile = validated["projected_profile"]
+    external_capture = validated["capture"]
+    external_capture_path = validated["capture_path"]
+    external_capture_artifact_sha256 = validated["capture_file_sha256"]
+    scenario_ids, scenario_guard = _saved_scenario_guard(design)
 
     before = hash_file(source_path)
     workbook = load_workbook(source_path, data_only=False, read_only=False, keep_vba=False)
     try:
         raw_values: dict[str, Any] = {}
         formulas: dict[str, str] = {}
-        known_cells: set[str] = set()
-        active_addresses: list[str] = []
-        array_descriptors: dict[str, tuple[str, int, int]] = {}
         arrays: dict[str, tuple[int, int, int, int]] = {}
 
         for record in trace["cells"]:
@@ -333,7 +272,6 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
             if not isinstance(address, str) or not isinstance(sheet, str):
                 raise ValueError("trace contains a cell without a source address")
             key = _key(address)
-            known_cells.add(key)
             if role == "source_value":
                 cell = workbook[sheet][address.rsplit("!", 1)[1]]
                 if cell.data_type == "f":
@@ -347,11 +285,10 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
                     raise ValueError(f"unsupported raw source value at {address}: {type(value).__name__}")
                 raw_values[key] = value
                 continue
-            if role == "external_boundary_input" and modular_required:
+            if role == "external_boundary_input":
                 continue
             if role not in {"calculated_formula", "calculated_array_formula"}:
                 raise ValueError(f"unrecognized trace cell role at {address}: {role}")
-            active_addresses.append(address)
             source_cell = workbook[sheet][address.rsplit("!", 1)[1]]
             source_array = source_cell.value if hasattr(source_cell.value, "text") and hasattr(source_cell.value, "ref") else None
             array_ref = record.get("array_ref") or (source_array.ref if source_array is not None else None)
@@ -363,9 +300,6 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
                 anchor = f"{sheet}!{get_column_letter(min_col)}{min_row}"
                 anchor_key = _key(anchor)
                 arrays[anchor_key] = (min_row, min_col, max_row, max_col)
-                member_row, member_col = workbook[sheet][address.rsplit("!", 1)[1]].row, workbook[sheet][address.rsplit("!", 1)[1]].column
-                if key != anchor_key:
-                    array_descriptors[key] = (anchor_key, member_row - min_row, member_col - min_col)
 
         for record in trace["cells"]:
             if record.get("role") != "calculated_formula" or record.get("array_ref"):
@@ -396,147 +330,45 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
             if tuple(actual_bounds) != (bounds[1], bounds[0], bounds[3], bounds[2]):
                 raise ValueError(f"array range changed at {source_sheet}!{anchor_cell}")
             formulas[anchor_key] = formula_text
-            min_row, min_col, max_row, max_col = bounds
-            for row in range(min_row, max_row + 1):
-                for col in range(min_col, max_col + 1):
-                    address = f"{source_sheet}!{get_column_letter(col)}{row}"
-                    member_key = _key(address)
-                    known_cells.add(member_key)
-                    if member_key != anchor_key:
-                        array_descriptors[member_key] = (anchor_key, row - min_row, col - min_col)
-
-        active_addresses = _ordered_active_addresses(trace, active_addresses)
         path_coverage = _path_implementation_evidence(design, trace, set(formulas))
 
-        if not modular_required:
-            expression_by_key: dict[str, str] = {}
-            for key, formula in formulas.items():
-                sheet = next((item.title for item in workbook.worksheets
-                              if item.title.casefold() == key.split("!", 1)[0]), None)
-                if sheet is None:
-                    raise ValueError(f"formula sheet is missing: {key}")
-                address = key.split("!", 1)[1]
-                expression_by_key[key] = _emit(_Parser(formula, sheet).parse(), sheet,
-                                               f"{sheet}!{address}")
 
-            name_definitions: dict[str, dict[str, Any]] = {}
-            names_for_eval: dict[str, Any] = {}
-            for scope, name in sorted(trace_names, key=lambda pair: (pair[0], pair[1] or "")):
-                if not name:
-                    continue
-                definition = _find_defined_name(workbook, name, scope)
-                if definition is None or not isinstance(definition.attr_text, str):
-                    raise ValueError(f"trace name is absent from current workbook: {scope}!{name}")
-                text = definition.attr_text
-                trace_record = next(item for item in trace["names"]
-                                    if item.get("scope", "workbook") == scope
-                                    and item.get("name", "").casefold() == name.casefold())
-                if trace_record.get("definition") != text:
-                    raise ValueError(f"defined name changed since historical trace: {scope}!{name}")
-                marker = f"{scope.casefold()}|{name.casefold()}"
-                definition_text = text[1:] if text.startswith("=") else text
-                context_sheet = scope if scope != "workbook" else "Main"
-                reference = _parse_reference(definition_text, context_sheet)
-                if reference is not None:
-                    name_definitions[marker] = {"address": reference.address}
-                else:
-                    expr = _emit(_Parser("=" + definition_text, context_sheet).parse(), context_sheet,
-                                 f"defined name {scope}!{name}")
-                    name_definitions[marker] = {"expression": expr}
-                if name.casefold() in {item.casefold() for item in target_names}:
-                    names_for_eval[name] = trace_record.get("destination")
     finally:
         workbook.close()
     if hash_file(source_path) != before or before != source_hash:
         raise ValueError("source workbook changed while the generated bundle was being built")
 
-    if modular_required:
-        if semantic_plan is None or source_profile is None or semantic_plan_path is None \
-                or source_profile_path is None or semantic_map_path is None:
-            raise ValueError("modular bundle inputs were not loaded")
-        built = build_modular_bundle_files(
-            semantic_plan=semantic_plan, source_profile=source_profile, trace=trace,
-            raw_source_values=raw_values, source_path=source_path,
-            semantic_plan_path=semantic_plan_path, source_profile_path=source_profile_path,
-            semantic_map_path=semantic_map_path, revision_dir=revision_dir,
-            target_names=sorted(target_names), path_coverage=path_coverage,
-            source_sha256=source_hash, design_sha256=stage3_payload["_artifact_sha256"],
-            semantic_plan_sha256=hash_file(semantic_plan_path),
-            source_profile_sha256=hash_file(source_profile_path), trace_sha256=trace_hash,
-            trace_path=trace_path, trace_source=trace_source,
-            scenario_ids=scenario_ids, scenario_guard=scenario_guard,
-            external_capture=external_capture,
-            external_capture_artifact_sha256=external_capture_artifact_sha256,
-            implementation_plan_record=implementation_record,
-            implementation_plan_path=implementation_path,
-            implementation_plan_sha256=implementation_sha256,
-        )
-        built.update({"discovery_path": discovery_path if discovery is not None else None,
-                      "input_files": {"semantic_plan": semantic_plan_path,
-                                      "source_family_profile": source_profile_path,
-                                      "semantic_map": semantic_map_path,
-                                      "implementation_plan": implementation_path,
-                                      "implementation_input": Path(implementation_record["implementation_input"]["path"]),
-                                      "external_capture": external_capture_path}})
-        built["oracle_ranges"] = _modular_oracle_ranges(built["manifest"])
-        return built
-
-    raw_bytes = (json.dumps(raw_values, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
-    runtime_source = Path(__file__).with_name("runtime.py").read_bytes()
-    formula_lines = [f"    {key!r}: lambda env: {expression}," for key, expression in sorted(expression_by_key.items())]
-    array_lines = [f"    {key!r}: ({anchor!r}, {row}, {col}),"
-                   for key, (anchor, row, col) in sorted(array_descriptors.items())]
-    array_shape_lines = [f"    {key!r}: ({bounds[2] - bounds[0] + 1}, {bounds[3] - bounds[1] + 1}),"
-                         for key, bounds in sorted(arrays.items())]
-    target_lines = repr(names_for_eval)
-    model_text = "\n".join([
-        "\"\"\"Generated formulas for one approved saved workbook scenario.\"\"\"",
-        "from __future__ import annotations", "import argparse", "import json", "from pathlib import Path",
-        "from runtime import Runtime", "",
-        "RAW_VALUES = json.loads(Path(__file__).with_name('source_values.json').read_text(encoding='utf-8'))",
-        "FORMULAS = {", *formula_lines, "}", "NAMES = {",
-        *[f"    {key!r}: {{'address': {item['address']!r}}}," if "address" in item else
-          f"    {key!r}: {{'expression': lambda env, sheet: {item['expression']}}},"
-          for key, item in sorted(name_definitions.items())],
-        "}", "ARRAY_MEMBERS = {", *array_lines, "}", "ARRAY_SHAPES = {", *array_shape_lines, "}",
-        f"KNOWN_CELLS = {sorted(known_cells)!r}",
-        f"ACTIVE_ADDRESSES = {active_addresses!r}", f"REPORT_NAMES = {target_lines}", "",
-        "def main() -> None:",
-        "    parser = argparse.ArgumentParser(description='Run the standalone generated workbook model')",
-        "    parser.add_argument('--out', type=Path, default=Path('model_result.json'))",
-        "    args = parser.parse_args()",
-        "    runtime = Runtime(RAW_VALUES, FORMULAS, NAMES, ARRAY_MEMBERS, set(KNOWN_CELLS), ACTIVE_ADDRESSES, ARRAY_SHAPES)",
-        "    runtime.run(REPORT_NAMES, args.out)",
-        "",
-        "if __name__ == '__main__':", "    main()", "",
-    ]).encode("utf-8")
-    bundle = revision_dir / "bundle"
-    bundle.mkdir(parents=True)
-    (bundle / "runtime.py").write_bytes(runtime_source)
-    (bundle / "model.py").write_bytes(model_text)
-    (bundle / "source_values.json").write_bytes(raw_bytes)
-    bundle_hashes = {path.name: hash_file(path) for path in sorted(bundle.iterdir()) if path.is_file()}
-    manifest = {"schema_version": "step4.generated_model.v1", "source_sha256": source_hash,
-                "design_sha256": stage3_payload["_artifact_sha256"], "trace_sha256": trace_hash,
-                "scenario_ids": [item.get("scenario_id") for item in design.get("scenarios", [])],
-                "target_names": sorted(names_for_eval), "formula_count": len(formulas),
-                "raw_input_count": len(raw_values), "array_member_count": len(array_descriptors),
-                "formula_addresses": sorted(formulas), "raw_input_addresses": sorted(raw_values),
-                "active_addresses": active_addresses, "completion_order": active_addresses,
-                "path_coverage": path_coverage,
-                "files": bundle_hashes,
-                "runtime_dependencies": ["Python standard library only"],
-                "source_workbook_at_runtime": False, "project_package_at_runtime": False,
-                "formula_cache_inputs": False, "scope": "approved saved scenario and source-bound active trace"}
-    manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
-    (bundle / "model_manifest.json").write_bytes(manifest_bytes)
-    bundle_hashes["model_manifest.json"] = hash_file(bundle / "model_manifest.json")
-    return {"bundle": str(bundle), "bundle_hashes": bundle_hashes, "manifest": manifest,
-            "trace": trace, "source_path": str(source_path), "source_hash": source_hash,
-            "path_coverage": path_coverage,
-            "trace_path": trace_path, "trace_hash": trace_hash, "trace_source": trace_source,
-            "discovery_path": discovery_path if discovery is not None else None}
-
+    if (semantic_plan is None or source_profile is None or semantic_plan_path is None
+            or source_profile_path is None or semantic_map_path is None
+            or implementation_record is None or implementation_path is None
+            or external_capture is None or external_capture_path is None):
+        raise ValueError("current modular generation inputs were not loaded")
+    built = build_modular_bundle_files(
+        semantic_plan=semantic_plan, source_profile=source_profile, trace=trace,
+        raw_source_values=raw_values, source_path=source_path,
+        semantic_plan_path=semantic_plan_path, source_profile_path=source_profile_path,
+        semantic_map_path=semantic_map_path, revision_dir=revision_dir,
+        target_names=sorted(target_names), path_coverage=path_coverage,
+        source_sha256=source_hash, design_sha256=stage3_payload["_artifact_sha256"],
+        semantic_plan_sha256=hash_file(semantic_plan_path),
+        source_profile_sha256=hash_file(source_profile_path), trace_sha256=trace_hash,
+        trace_path=trace_path, trace_source=trace_source,
+        scenario_ids=scenario_ids, scenario_guard=scenario_guard,
+        external_capture=external_capture,
+        external_capture_artifact_sha256=external_capture_artifact_sha256,
+        implementation_plan_record=implementation_record,
+        implementation_plan_path=implementation_path,
+        implementation_plan_sha256=implementation_sha256,
+    )
+    built.update({"discovery_path": discovery_path if discovery is not None else None,
+                  "input_files": {"semantic_plan": semantic_plan_path,
+                                  "source_family_profile": source_profile_path,
+                                  "semantic_map": semantic_map_path,
+                                  "implementation_plan": implementation_path,
+                                  "implementation_input": Path(implementation_record["implementation_input"]["path"]),
+                                  "external_capture": external_capture_path}})
+    built["oracle_ranges"] = _modular_oracle_ranges(built["manifest"])
+    return built
 
 def _latest_discovery_trace(root: Path, stage3_revision: dict[str, Any], source_hash: str) -> Path:
     discovery_root = root / "stage4" / "discovery"
@@ -567,6 +399,8 @@ def generate_model(workflow_dir: Path, trace_path: Path | None = None) -> dict[s
         stage3_json = root / stage3_revision["artifact"]["json"]
         stage3_payload = read_json(stage3_json)
         stage3_payload["_artifact_sha256"] = stage3_revision["artifact"]["json_sha256"]
+        _require_modular_design(stage3_payload)
+        load_current_implementation_plan(root)
         if trace_path is None:
             trace_path = _latest_discovery_trace(root, stage3_revision, workflow["source"]["workbook_sha256"])
         next_revision = len(workflow["stages"]["4"]["revisions"]) + 1

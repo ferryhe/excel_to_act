@@ -604,9 +604,9 @@ def step4_tools() -> None:
 def step4_generate(
     workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
     trace: Path | None = typer.Option(None, "--trace", exists=True, dir_okay=False, readable=True,
-                                      help="Hash-declared Stage 3 trace or Stage 4 discovery trace; defaults to latest discovery"),
+                                      help="Normally omit; if supplied, must be the active Stage 4 discovery trace bound by the current implementation preflight"),
 ) -> None:
-    """Generate a standalone Python bundle from the approved design and raw source values."""
+    """Generate a modular Python bundle after the current semantic and implementation preflights."""
     result = generate_model(workflow, trace)
     _emit_json(result)
     if result.get("status") != "pass":
