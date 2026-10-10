@@ -2,7 +2,7 @@
 
 Deliver `excel-to-act step2 prepare`: package validated Step 1 / Step 2 artifacts into a directory that an agent can read incrementally, and generate English human-readable and machine-readable handoffs. Later queries reuse this prepared result instead of reparsing the original Excel file for each question.
 
-This is the first of three sequential implementation items and is recommended as one PR. Existing #6, #13, #14, and #18–#21 are foundations and should not be reimplemented. Baseline `main` is `9251019a3b77fe12ce36a811d7392bc781219d0d`; the current local working tree also contains reviewed but unpublished Step 1 namespace fixes and checkbox/ActiveX/VBA handoff changes. Before implementation, confirm these prerequisites are available and identify prerequisite commits or PRs in the PR; do not redevelop the same parsers.
+This prepare contract provides the source-bound manifest and canonical views consumed by the query and trace stages. Reuse the existing Step 1 extraction and Step 2 index contracts; do not duplicate their parsers or change their source accounting.
 
 ## CLI contract
 
@@ -59,6 +59,6 @@ excel-to-act step2 prepare --index INDEX --step1-root ROOT --out READING_DIR [--
 - [ ] The reading package can be relocated using explicit roots; preserve original source locations without relying only on absolute paths from the current machine.
 - [ ] Checkbox/ActiveX canonical records can be verified against original module artifacts and retain complete facts/source identity; bindings do not enter the logical-object coverage denominator.
 - [ ] Editing an unreferenced old sidecar cannot change generated data; editing or removing a generated snapshot/audit causes reuse/validation to fail.
-- [ ] For the same Pricing source version and four approved excluded tabs, generate 864 supported static inbound references, 12 ranges, and 1,464 stored-cell records (including 1,364 formula cells) from validated source data; preserve blank-cell and cache-availability semantics without guessing values or recalculating.
-- [ ] Fixture CI and local real Pricing CLI runs both save inspectable evidence; real inputs and large outputs remain in the local artifact directory and are not committed.
+- [ ] For a selected source and confirmed scope, derive supported static inbound references, ranges, and stored-cell records from validated source data; preserve blank-cell and cache-availability semantics without guessing values or recalculating.
+- [ ] Fixture CI exercises prepare behavior. Any real source run records inspectable evidence under its local workflow output; source workbooks and run artifacts are not committed.
 - [ ] Record actual inventory-parse and graph-build counts to prove preparation artifacts can be reused; related tests, Ruff, and CI pass.

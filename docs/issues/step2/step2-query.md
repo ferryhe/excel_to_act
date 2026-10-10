@@ -30,7 +30,7 @@ excel-to-act views validate --views EVIDENCE_PACKET --output CLAIMS
    - Name destinations obey the same restriction. Excluded controls and worksheet VBA provide metadata only, not interaction/code content for downstream analysis; return `needs_scope_resolution` when ownership is unknown.
    - Expanding the read boundary requires a newly confirmed scope and prepare revision; do not add a default switch that bypasses scope.
 4. The views validator supports both the old list-of-views format and new packets. After validating canonical reference hashes and selected records, reuse existing `validate_agent_output`: only actually delivered records may be cited; facts must be complete objects; reject wrong run/location, tampered facts, and records not provided. PASS means source references are consistent, not that the semantics or numbers are correct.
-5. Update the Step 2 agent / README with the sequence: manifest identity → overview → specific question → targeted query → citation validation; do not repeat a read when no new evidence is needed. Documentation for this PR must not present trace as available.
+5. Update the Step 2 agent / README with the sequence: manifest identity → overview → specific question → targeted query → citation validation; do not repeat a read when no new evidence is needed. Tool documentation describes only capabilities present in the current catalog; dependency traversal remains the separate trace contract.
 6. CLI regressions and source-workbook/scope/control/VBA fixtures; maintain compatibility with existing view-reference validation.
 
 ## Scope and dependencies
@@ -46,9 +46,9 @@ excel-to-act views validate --views EVIDENCE_PACKET --output CLAIMS
 - [ ] `overview` / `sheet` / `cell` / `range` / `name` / `control` / `vba` / `feature` each has a CLI success case and corresponding real failure case.
 - [ ] A missing stored cell, unavailable cache, and zero value are distinct; do not fill with zero or change the fact object/source location.
 - [ ] Pagination can continue without omitting or duplicating selected records; budget/oversized information is explicit, and a complete record is never truncated into a false fact.
-- [ ] `CalculationOfBE_CI!O7:Q112` is readable within the approved scope; `CalculationOfBE_CI!A1` and broad queries extending beyond the approved scope return `out_of_scope`; excluded-sheet overview does not return ordinary cell/formula pages.
-- [ ] On Pricing, `CalculationOfBE_OtherDisease` `Check Box 1` returns canonical binding `CalculationOfBE_OtherDisease!F14`; its linked cell can be read separately. `PremiumTable.CmdPremium` and the complete `Sheet9` source record are readable.
+- [ ] A fixture range wholly inside the approved scope is readable; a selector outside the scope or crossing its boundary returns `out_of_scope`; excluded-sheet overview does not return ordinary cell/formula pages.
+- [ ] Source-backed checkbox, ActiveX and VBA fixtures return complete canonical records with their recorded locations and module-artifact references; linked cells are queried separately from control records.
 - [ ] Real source-backed binding/cell/module references pass; changing target/facts, wrong run/location, corrupt canonical reference, or citing an undelivered record all fail with nonzero exit status.
 - [ ] The old `views validate` list format still works; derivation / unverified / opaque data is not misclassified as runtime or semantic PASS.
-- [ ] Measurements across multiple small questions show no repeated raw extraction, full inventory parse, or graph build, and no repeated load of the approximately 773 MB single-file Pricing views artifact; record selected views and actual bytes read.
+- [ ] Measurements across multiple small questions show that prepared artifacts can be reused without repeated extraction, inventory parsing or graph construction; queries load only selected views, and any byte-count or performance claim uses measured evidence.
 - [ ] Ordinary query, pagination, and validation do not exhaust the existing three-attempt indexing recovery history; related tests, Ruff, and CI pass.

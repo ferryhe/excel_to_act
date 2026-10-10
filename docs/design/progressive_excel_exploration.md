@@ -1,10 +1,10 @@
 # Progressive Excel Exploration for Agents
 
-Status: `step2 prepare`, `step2 query`, and `step2 trace` are implemented and documented in the current workflow. This design records their tools, CLI contracts, agent instructions, and acceptance checks.
+`step2 prepare`, `step2 query`, and `step2 trace` provide a progressive reading workflow for checked source evidence. This document records the reusable tool contracts, handoffs, limits, and validation expectations.
 
 An agent should decompose a workbook once, verify the resulting facts, and then explore progressively through small evidence packets. Step 1 supplies source facts. Step 2 makes those facts accessible and preserves the approved scope. Step 3 interprets business behavior. Runtime observation and numerical reconciliation supply additional evidence when behavior depends on calculation or macros.
 
-The minimum addition is three Step 2 commands: `prepare`, `query` and `trace`. They reuse the existing extraction, indexing, views and graph code. The existing `views validate` command gains support for evidence packets. English human and machine handoffs are generated together from the same validated inputs. No new formula engine, general agent orchestration framework or complete VBA parser is needed for this scope.
+The three Step 2 reading commands, `prepare`, `query` and `trace`, reuse extraction, indexing, views and graph code. The `views validate` command can validate evidence packets. Human and machine handoffs are generated together from the same validated inputs. These tools do not add a formula engine, general agent orchestration framework, or complete VBA parser.
 
 ## Requirements
 
@@ -12,14 +12,14 @@ The minimum addition is three Step 2 commands: `prepare`, `query` and `trace`. T
 2. Give an agent discoverable commands, bounded responses, source locations and explicit next actions.
 3. Carry user scope decisions and read-only dependencies into both human and machine handoffs.
 4. Preserve the distinction between source facts, static dependencies, interpretations and observed runtime results.
-5. Support progressive exploration of the real Pricing workbook, including its retained checkbox bindings and VBA entry points.
+5. Support progressive exploration of workbook structures such as controls and VBA entry points when present.
 6. Produce a concrete design that an independent subagent can review against current code and these requirements.
 
 ## Current capabilities and gaps
 
 The current runtime already has useful foundations. The missing layer is the repeatable reading workflow around them.
 
-| Capability | Current behavior | Required addition |
+| Capability | Current behavior | Workflow contract |
 | --- | --- | --- |
 | Step 1 extraction | Directory conversion, raw source facts, inventory, package preservation and independent checks | Retain the existing gates; add a concise agent continuation section to generated handoffs |
 | Control modules | Separate checkbox, ActiveX and VBA identify, convert and evaluate CLI groups; conversion supports dry-run | Expose these as discoverable module capabilities and reference their existing artifacts in reading packets |
@@ -28,9 +28,9 @@ The current runtime already has useful foundations. The missing layer is the rep
 | Formula graph | Static cell references, named references and supported table references; unresolved diagnostics | Bounded traversal plus literal name/range expansion and explicit incomplete results |
 | VBA evidence | Readable module sources, declared procedures, event associations and optional literal cell links | Query individual modules and expose unresolved dynamic targets; semantic workflow interpretation remains Step 3 |
 | Agent claims | Facts must exactly match supplied view records; derivations and unverified statements have separate labels | Validate claims against the actual delivered packet and its canonical source views |
-| Scoped AI handoffs | Companion `HANDOFF.json` files were assembled for the current run | Generate and schema-check them from validated source, scope and reading manifests |
+| Scoped AI handoffs | Human and machine packets are bound to the checked source, selected scope and reading manifest | Keep both handoffs consistent with validated source, scope and reading evidence |
 
-Current source locations for implementation assessment:
+Primary implementation references:
 
 - `src/excel_to_act/steps/step1/workflow.py`: extraction tools, fresh checks, source handoffs and promotion.
 - `src/excel_to_act/steps/step1/agent.md`: source fidelity, bounded recovery and phase boundary.
@@ -51,7 +51,7 @@ The Step 2 index deliberately labels any non-empty usable index `partial`. `vali
 | 1 Source intake | Identify source version and enumerate workbook structures | Source identity, manifests and feature capabilities | Supported source can be read; unsupported or failed inputs remain visible |
 | 2 Source decomposition | Run existing Step 1 conversion and module extraction | Inventory, source facts, bindings, events, VBA sources and preserved package parts | Exact supported facts and package preservation pass existing checks |
 | 3 Source acceptance | Run fresh check and finalize | Native source/batch handoff, quality and promoted output | Existing Step 1 `ready_for_next_step` is true |
-| 4 Scope-aware preparation | Index accepted source; run proposed Step 2 prepare | Reading manifest, views, dependency boundary and paired scoped handoffs | Source and reference integrity pass; scope is bound to the correct source |
+| 4 Scope-aware preparation | Index accepted source; run Step 2 prepare | Reading manifest, views, dependency boundary and paired scoped handoffs | Source and reference integrity pass; scope is bound to the correct source |
 | 5 Overview | Read source/tab summaries, feature capabilities and entry-point candidates | A small overview packet | Agent knows what can be queried and which scope boundaries apply |
 | 6 Targeted exploration | Query cells, ranges, names, controls and VBA modules | Source-bound evidence packets with complete records and pagination | Enough evidence is delivered for the current question, or a specific limitation is recorded |
 | 7 Dependency exploration | Trace the selected output, name or formula path | Bounded graph traversal, frontier and unresolved references | Agent distinguishes completed static traversal from truncation or dynamic uncertainty |
@@ -68,7 +68,7 @@ Keep `step1 tools`, `step1 agent`, `step1 convert`, `step1 check`, `step1 covera
 
 Step 1 continues to scan the full source. Scope decisions affect downstream work, not extraction denominators. Existing `step1.v1` and `step1.batch.v1` handoffs remain the native inputs to indexing. The companion `ai.task_handoff.v1` is an agent reading contract and is not passed to the current native index parser.
 
-### Proposed prepare command
+### Prepare command
 
 ```text
 excel-to-act step2 prepare --index INDEX --step1-root ROOT --out READING_DIR [--scope SCOPE] [--resume] [--dry-run]
@@ -82,17 +82,17 @@ Preparation invokes a read-only integrity verifier underneath Step 2 rather than
 
 ### Dependency preparation contract
 
-`--scope` is the user-decision input, not an AI handoff or a dependency snapshot. The initial supported input is the source/run-bound `analysis.scope.v1` structure already used by Pricing: source SHA/run identity, retained/excluded sheets, recorded decision authority and the saved-source dependency policy. Prepare checks identity against the selected native index entry, rejects unknown sheets or conflicting retained/excluded lists, and hashes the scope bytes. When a batch is supplied, this scope applies only to its matching source/run entry; other entries use the all-sheets default and remain visible in the manifest.
+`--scope` is the user-decision input, not an AI handoff or a dependency snapshot. The source/run-bound `analysis.scope.v1` structure records source identity, retained/excluded sheets, decision authority and the saved-source dependency policy. Prepare checks identity against the selected native index entry, rejects unknown sheets or conflicting retained/excluded lists, and hashes the scope bytes. When a batch is supplied, this scope applies only to its matching source/run entry; other entries use the all-sheets default and remain visible in the manifest.
 
 The dependency audit and snapshot are outputs, not external inputs. Prepare derives them from the native index's checksum-validated inventory, manifest/name declarations and supported static graph references. It uses the same inventory read already needed for views. For references from retained formulas into excluded sheets, it resolves supported direct A1 destinations and absolute named destinations, records every supported inbound reference and preserves the exact stored source cells and caches of the referenced ranges. It does not recalculate, fill absent cells or load the previous manually generated sidecars as authoritative values. Unsupported or dynamic references are reported as unresolved, so supported static counts do not assert complete dynamic coverage.
 
-The current Pricing scope contains legacy `dependency_policy.snapshot` and `audit` basenames. Prepare treats them as historical hints and reports that they were not consumed. It does not infer trusted input files from those basenames or follow the hashes in a separate AI companion. Imported or human-edited dependency values are outside this initial contract. A future import requirement would need an explicit source-bound, checksummed input contract.
+Legacy dependency filenames without bound hashes are hints, not trusted input files. Prepare does not infer authoritative dependencies from filenames or from a separate companion file. Imported or human-edited dependency values require an explicit source-bound, checksummed input contract.
 
 Prepare copies the decision scope unchanged into the reading bundle. Generated audit/snapshot headers bind source SHA, run ID and that decision-scope hash. The reading manifest supplies the authoritative relative paths and SHA-256 values of both generated outputs; both human and AI handoffs refer to those manifest-bound outputs. Source-derived counts in the reports are computed from the checked inputs, not trusted from legacy scope summaries. There is no circular hash dependency: the snapshot names the decision-scope hash, while derived-file hashes live in the manifest rather than inside the decision scope.
 
-If a required native source artifact is missing or changed, preparation blocks. If a referenced cache is unavailable, the snapshot reports it explicitly and does not claim numeric readiness. If a prepared audit or snapshot is later changed or missing, resume, read validation and handoff validation reject that bundle. Changing an unused legacy sidecar cannot change the generated snapshot. Pricing acceptance requires deriving the existing 864 supported inbound references, 12 ranges and 1,464 stored records from the checked source, with the static-resolution limitations retained.
+If a required native source artifact is missing or changed, preparation blocks. If a referenced cache is unavailable, the snapshot reports it explicitly and does not claim numeric readiness. If a prepared audit or snapshot is later changed or missing, resume, read validation and handoff validation reject that bundle. Changing an unused legacy sidecar cannot change the generated snapshot. Source-derived counts must be recomputed from checked inputs and labeled with applicable static-resolution limitations.
 
-### Proposed query command
+### Query command
 
 ```text
 excel-to-act step2 query --manifest MANIFEST --source-id SOURCE --kind KIND [--target TARGET] [--sheet SHEET] [--range A1_RANGE] [--budget N] [--cursor CURSOR] [--out PACKET]
@@ -122,7 +122,7 @@ Trace preserves the edge showing an excluded-sheet boundary and delivers only ap
 
 The token budget is an estimate consistent with existing chunking. Records are indivisible. Oversized records are reported with their source-file reference and a suggested narrower query or larger budget; they are not truncated and then represented as exact source facts. A packet explicitly lists delivered record IDs, omitted or oversized records and the next cursor.
 
-### Proposed trace command
+### Trace command
 
 ```text
 excel-to-act step2 trace --manifest MANIFEST --source-id SOURCE --kind KIND --target TARGET [--sheet SHEET] --direction upstream|downstream|both [--max-depth N] [--max-nodes N] [--max-edges N] [--out PACKET]
@@ -178,7 +178,7 @@ The source extraction artifacts and exported VBA files remain referenced instead
 
 The manifest stores source/run identity, native index hash, scope hash, compiler version/options, per-view hashes and compact lookup entries. Reuse existing `WorkbookView`, `ViewRecord`, `SourceLocation` and graph models. Add a typed scope and handoff/packet envelope only where the current ad hoc structures need validation. A file-backed manifest and per-view JSON are sufficient initially; a database is justified only by measured query costs.
 
-Compile and parse the large source inventory once per preparation revision. Persist the already-built graph rather than building it again for each trace. A query loads only the required view files and verifies their hashes against the bound manifest. It does not deserialize the entire 773 MB Pricing views file for every question.
+Compile and parse the source inventory once per preparation revision. Persist the already-built graph rather than building it again for each trace. A query loads only the required view files and verifies their hashes against the bound manifest; it does not reload unrelated views for every question.
 
 Preparation performs full integrity validation. Each read verifies the current source identity, bound manifest and selected evidence hashes. Final handoff validation checks all referenced outputs. Hashing the small original workbook is different from reparsing every worksheet or regenerating all views; the former remains an identity check.
 
@@ -199,7 +199,7 @@ An evidence packet adds selection metadata, canonical view references, the suppl
 
 All reader commands return structured status, identity, metrics, diagnostics and next actions. Absence of a supported match is distinct from ambiguity, missing artifacts, exclusion, truncation and unsupported resolution. Integrity errors block use. A bounded or partially resolved packet can remain usable, with `ready_for_static_analysis` scoped to the stated question and `workflow_verified: false` until behavior evidence exists.
 
-Tool catalogues list implemented capabilities only. Step 2 adds a `reader_commands` section for prepare/query/trace and references the view validator. Existing recovery-dispatch entries and their attempt history remain separate. Ordinary queries, cursor pages and traces do not consume the three indexing recovery attempts.
+Tool catalogues list implemented capabilities only. The Step 2 catalog's `reader_commands` section lists prepare/query/trace and references the view validator. Recovery-dispatch entries and their attempt history remain separate. Ordinary queries, cursor pages and traces do not consume the indexing recovery attempts.
 
 ## Proposed agent instructions
 
@@ -230,42 +230,17 @@ The main agent establishes inputs, outputs and workflow from evidence. TypeSafe/
 
 A fresh independent reviewer receives the task requirements, current specifications and source packets. It checks realistic behavior and data-contract problems, including whether a claimed output path crosses a frozen dependency boundary or uses an unresolved VBA target. Findings require source evidence and a direct requirement mapping. The reviewer can request additional packets through the same reader tools. Source-citation validation is necessary but cannot replace semantic review.
 
-## Pricing acceptance walkthrough
+## Source-backed exploration pattern
 
-The existing run provides a realistic pilot: 45 retained sheets, 49 valid retained checkbox bindings, 8 matched ActiveX events and 50 exported VBA modules. Four excluded sheets contain all 265 invalid checkbox links. Retained formulas still have 864 static references into 12 preserved ranges on those sheets. The snapshot contains 1,464 stored cells, including 1,364 formula cells with saved caches.
+Start with an overview, then select a declared output, input, control or procedure from the current source. Query complete records with their original locations and trace supported static references within the confirmed scope. Treat control associations and VBA text as declarations, not proof of runtime execution. Keep dynamic destinations, unsupported references and excluded-sheet boundaries explicit. Changed-scenario claims require separate runtime evidence from a controlled workbook copy and a recorded comparison; they cannot be inferred from saved values or static source.
 
-The initial exploration target is `Sheet9.CmdPremium_Click`:
+## Validation and operational checks
 
-1. Overview identifies `PremiumTable` and its declared button/event association.
-2. Query the retained `Check Box 1` binding with owner sheet `CalculationOfBE_OtherDisease`. The delivered canonical record must show the resolved target `CalculationOfBE_OtherDisease!F14` and its original package-part sources. Query `F14` separately for the linked cell fact. A binding fact can pass source-citation validation; changing its target or citing an undelivered binding must fail.
-3. Query the canonical ActiveX event record for `PremiumTable.CmdPremium`, followed by the complete `Sheet9` module. This checks the control-to-module evidence path without claiming that the button was executed.
-4. Query `ValueTable`, `Variables` and `IssueAge` declarations with the appropriate worksheet context. Query the cells holding the variable names and their declared destinations. Treat a current table entry as an observed value, not proof of every possible dynamic target.
-5. Query `GP`, `NLP` and the other output names read by the procedure. Trace the corresponding formula paths into retained inputs and preserved dependency ranges.
-6. Record the source sequence: write Main inputs, loop over issue age, call `Application.Calculate`, read Premium outputs and write PremiumTable results. This is a static interpretation until observed at runtime.
-7. Validate source citations and independently review the resulting workflow specification.
-
-If changed-scenario behavior is required, capture a baseline, one input variation and the relevant macro operation in an Excel copy. Record inputs, output values, calculation mode and the observed writes. These cases supply runtime evidence and later numerical reconciliation. They are not a prerequisite for preserving facts or building a usable index, and they do not silently broaden the four-sheet exclusion.
-
-## Implementation order and checks
-
-| Increment | Deliverable | Evidence that it works |
-| --- | --- | --- |
-| P0 Preparation and handoffs | Source-bound scope, separately addressable views with canonical control records, preparation manifest, paired English handoffs and prepare CLI | Existing final reports stay unchanged; control views are bound to the checked module artifacts; relocated roots resolve; scope changes invalidate only reading preparation; dry-run writes nothing |
-| P1 Targeted querying | Query CLI, bounded packets, catalogue and agent continuation instructions | Reading one source/view does not load the monolithic views file; ambiguous names require context; pagination and oversized records are explicit |
-| P2 Static dependency tracing and packet validation | Name/range expansion, bounded upstream/downstream trace, claim validation against canonical delivered evidence | GP tracing reaches its supported destination; consumers through ranges/names are found; cycles and limits terminate; altered or unsupplied facts fail validation |
-| P3 Real scoped exploration | CmdPremium workflow specification, bounded typed judgments and fresh independent review | Every conclusion has evidence or an explicit unresolved decision; excluded controls stay outside the backlog; cached results are not presented as new-scenario results |
-
-Before implementation, assess these increments separately. P0 and P1 have a clear path across existing CLI, schemas, views and index helpers and fit a normal implementation tier. P2 needs a separate assessment of name/range resolution and graph coupling; substantial resolution behavior can justify a complex tier. The initial target is static supported references, not arbitrary Excel evaluation. Missing design evidence triggers investigation rather than automatic tier escalation.
-
-Required checks should concentrate on realistic workflow cases:
-
-1. Prepare rejects wrong-source scope, missing native source references and checksum mismatch while preserving original artifacts. It derives dependency outputs from checked source data, ignores legacy sidecars as inputs, and detects a changed or missing generated snapshot/audit on reuse or validation.
-2. An unchanged reading bundle resumes; changed scope or source/compiler inputs invalidate the relevant reuse.
-3. Query packets preserve complete source facts and locations and return only the selected eligible source records. The retained OtherDisease checkbox and PremiumTable ActiveX event have canonical view/record citations bound to their module artifacts.
-4. Workbook-local and worksheet-local names, identical names across batch sources, empty cells and oversized VBA records follow the declared query rules.
-5. Tracing resolves supported absolute names/ranges, reports unsupported/dynamic boundaries, handles reverse range membership and stops at its limits.
-6. The 12 approved Pricing ranges remain readable dependencies without converting their excluded parent sheets or restoring the 265 ignored repairs. A contained query to `CalculationOfBE_CI!O7:Q112` succeeds; a direct query to `CalculationOfBE_CI!A1` or a wider range crossing outside the approved range returns `out_of_scope`. An excluded sheet overview returns metadata only, and tracing stops at the approved dependency data boundary.
-7. Claim validation rejects an altered fact, wrong run/location, tampered canonical reference or citation to a record not supplied in the packet.
-8. Discovery and handoff commands return structured errors and non-zero exits for failed integrity or validation; reading operations do not exhaust recovery history.
-
-The final implementation review should verify both the fixed progression and the amount of repeated work. Instrument raw extraction, inventory parsing, graph construction and selected view loading in the real walkthrough. Preparation may perform the expensive work once; repeated questions should reuse it. Performance claims require observed counts and timings from that walkthrough.
+- Preparation rejects a wrong-source scope, missing native references and checksum mismatches without changing upstream artifacts. Derived outputs come from checked source data; unbound sidecars are not treated as authoritative.
+- An unchanged reading bundle resumes. Changes to source, scope, compiler inputs or generated artifacts invalidate the affected reuse.
+- Query packets contain complete source records, original locations, explicit pagination and only the selected eligible records. Ambiguous names require enough context; missing cells remain distinct from zero.
+- Workbook-local and worksheet-local names, batch source selection, oversized records and control/module records follow their declared CLI contracts.
+- Tracing resolves only supported name and range references, finds range consumers, preserves edge direction, and terminates at configured limits. Dynamic, unsupported and excluded-scope boundaries remain explicit.
+- Citation validation rejects changed or wrong-run facts, tampered references, and records that were not delivered in the packet.
+- Paired reports share provenance and labels. Static analysis and source citations do not establish business correctness, runtime behavior or numerical equivalence.
+- Reader operations reuse prepared views and graph data. Record performance counts and timings only when they were measured for the current source and run.

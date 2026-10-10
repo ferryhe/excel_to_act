@@ -40,6 +40,6 @@ These three issues extend the completed Step 2 foundation above. Implement them 
 
 ### [#32 feat(cli): step2 trace — Trace Dependencies with Bounds and Complete a Real Exploration Workflow](https://github.com/ferryhe/excel_to_act/issues/32)
 
-- Deliverables: bounded static dependency traversal, name/range resolution, replayable fixture and real Pricing CLI walkthrough, and independently reviewed exploration evidence.
+- Deliverables: bounded static dependency traversal, name/range resolution, replayable source-backed CLI fixture, and independently reviewed exploration evidence.
 - Dependency order: #30, #31.
 - Draft: [step2-trace.md](step2-trace.md)

@@ -1,8 +1,7 @@
-# Step3 evidence exploration and semantic draft
+# Step 3 source evidence CLI
 
-Goal: make the fact selection and dependency tracing used by the Agent repeatable, then use those tools to create a source-cited Pricing semantic draft for AI and people. Keep accepted source artifacts and the existing structural stages unchanged.
+The query and trace tools let an Agent inspect checked source records and bounded static dependencies for a selected workflow. Use them to build a source-cited design while keeping accepted upstream artifacts unchanged. The commands navigate evidence; they do not calculate formulas, run VBA, or prove numerical behavior.
 
-Pre-implementation assessment: complex. The change joins source/scoped-name selection, bounded graph traversal, stage integrity and canonical evidence validation across the Step3 workflow, exports, CLI and tests. Existing `_load_context`, `_read_stage`, inventory and dependency artifacts supply the foundation; standard-library JSON and graph traversal suffice. Keep the selected `gpt-6-sol / high` worker for implementation and repairs, then obtain a fresh `gpt-6-sol / high` acceptance review. Copilot is user-disabled. No publication is authorized.
 
 ## Small CLI surface
 
@@ -14,17 +13,14 @@ Query/trace without `--out` return machine JSON. With `--out`, write paired `que
 
 Use a small fixed semantic section set: field roles, logical axes, calculation groups, outputs, macro workflow, open questions and validation plan. Preserve useful structured details and evidence references. A natural-language inference is not an exact fact claim; validating citations does not prove its business meaning or numerical behavior.
 
-## Pricing exploration and deliverables
+## Targeted exploration and deliverables
 
-1. Capture Main inputs; Premium year/age axes, row-9/row-10 initial conditions and term indicators.
-2. Trace GP/NLP and explain the cost aggregates and fee/annuity timing.
-3. Capture the ten incidence columns and ten matching death-benefit columns; record candidate matrices and row-wise cost reduction.
-4. Follow dynamic naming prefixes to current declared names and configuration cells. Preserve current-value resolution separately from general scenario validity.
-5. Inspect state recurrences and EOP/MOP/BOP formulas, including survival/state weights and lookup matching conventions.
-6. Read the retained PremiumTable macro, scenario table, ordered input writes and output mapping. Describe static behavior without claiming runtime execution.
-7. Produce paired evidence packets, a paired semantic specification, a prioritized exploration backlog and an Excel/CPU reconciliation case plan. List exactly which evidence is still missing.
-
-Actual runs live under `output/step3_exploration_20261008/`; human documentation links the paired artifacts and current CLI. Pricing and a different workbook must use the same commands, with no Pricing-specific parser rules.
+1. Bind the requested output selectors, order, scenario, scope and current input boundary.
+2. Query the target and relevant source records using explicit selectors and worksheet context when needed.
+3. Trace supported upstream or downstream paths and record scope boundaries, frontiers, dynamic references and unresolved evidence.
+4. Inspect declared names, tables, controls or VBA records only when they relate to the selected workflow; static association does not prove execution.
+5. Prepare source-cited query/trace packets, a paired semantic design, open questions and a scoped validation plan.
+6. Keep each run's artifacts under its own source-bound workflow and local `output/` directory. A later source uses the same command contracts with its own targets and evidence.
 
 ## Acceptance checks
 
@@ -33,5 +29,5 @@ Actual runs live under `output/step3_exploration_20261008/`; human documentation
 - Upstream/downstream and multi-start range traces preserve edge direction, stop on limits/cycles, and retain unknown/excluded frontier.
 - Tampered packets, changed facts with updated packet hashes, unknown evidence IDs and stale spec bindings are rejected before replacing valid outputs.
 - Fact, inferred and pending statuses are kept distinct. Semantic validation cannot enable runtime/generation/GPU readiness.
-- JSON/Markdown pairs share content and provenance. Actual Pricing evidence supports every factual conclusion; unresolved interpretations remain explicit.
+- JSON/Markdown pairs share content and provenance. Current source evidence supports every factual conclusion; unresolved interpretations remain explicit.
 - Existing structural CLI and full tests continue to pass; a fresh independent reviewer checks realistic acceptance-scoped defects only.

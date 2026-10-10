@@ -46,14 +46,14 @@ excel-to-act step3 plan --analysis $analysis
 excel-to-act step3 check --analysis $analysis
 ```
 
-Use bounded queries and traces to record source facts and paths. The following selectors illustrate the included Pricing case; replace them with the chosen source's actual cells, fields, names or macro identifiers. They are not defaults for a new workbook:
+Use bounded queries and traces to record source facts and paths. These selectors are syntax examples only; replace them with the selected source's actual cells, fields, names or module identifiers:
 
 ```powershell
-excel-to-act step3 query --analysis $analysis --target "Main!C3" --out "output/conversion/packets/main-input"
-excel-to-act step3 query --analysis $analysis --target "Premium!B8:B10" --offset 0 --limit 100
-excel-to-act step3 query --analysis $analysis --target "GP"
-excel-to-act step3 query --analysis $analysis --target "vba:Sheet9" --out "output/conversion/packets/sheet9"
-excel-to-act step3 trace --analysis $analysis --target "GP" --direction upstream --max-depth 4 --max-fields 100
+excel-to-act step3 query --analysis $analysis --target "Sheet1!A1" --out "output/conversion/packets/source-cell"
+excel-to-act step3 query --analysis $analysis --target "Output!B2:B4" --offset 0 --limit 100
+excel-to-act step3 query --analysis $analysis --target "RESULT_NAME"
+excel-to-act step3 query --analysis $analysis --target "vba:MODULE" --out "output/conversion/packets/module"
+excel-to-act step3 trace --analysis $analysis --target "RESULT_NAME" --direction upstream --max-depth 4 --max-fields 100
 ```
 
 Before final semantic design, prepare an ordered target file and an Agent-authored `step3.input_boundary.input.v1` catalog. The catalog groups source scalars, vectors, and sparse tables, and separately accounts for axis metadata, source labels, constants, and unresolved retained coordinates. Use exact source ranges and coordinates; a sparse table must carry an explicit coordinate map. Do not infer that physical rows are business records or that adjacent columns share semantics. This phase describes the selected saved source only: `scenario.overrides` must be `{}`, and selectors are text metadata, not numeric values. Source, scenario, target, and catalog objects use closed documented field sets. Catalog `value_source_policy` keeps formula caches prohibited, names only the formula-mode source, and cannot claim formula-derived values are available now; future-source and binding declarations are non-empty text lists using the declared policy values. Object-form open questions require non-empty text `question_id` and `question`; any supplied source-record question reference must cite a declared question. Axis provenance descriptions and source header labels are text metadata. Unknown fields or wrong-typed payloads such as `sample_rates`, structured availability flags, `rates`, and numeric selector arrays are rejected before an artifact is appended. Source header labels remain verbatim in their documented metadata field. Formula-derived external values require a later, separately approved value-capture design; formula caches are never inputs.
@@ -117,7 +117,7 @@ The design may include an optional `tool_execution_ledger` with text-only `tool`
 
 ## 4. Generate standalone Python
 
-For each workbook, use its current confirmed input boundary and accepted semantic design. Earlier or rejected bundles remain historical evidence; their approval cannot release a replacement design. Source-specific parameters and manual checks for the included workbook are in the [Pricing case study](examples/pricing_conversion_case.md), not the generic Agent defaults.
+For each workflow, use its current confirmed input boundary and accepted semantic design. Earlier or rejected bundles remain historical evidence; their approval cannot release a replacement design. Read source-specific parameters and manual checks from the current workflow's bound evidence, not from reusable defaults.
 
 After the Stage 3 report has both current approvals, discover a fresh active trace from the approved targets, then emit the bounded model:
 
@@ -131,17 +131,17 @@ For a modular bundle, follow the accepted capture and implementation design: `st
 
 ## 5. Validate the generated code and reconcile with Excel
 
-Run the generated code without the workbook or project package, then capture a new native Excel baseline and reconcile both results. The target/range arguments below illustrate the included Pricing case. Select all ranges and targets required by the current accepted design and manifest, and check adapter compatibility before using another workbook:
+Run the generated code without the workbook or project package, then capture a new native Excel baseline and reconcile both results. The target/range arguments below are placeholders. Select all ranges and targets required by the current accepted design and manifest, and check the adapter's declared compatibility for the current source:
 
 ```powershell
 excel-to-act step5 validate --workflow WORKFLOW_DIR
-excel-to-act step5 oracle --workflow WORKFLOW_DIR --target GP --target AnnuityDue --target PVLoading --target PVFB --range "Premium!B9:CD115"
+excel-to-act step5 oracle --workflow WORKFLOW_DIR --target RESULT_NAME --range "SHEET!A1:B10"
 excel-to-act step5 reconcile --workflow WORKFLOW_DIR --validation VALIDATION_JSON --oracle EXCEL_ORACLE_JSON --abs-tol 1e-12 --rel-tol 1e-12
 ```
 
 `step5 validate` compiles and runs the standalone generated bundle in an isolated temporary directory. It does not compare against Excel. `step5 oracle` requires Windows with Microsoft Excel, disables macros and events, recalculates a private read-only copy, captures requested defined names and finite ranges, then closes without saving. It records evidence only and does not advance Stage 5. `step5 reconcile` separately verifies the source, inputs, targets, active formula values, error codes, and tolerances. Both generated-code validation and reconciliation must pass before the Stage 5 report is reviewable. Review `validation_report.json/.md`, then record Agent and human decisions.
 
-The current implementation covers the approved saved scenario and declared trace only. It is not a general Excel compiler, all-configuration model, feedback solver, or GPU implementation. A pass must not be described as broader than the compared targets, formulas, scenarios, and ranges.
+Each reconciliation covers only its declared scenario, targets, formulas, and ranges. The workflow is not a general Excel compiler or an all-configuration model; a pass must not be described as broader than the evidence actually compared. Feedback solving or GPU execution requires separate implementation and evidence.
 
 ## 6. Create the final report
 
