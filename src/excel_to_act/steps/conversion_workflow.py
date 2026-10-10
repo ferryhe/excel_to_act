@@ -132,21 +132,23 @@ def review_tool_entries(stage: int) -> list[dict[str, Any]]:
         raise ValueError(f"unsupported workflow stage: {stage}")
     reviewers = "agent|human|typesafe" if stage >= 3 else "agent|human"
     evidence_option = " [--evidence REVIEW.json]" if stage >= 3 else ""
+    return_stages = "|".join(str(value) for value in range(1, stage + 1))
     entries = [
         {"name": "workflow.status", "command": "workflow status --workflow DIR",
          "inputs": {"workflow": "six-stage conversion workflow directory"},
          "outputs": ["checkpoint freshness", "recorded decisions", "next permitted stage"],
          "next": ["workflow.confirm", "workflow.reject"]},
         {"name": "workflow.confirm",
-         "command": f"workflow confirm --workflow DIR --stage {stage} --reviewer {reviewers} --decision approve|reject --message TEXT{evidence_option}",
+         "command": f"workflow confirm --workflow DIR --stage {stage} --reviewer {reviewers} --decision approve --message TEXT{evidence_option}",
          "inputs": {"workflow": "conversion workflow", "stage": str(stage),
                     "reviewer": "agent or human" if stage < 3 else "agent, human, or delegated TypeSafe",
-                    "decision": "approve or reject", "message": "review evidence or explicit user response"},
+                    "decision": "approve only; use workflow.reject to reject", "message": "review evidence or explicit user response"},
          "outputs": ["receipt bound to the current JSON/Markdown revision and upstream inputs"],
          "next": ["workflow.status"]},
         {"name": "workflow.reject",
-         "command": f"workflow reject --workflow DIR --stage {stage} --reviewer {reviewers} --return-to N --message TEXT{evidence_option}",
-         "inputs": {"workflow": "conversion workflow", "stage": str(stage), "return_to": "a permitted earlier checkpoint"},
+         "command": f"workflow reject --workflow DIR --stage {stage} --reviewer {reviewers} --return-to {return_stages} --message TEXT{evidence_option}",
+         "inputs": {"workflow": "conversion workflow", "stage": str(stage),
+                    "return_to": f"current or earlier checkpoint {return_stages}"},
          "outputs": ["rejection receipt and invalidated downstream approvals"],
          "next": ["workflow.status"]},
     ]
@@ -1151,4 +1153,3 @@ def workflow_status(root: Path) -> dict[str, Any]:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-

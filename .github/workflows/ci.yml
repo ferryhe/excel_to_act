@@ -10,6 +10,73 @@ permissions:
   contents: read
 
 jobs:
+  runtime-licenses:
+    name: Default runtime licenses / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install default package in an isolated environment
+        run: |
+          python -m venv "$RUNNER_TEMP/runtime-venv"
+          "$RUNNER_TEMP/runtime-venv/bin/python" -m pip install .
+
+      - name: Reject known violating and incomplete metadata samples
+        run: |
+          "$RUNNER_TEMP/runtime-venv/bin/python" tools/check_runtime_licenses.py --self-test
+          if "$RUNNER_TEMP/runtime-venv/bin/python" tools/check_runtime_licenses.py --sample-violation; then
+            echo "License checker accepted a known GPL violation." >&2
+            exit 1
+          fi
+
+      - name: Check the default runtime dependency closure
+        run: |
+          "$RUNNER_TEMP/runtime-venv/bin/python" -c "import importlib.util; assert importlib.util.find_spec('formulas') is None"
+          "$RUNNER_TEMP/runtime-venv/bin/python" tools/check_runtime_licenses.py
+
+      - name: Verify numerical validation degrades without the optional backend
+        run: |
+          PYTHONPATH=src "$RUNNER_TEMP/runtime-venv/bin/python" -c "from pathlib import Path; from excel_to_act.schemas import WorkbookInventory, CoverageSummary, SheetInventory, SourceLocation, CellInventory; from excel_to_act.verify.numerical import validate_workbook; s=SheetInventory(source_location=SourceLocation(sheet_name='S', object_type='sheet'), name='S', index=0, max_row=1, max_column=1, cells=[CellInventory(source_location=SourceLocation(sheet_name='S', address='A1', object_type='cell'), address='A1', row=1, column=1, kind='formula', formula='=1+1')]); i=WorkbookInventory(workbook_sha256='test', sheets=[s], coverage=CoverageSummary(recognized_inventory_objects=1, unsupported_or_opaque_objects=0, discovered_workbook_objects=1)); r=validate_workbook(Path('unused.xlsx'), i); assert r.status == 'not_run' and r.coverage.compared_cells == 0"
+
+  formulas-oracle:
+    name: formulas oracle / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install the explicit oracle extra
+        run: |
+          python -m venv "$RUNNER_TEMP/oracle-venv"
+          "$RUNNER_TEMP/oracle-venv/bin/python" -m pip install '.[oracle-formulas]'
+
+      - name: Import and calculate the #7 fixture
+        run: |
+          "$RUNNER_TEMP/oracle-venv/bin/python" tools/check_formulas_oracle.py
+
   python:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest

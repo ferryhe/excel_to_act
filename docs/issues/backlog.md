@@ -1,21 +1,19 @@
 # Issue Backlog
 
-Reorganized after an independent review on October 3, 2026. This file is synchronized with the task definitions in GitHub Issues `ferryhe/excel_to_act`; the real Issues are #3–#14. Use the updated issue bodies as the source of truth for titles, statuses, and acceptance criteria; priorities are stated in each item.
+Reconciled with live GitHub snapshots and merged PR evidence on October 8, 2026. GitHub Issue #3 is the Epic; its child Issues are #4–#14. Preserve the scope and dependency edges in each live Issue body.
 
-The review baseline is branch `feat/step1-coverage-handoff` at commit `c86fa55`. Core ingestion was merged in PR #15, and the cache-boundary regression for #4 was merged in PR #16; the current working directory is main (`f12871b`), and the original review branch is retained. #4 was accepted and closed, #10 was closed as deferred, and #12 was closed after being merged into #14; 9 issues remain open and 3 are closed. The remaining implementation work is still pending.
+This PR aligns the backlog and closes Epic #3 once merged. All child Issues #4–#14 are closed. Delivery: #4 PRs #15/#16; #5 #38; #6 #27; #7 #41; #8 #37; #9 #39 plus #40; #10 deferred with parser-fidelity research incomplete; #11 #36; #12 folded into #14; #13 #28; #14 #29, including the #12 contract. See each item for limits and evidence.
 
 <!-- ISSUE_NUMBER: 3 -->
 <!-- ISSUE: docs: Phase 1.5 actual tasks, dependencies, and phase acceptance (Epic) -->
 
 ## Issue 3 docs: Phase 1.5 actual tasks, dependencies, and phase acceptance (Epic)
 
-[GitHub Issue #3](https://github.com/ferryhe/excel_to_act/issues/3) · Open
+[GitHub Issue #3](https://github.com/ferryhe/excel_to_act/issues/3) · Phase 1.5 Epic closeout
 
 ### Current status
 
-Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`.
-
-This Epic tracks this cycle's actual tasks, dependencies, and phase exits. Core ingestion was merged into main in [PR #15](https://github.com/ferryhe/excel_to_act/pull/15); #4's cache-boundary regression and field review were completed in [PR #16](https://github.com/ferryhe/excel_to_act/pull/16). All 5 cache-specific tests, all 26 tests, and Ruff passed; CI passed on Python 3.11/3.12/3.13. The remaining fixes will proceed as listed below.
+This PR aligns the backlog with live child Issue statuses, scope, dependencies, and merged PR evidence, and closes the Epic once merged. The closeout records #10 as an accepted deferral with parser-fidelity research incomplete; #12's requirements are consolidated into #14 with no separate implementation. The original scope and dependency ordering remain unchanged.
 
 ### What to do
 
@@ -25,38 +23,40 @@ Make the decomposition artifacts reliable first, then proceed with Agent views a
 
 | Issue | Status | Priority | Current work |
 |---|---|---|---|
-| #4 | Completed and closed | Complete | Core ingestion and cache-boundary regression merged in PR #15/#16 |
-| #8 | Not started | P0 | Diagnostics for input-read failures, stop downstream work, and complete the CLI path |
-| #5 | Partially implemented; needs correction | P0 | Object accounting, independent discovery, fail on omissions, and per-sheet differences |
-| #13 | Not started | P0 | Fidelity rules and minimal support for raw values/formula properties |
-| #6 | Not started | P0 | Tokenizer and reliable reference graph |
-| #11 | To be written | P1; required conventions first | Existing layers, cross-layer services, and artifact boundaries |
-| #14 | Not started; includes #12 | P1 | Minimal executable views and Agent reference validation |
-| #9 | Partially implemented | P1 | Core dependency boundary and actual compatibility of the selected backend |
-| #7 | Not started | P1 | Cached baseline plus one real recalculation source |
-| #10 | Closed as deferred | Reopen as needed | No current integration need; this does not mean the focused research is complete |
-| #12 | Closed after merging into #14 | With #14 | Reading/write-back contract and all positive/negative examples moved to #14 |
+| [#4](https://github.com/ferryhe/excel_to_act/issues/4) | Closed; accepted | Complete | Cache ingestion and boundary regression; PRs #15/#16 |
+| [#8](https://github.com/ferryhe/excel_to_act/issues/8) | Closed | P0 | Controlled read-failure diagnostics and CLI path; PR #37 includes real encrypted and damaged inputs |
+| [#5](https://github.com/ferryhe/excel_to_act/issues/5) | Closed | P0 | Identity-based coverage, per-sheet/per-kind gaps, failure handoff and nonzero exit; PR #38 |
+| [#13](https://github.com/ferryhe/excel_to_act/issues/13) | Closed | P0 | Fidelity rules, raw fields, schema and read-back; PR #28 |
+| [#6](https://github.com/ferryhe/excel_to_act/issues/6) | Closed | P0 | Tokenizer-based reference graph; PR #27 |
+| [#11](https://github.com/ferryhe/excel_to_act/issues/11) | Closed | P1 | Layer boundaries and artifact contracts; PR #36 |
+| [#14](https://github.com/ferryhe/excel_to_act/issues/14) | Closed; includes #12 | P1 | Deterministic views and reference validation, including #12 contract; PR #29 |
+| [#9](https://github.com/ferryhe/excel_to_act/issues/9) | Closed | P1 | Default-runtime license gate and selected formulas fixture; PRs #39/#40 |
+| [#7](https://github.com/ferryhe/excel_to_act/issues/7) | Closed | P1 | Legacy `inspect` cache comparison; PR #41, with incomplete cases documented |
+| [#10](https://github.com/ferryhe/excel_to_act/issues/10) | Closed as deferred | Reopen as needed | Accepted deferral; parser-fidelity research was not performed and remains incomplete |
+| [#12](https://github.com/ferryhe/excel_to_act/issues/12) | Closed; folded into #14 | With #14 | No separate implementation; requirements delivered under #14 / PR #29 |
 
-The items #4–#14 above are all real GitHub Issues. The four items previously labeled #15–#18 in the backlog are local entries, not Issue numbers; #15 is a PR. Keep them as local implementation records: dataTable, VML control binding, VBA extraction/candidate edges, and completeness/handoff, with evidence pointing to PR #15. Do not create duplicate Issues for existing implementations or describe partial implementations as if every original proposal were complete.
+The items #4–#14 above are the child Issues in this Epic. Four historical entries numbered #15–#18 were local implementation records, now labeled `LOCAL-*`; they were never GitHub Issue IDs. GitHub #15–#17 are PRs, and GitHub #18 is a separate real Step 2 Issue outside this Epic. Keep the local records for data tables, VML controls, VBA, and completeness/handoff, with PR #15 as evidence. PR #15 does not prove every semantic feature or real VBA integration path is complete.
 
 ### Phases and dependencies
 
-1. Align the backlog: synchronize real IDs, scope, status, local backlog, and README; #4 is accepted and closed, #10 is deferred, and #12 is merged into #14.
-2. Make decomposition reliable: #11 first defines the required object/source conventions; the default engineering order is #8 → #5 → #13 → #6.
-3. Enable Agent use: #11 completes the short document, and #14 includes the original #12 contract.
-4. Numerical verification: #9 validates the first backend, and #7 implements the first real comparison.
+1. Align the backlog: this documentation PR synchronizes real IDs, scope, status, local records, and README, and closes Epic #3 once merged. #4 is accepted; #10 is deferred with parser-fidelity research incomplete; #12 is folded into #14.
+2. Decomposition dependencies: #5 depends on #11; #13 depends on #11 and aligns with #5 by object responsibility; #6 depends on #11/#13 and final integration uses #5. #8 is independent.
+3. Enable Agent use: #11 delivered the architecture document, and #14 delivered the #12 contract.
+4. Numerical verification: #9 checked the selected backend and default dependency policy; #7 delivered one real comparison path.
 
-#8 and #9 can proceed independently; #7 does not depend on views. If numerical evidence is the focus of the next milestone, phase 4 can move ahead of phase 3.
+These dependency edges preserve the live child Issue bodies. #8/#9 were independent; #7 did not depend on views. Child closure does not mean capabilities exceed the limits recorded below.
 
 ### How to verify
 
-- [ ] Every item has a real link and accurate status, scope, and dependencies; the README, local backlog, and GitHub agree; local tasks in the README are no longer labeled issues #15/#16/#17.
+- [x] Every item has a real link and accurate status, scope, and dependencies; the README, local backlog, and GitHub agree; local tasks in the README are no longer labeled issues #15/#16/#17.
 - [x] #4 cache-boundary regression has been accepted and closed; PR #15/#16 are merged, and the implementation boundaries and evidence for data tables/controls/VBA/handoff are retained.
-- [ ] Invalid input produces readable failure artifacts and stops downstream work; valid input can be read back.
-- [ ] Omissions fail under unified object accounting, raw facts remain traceable, and the reference graph does not create false edges.
-- [ ] Minimal views compile deterministically, retain all records within budget, and allow Agent source references to be validated.
-- [ ] Numerical verification has a real independent result; missing sources are clearly marked unverified, and differences include location and tolerance.
-- [ ] Close the Epic only after its child items are complete; creating child Issues does not mean implementation is complete.
+- [x] Invalid input produces readable failure artifacts and stops downstream work; valid input can be read back.
+- [x] Omissions fail under unified object accounting, raw facts remain traceable, and the reference graph does not create false edges.
+- [x] Minimal views compile deterministically, retain all records within budget, and allow Agent source references to be validated.
+- [x] Numerical verification has a real independent result; missing sources are clearly marked unverified, and differences include location and tolerance.
+- [x] Close the Epic only after its child items are complete; creating child Issues does not mean implementation is complete.
+
+For this closeout, #10 is an accepted deferral and parser-fidelity research remains incomplete. #12 was consolidated into #14; it had no separate implementation.
 
 Create directories when their documents are ready; do not add empty scaffolding. Record tests using real encrypted files, real VBA integration samples, and recalculation backends under their respective paths; existing unit tests do not replace unperformed integration acceptance.
 
@@ -67,7 +67,7 @@ Create directories when their documents are ready; do not add empty scaffolding.
 
 ## Issue 4 feat(ingest): cached_value ingestion and boundary regression acceptance complete
 
-[GitHub Issue #4](https://github.com/ferryhe/excel_to_act/issues/4) · Closed: acceptance complete; PR #16 merged
+[GitHub Issue #4](https://github.com/ferryhe/excel_to_act/issues/4) · Closed: accepted; PRs #15/#16 merged
 
 ### Current status
 
@@ -110,15 +110,15 @@ Cache presence is determined by `available`; automated regression tests now conf
 
 ## Issue 5 fix(coverage): unify object accounting and block downstream use when objects are missed
 
-[GitHub Issue #5](https://github.com/ferryhe/excel_to_act/issues/5) · Open
+[GitHub Issue #5](https://github.com/ferryhe/excel_to_act/issues/5) · Closed; PR #38 merged
 
 ### Current status and priority
 
 Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P0.
 
-[src/excel_to_act/inventory/extractor.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/inventory/extractor.py) still calculates `discovered` from the number of `recognized` and all `unsupported` records, so the equation is always satisfied. [src/excel_to_act/verify/completeness.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/verify/completeness.py) independently checks sheets, cells, and some package parts, but `discovered` mixes different units of count.
+**Current delivery:** Closed by [PR #38](https://github.com/ferryhe/excel_to_act/pull/38). `CoverageSummary.discovered_workbook_objects` comes from `len(scan["objects"])`, and recognized count is based on matched source identities. Summary counts alone do not prove identity-by-identity coverage; `verify_completeness` compares source and inventory identities, validates stored counts, reports per-sheet/per-kind gaps, saves failure evidence, and exits nonzero for omissions. Human `step1` has separate logical-object and package-part ledgers.
 
-Reproduced: a normal fixture has `recognized=25`, `opaque=2`, and independently discovered `discovered=21`, with an overall status of pass; deliberately removing a cell causes failure, but removing a conditional-formatting object and adjusting the original count still passes. The existing arithmetic info cannot simply be changed to an error, or normal samples would be reported incorrectly.
+At the October 3 planning baseline, the inventory totals were not checked by identity and the earlier completeness checks had the reproduced limits described here. Changing the then-info-level `coverage_arithmetic` severity alone could not provide the independent comparison added in PR #38.
 
 ### What to do
 
@@ -155,13 +155,15 @@ Dependency: the minimal responsibility/object conventions in [#11](https://githu
 
 ## Issue 6 fix(graph): use tokenizer and minimal reference parsing to build reliable dependency edges
 
-[GitHub Issue #6](https://github.com/ferryhe/excel_to_act/issues/6) · Open
+[GitHub Issue #6](https://github.com/ferryhe/excel_to_act/issues/6) · Closed; PR #27 merged
 
 ### Current status and priority
 
 Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P0.
 
-[src/excel_to_act/graph/builder.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/graph/builder.py) still uses REF_RE/EXTERNAL_RE. Reproduced issues include strings incorrectly producing A1 edges, Tables being treated as external, names not producing name nodes, escaped-quote sheet names being truncated, and external references also producing false local edges.
+**Current delivery:** [PR #27](https://github.com/ferryhe/excel_to_act/pull/27) replaced regex scanning with tokenizer operands for cell/range, scoped name, structured-table, and external-workbook references. Dynamic and unsupported references remain outside this scope.
+
+At the October 3 planning baseline, `graph/builder.py` used REF_RE/EXTERNAL_RE and had the reproduced issues listed here; PR #27 delivered the tokenizer-based path summarized above.
 
 GraphNodeKind.name already exists and is no longer listed as a type to add.
 
@@ -200,13 +202,15 @@ Dependencies: the required source and field conventions in #11/#13; final integr
 
 ## Issue 7 feat(validation): compare cached baselines with one optional recalculation source
 
-[GitHub Issue #7](https://github.com/ferryhe/excel_to_act/issues/7) · Open
+[GitHub Issue #7](https://github.com/ferryhe/excel_to_act/issues/7) · Closed; PR #41 merged
 
 ### Current status and priority
 
 Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P1.
 
-Cache ingestion and boundary regression for [#4](https://github.com/ferryhe/excel_to_act/issues/4) were merged into main in PR #15/#16 and accepted; validation/, OracleRunner, and ValidationReport have not yet been implemented. The project currently has no in-house formula-evaluation results; copying a cache and comparing it with the same cache does not count as independent numerical verification.
+**Current delivery:** [PR #41](https://github.com/ferryhe/excel_to_act/pull/41) added the legacy `inspect` comparison against independent `formulas` recalculation, with coverage, difference locations, and tolerance reporting. Unsupported 1904-date comparisons and unknown/unsupported formulas remain incomplete; an unavailable optional backend is `not_run`. This is not complete Excel recalculation.
+
+Cache ingestion and boundary regression for [#4](https://github.com/ferryhe/excel_to_act/issues/4) were merged into main in PR #15/#16 and accepted. The legacy `inspect` path now has `verify/numerical.py` and `ValidationReport`: it compares saved caches with optional, actual `formulas` recalculation and records coverage gaps. The separate human Step 1/2 and post-generation workflows do not consume this report yet. Copying a cache and comparing it with the same cache does not count as independent numerical verification.
 
 ### What to do
 
@@ -242,15 +246,15 @@ Dependencies: #4 cache fields and boundary acceptance (complete, PR #15/#16), #1
 
 ## Issue 8 fix(ingest): save diagnostics on read failure and let the CLI exit cleanly
 
-[GitHub Issue #8](https://github.com/ferryhe/excel_to_act/issues/8) · Open
+[GitHub Issue #8](https://github.com/ferryhe/excel_to_act/issues/8) · Closed; PR #37 merged
 
 ### Current status and priority
 
 Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P0.
 
-[src/excel_to_act/ingest/ooxml_package.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/ingest/ooxml_package.py) does not guard ZIP reads against failure. The scanner already returns a file_type error for xlsb/xls/csv, but [src/excel_to_act/orchestrator/phase1.py](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/src/excel_to_act/orchestrator/phase1.py) still unconditionally calls the extractor afterward.
+**Current delivery:** [PR #37](https://github.com/ferryhe/excel_to_act/pull/37) saves diagnostic-only failed runs, stops downstream extraction, and reports controlled CLI errors. The saved `issue-8/` evidence includes real encrypted and damaged inputs. The change does not decrypt files or add unsupported-format parsing.
 
-Reproduced through the CLI: a malformed xlsx raises BadZipFile; xlsb/xls/csv raise InvalidFileException; no failure handoff is produced. Exit code 1 alone does not prove the error path is controlled. A real encrypted sample is still needed for acceptance; an ordinary malformed ZIP does not replace all encrypted-file checks.
+At the October 3 planning baseline, ZIP/read failures could escape and downstream extraction was not stopped. PR #37 closed that path and its `issue-8/` evidence includes real encrypted and damaged inputs.
 
 ### What to do
 
@@ -285,13 +289,15 @@ This item can proceed independently; it does not wait for Docling, an oracle, or
 
 ## Issue 9 chore(build): check core dependency boundaries and compatibility of the selected oracle
 
-[GitHub Issue #9](https://github.com/ferryhe/excel_to_act/issues/9) · Open
+[GitHub Issue #9](https://github.com/ferryhe/excel_to_act/issues/9) · Closed; PRs #39/#40 merged
 
 ### Current status and priority
 
 Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P1.
 
-[pyproject.toml](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/pyproject.toml) already separates the vba, oracle-formulas, xlcalc, and report extras; [.github/workflows/ci.yml](https://github.com/ferryhe/excel_to_act/blob/c86fa5585b7a8ca0d27642f9f958379d25c120fb/.github/workflows/ci.yml) has tested core Python 3.11/3.12/3.13. These implemented parts were merged into main in PR #15. Optional-backend installation and core-dependency license-metadata checks have not yet been accepted.
+**Current delivery:** PRs [#39](https://github.com/ferryhe/excel_to_act/pull/39) and [#40](https://github.com/ferryhe/excel_to_act/pull/40) enforce the default-runtime dependency license gate and verify the selected formulas opt-in on the fixture. The default installation excludes `formulas`; this does not establish compatibility or license status for every optional extra.
+
+The October 3 planning baseline recorded the extras and Python matrix from PR #15; PRs #39/#40 later delivered the default-runtime license gate and selected formulas fixture check, as summarized above.
 
 ### What to do
 
@@ -359,13 +365,15 @@ Related: [#3](https://github.com/ferryhe/excel_to_act/issues/3), project overvie
 
 ## Issue 11 docs(design): align the existing pipeline, processing layers, and artifact boundaries
 
-[GitHub Issue #11](https://github.com/ferryhe/excel_to_act/issues/11) · Open
+[GitHub Issue #11](https://github.com/ferryhe/excel_to_act/issues/11) · Closed; PR #36 merged
 
 ### Current status and priority
 
 Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P1; define the minimum boundary conventions required by #5/#13 first.
 
-Existing modules have been implemented, but L0–L3 have no normative definitions. Align the actual responsibilities with the target workflow; do not move directories or add wrapper layers to impose layering.
+**Current delivery:** [PR #36](https://github.com/ferryhe/excel_to_act/pull/36) added the normative layer and artifact boundaries and aligned the related documentation without moving directories or adding runtime layers.
+
+At the October 3 planning baseline, L0–L3 had no normative definitions. PR #36 delivered the boundary document without moving directories or adding wrapper layers.
 
 ### What to do
 
@@ -402,7 +410,7 @@ This item only aligns the architecture; it does not replace runtime acceptance f
 
 ## Issue 12 docs(design): merge the Agent reading contract into #14
 
-[GitHub Issue #12](https://github.com/ferryhe/excel_to_act/issues/12) · Closed: merged into #14; not implemented
+[GitHub Issue #12](https://github.com/ferryhe/excel_to_act/issues/12) · Closed; requirements folded into #14 / PR #29
 
 ### Disposition
 
@@ -431,15 +439,15 @@ All of the above are accepted together under #14. This Issue retains its histori
 
 ## Issue 13 fix(ingest): preserve raw values and formula properties and apply fidelity rules
 
-[GitHub Issue #13](https://github.com/ferryhe/excel_to_act/issues/13) · Open
+[GitHub Issue #13](https://github.com/ferryhe/excel_to_act/issues/13) · Closed; PR #28 merged
 
 ### Current status and priority
 
 Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P0.
 
-Formula text, cache fields, number_format, and parsed data_type are currently available; raw value text, raw type, and date serial are not saved. Reproduced: the source XML date value 45292 becomes the string 2024-01-01 00:00:00 in inventory, with type n changed to d; the original numeric text is converted through float, and the artifact has no field to carry the original text.
+**Current delivery:** [PR #28](https://github.com/ferryhe/excel_to_act/pull/28) delivered field-level fidelity rules, schema export, and legacy `phase1.v1` read-back coverage. It does not add Decimal evaluation, Excel recalculation, or full dynamic-array evaluation.
 
-Loading twice only separates formulas from cached values; it does not automatically satisfy all fidelity rules.
+At the October 3 planning baseline, raw value/type and date serial evidence had the documented gaps; PR #28 delivered the fidelity rules and schema/read-back work summarized above.
 
 ### What to do
 
@@ -474,13 +482,15 @@ Dependencies: the required source conventions from #11; align with #5 by object 
 
 ## Issue 14 feat(views): deterministic slice views and verifiable Agent references
 
-[GitHub Issue #14](https://github.com/ferryhe/excel_to_act/issues/14) · Open
+[GitHub Issue #14](https://github.com/ferryhe/excel_to_act/issues/14) · Closed; PR #29 merged
 
 ### Current status and priority
 
 Review baseline: 2026-10-03, branch `feat/step1-coverage-handoff`, commit `c86fa55`. Priority: P1.
 
-The view contract and compiler have not yet been implemented. The original docs task required actually running two compilations; this item is explicitly changed to “short design + minimal executable view” and incorporates the reading/write-back contract from [#12](https://github.com/ferryhe/excel_to_act/issues/12).
+**Current delivery:** [PR #29](https://github.com/ferryhe/excel_to_act/pull/29) delivered deterministic views, source/reference validation, and the design and Agent reading contracts. This includes the requirements folded from #12; #12 had no separate implementation.
+
+At the October 3 planning baseline, the view contract and compiler were not implemented. PR #29 delivered the scoped view path and included the reading/write-back contract folded from [#12](https://github.com/ferryhe/excel_to_act/issues/12).
 
 ### What to do
 
@@ -514,7 +524,7 @@ Dependencies: #11 minimal inter-layer conventions, the trusted-fact contracts in
 
 ## Local implementation records
 
-The entries below were previously labeled #15–#18 and are now local task identifiers. They are not GitHub Issue numbers; GitHub #15 is [PR #15](https://github.com/ferryhe/excel_to_act/pull/15). Preserve the boundary between completed and incomplete work, and do not create duplicate Issues for existing implementations.
+The entries below use descriptive `LOCAL-*` labels; historical #15–#18 were local implementation-record numbers, not GitHub Issue IDs. GitHub #15–#17 are PRs, including [PR #15](https://github.com/ferryhe/excel_to_act/pull/15) and [PR #16](https://github.com/ferryhe/excel_to_act/pull/16); GitHub #18 is a separate real Step 2 Issue outside this Epic. Preserve the boundary between completed and incomplete work, and do not create duplicate Issues.
 
 ### LOCAL-DATA-TABLE What-If Data Tables
 
@@ -532,10 +542,10 @@ Boundary: independent parsing/fallback for ctrlProps and dedicated input classif
 
 The current branch has an optional oletools extractor, VbaModule, candidate references, and vba_ref edges in FormulaGraph, all using the same node namespace. References that cannot be determined statically retain a low-confidence/unresolved boundary; a warning is recorded when the dependency is not installed. Existing tests include candidate references and the fallback path.
 
-An end-to-end sample using a real xlsm containing vbaProject.bin is still needed; mock tests do not count as acceptance of real extraction. VBA is not executed, and this does not cover all macro semantics or XLM/DDE. Implementation evidence: ingest/vba.py, inventory/vba_links.py, orchestrator/phase1.py, and tests/test_vba.py in PR #15.
+An end-to-end sample using a real xlsm containing vbaProject.bin is still needed; mock tests do not count as acceptance of real extraction. No real `.xlsm` VBA integration path was demonstrated. VBA is not executed, and this does not cover all macro semantics or XLM/DDE. Implementation evidence: ingest/vba.py, inventory/vba_links.py, orchestrator/phase1.py, and tests/test_vba.py in PR #15.
 
 ### LOCAL-HANDOFF independent checks and handoff artifacts
 
 The current branch has verify/completeness.py, CompletenessReport, Handoff, report/handoff.py, store writes, and a CLI failure exit path. It outputs completeness.json, handoff.json, and a short English handoff.md; the run directory and root alias can be read back. Existing tests cover basic artifacts, missing sheets, and CLI failure.
 
-Structural checks are not numerical verification; #5 still needs to fix object accounting and omissions of non-cell objects. coverage_arithmetic is currently info, and changing its severity alone does not complete #5. #8 covers failed runs for input files that fail during reading. Implementation evidence: PR #15 and the related files in verify, report, store, orchestrator, and CLI.
+Structural checks are not numerical verification. `CoverageSummary.discovered_workbook_objects` comes from the independent source scan, and recognized count is based on matched source identities. The summary counts alone do not prove identity-by-identity coverage; #5's `verify_completeness` check compares identities and blocks omissions. #8 covers failed runs for input files that fail during reading. Implementation evidence: PR #15 and the related files in verify, report, store, orchestrator, and CLI.

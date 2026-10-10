@@ -44,12 +44,8 @@ def create_design_report(analysis_dir: Path, design_path: Path, workflow_dir: Pa
         if not isinstance(design, dict) or design.get("schema_version") != "step3.analysis_design.input.v1":
             raise ValueError("design input must use schema_version step3.analysis_design.input.v1")
         context_dir, analysis, binding, step1_root, _inventory_path = _load_context(analysis_dir)
-        boundary_reference = None
-        boundary_json = None
-        boundary_md = None
-        if binding.get("workflow_path"):
-            _require_bound_workflow(analysis, binding, workflow_root, workflow)
-            boundary_reference, boundary_json, boundary_md = confirmed_boundary_reference(workflow_root, workflow)
+        _require_bound_workflow(analysis, binding, workflow_root, workflow)
+        boundary_reference, boundary_json, boundary_md = confirmed_boundary_reference(workflow_root, workflow)
         source = workflow["source"]
         source_binding = binding["source"]
         checked = {"source_id": source_binding.get("source_id"), "run_id": source_binding.get("run_id"),

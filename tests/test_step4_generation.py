@@ -303,4 +303,3 @@ def test_step5_validates_and_copies_every_local_bundle_module(tmp_path: Path) ->
     file_hashes["formula_families.py"] = hashlib.sha256(bad_path.read_bytes()).hexdigest()
     assert any("imports unsupported module excel_to_act" in failure
                for failure in _verify_python(bundle, {**manifest, "files": file_hashes}))
-

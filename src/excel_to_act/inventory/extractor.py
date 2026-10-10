@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell
+from openpyxl.styles.numbers import is_date_format
 from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 
 from excel_to_act.ingest.cached_values import read_cached_values
-from excel_to_act.ingest.data_table import read_data_tables
+from excel_to_act.ingest.data_table import PACKAGE_READ_ERRORS, read_data_tables
 from excel_to_act.ingest.form_controls import read_form_controls
+from excel_to_act.steps.step1.source_scan import scan_step1_source
 from excel_to_act.schemas import (
     CellInventory,
     CellKind,
@@ -37,22 +41,87 @@ def _safe_value(value: Any) -> str | int | float | bool | None:
     return str(value)
 
 
+def _identity_key(kind: str, value: str | None) -> str | None:
+    return " ".join(sorted(value.split())) if value and kind in {"conditional_formatting", "data_validation"} else value
+
+
+def _attach_source_identities(inventory: WorkbookInventory, scan: dict[str, Any]) -> int:
+    """Mark only records actually extracted from a matching source declaration."""
+
+    sheets = {sheet.name: sheet for sheet in inventory.sheets}
+    cells = {(sheet.name, cell.address): cell for sheet in inventory.sheets for cell in sheet.cells}
+    ranges: dict[tuple[str, str | None, str | None], deque[RangeInventory]] = defaultdict(deque)
+    for sheet in inventory.sheets:
+        for item in (*sheet.ranges, *sheet.layout_objects):
+            key = (item.name if item.kind == "table" else
+                   item.metadata.get("corner_cell") if item.kind == "data_table" else
+                   item.metadata.get("control_id") if item.kind == "form_control" else
+                   "" if item.kind == "sheet_protection" else item.address)
+            ranges[(item.kind, sheet.name, _identity_key(item.kind, key))].append(item)
+    for item in inventory.workbook_ranges:
+        owner = item.metadata.get("scope", "workbook") if item.kind == "defined_name" else item.source_location.sheet_name
+        key = item.name if item.kind == "defined_name" else item.address
+        ranges[(item.kind, owner, _identity_key(item.kind, key))].append(item)
+    matched: set[str] = set()
+    for source in scan["objects"]:
+        kind = source["kind"]
+        details = source["details"]
+        sheet_name = details.get("sheet") or (details.get("name") if kind == "sheet" else None)
+        record = None
+        if kind == "sheet":
+            record = sheets.get(sheet_name)
+        elif kind == "cell":
+            record = cells.get((sheet_name, details.get("address")))
+        else:
+            owner = details.get("scope", "workbook") if kind == "defined_name" else sheet_name
+            key = (details.get("name") if kind in {"defined_name", "table"} else
+                   details.get("corner_cell") if kind == "data_table" else
+                   details.get("control_id") if kind == "form_control" else
+                   "" if kind == "sheet_protection" else details.get("address"))
+            bucket = ranges.get((kind, owner, _identity_key(kind, key)))
+            record = bucket.popleft() if bucket else None
+        if record is None:
+            continue
+        record.source_identity = source["identity"]
+        record.source_location.source_identity = source["identity"]
+        record.source_location.ooxml_part = source["part"]
+        matched.add(source["identity"])
+    return len(matched)
+
+
 class OpenpyxlInventoryExtractor:
     name = "openpyxl_inventory"
 
     def extract(self, workbook_path: Path, manifest: WorkbookManifest) -> WorkbookInventory:
         workbook_path = workbook_path.expanduser().resolve()
-        wb = load_workbook(workbook_path, data_only=False, read_only=False, keep_vba=workbook_path.suffix.lower() == ".xlsm")
-        cached_values = read_cached_values(workbook_path)
-        data_tables = read_data_tables(workbook_path)
-        form_controls = read_form_controls(workbook_path)
-        sheets: list[SheetInventory] = []
-        workbook_ranges: list[RangeInventory] = []
-        unsupported = list(manifest.unsupported_features)
-        recognized = 0
-        formula_cells = 0
-        cached_hits = 0
         try:
+            wb = load_workbook(workbook_path, data_only=False, read_only=False, keep_vba=workbook_path.suffix.lower() == ".xlsm")
+        except Exception as exc:
+            raise InvalidFileException(
+                f"openpyxl could not read workbook: {type(exc).__name__}: {exc}"
+            ) from exc
+        try:
+            cached_types: dict[tuple[str, str], str] = {}
+            numeric_cache_texts: dict[tuple[str, str], str] = {}
+            cached_values = read_cached_values(workbook_path, cached_types, numeric_cache_texts)
+            try:
+                data_tables = read_data_tables(workbook_path)
+            except PACKAGE_READ_ERRORS as exc:
+                raise InvalidFileException(
+                    f"Could not read workbook data-table package parts: {type(exc).__name__}: {exc}"
+                ) from exc
+            try:
+                form_controls = read_form_controls(workbook_path)
+            except PACKAGE_READ_ERRORS as exc:
+                raise InvalidFileException(
+                    f"Could not read workbook form-control package parts: {type(exc).__name__}: {exc}"
+                ) from exc
+            sheets: list[SheetInventory] = []
+            workbook_ranges: list[RangeInventory] = []
+            unsupported = list(manifest.unsupported_features)
+            recognized = 0
+            formula_cells = 0
+            cached_hits = 0
             for i, ws in enumerate(wb.worksheets):
                 sheet = SheetInventory(
                     source_location=_loc(workbook_path, "sheet", ws.title, i),
@@ -102,6 +171,9 @@ class OpenpyxlInventoryExtractor:
                                 style_id=getattr(cell, "style_id", None),
                                 cached_value=cached_values.get(cache_key) if has_cached else None,
                                 cached_value_available=has_cached,
+                                ooxml_cell_type=cached_types.get(cache_key) if has_cached else None,
+                                date_serial_text=(numeric_cache_texts.get(cache_key) if has_cached and
+                                                  is_date_format(cell.number_format or "") else None),
                             )
                         )
                         recognized += 1
@@ -109,17 +181,27 @@ class OpenpyxlInventoryExtractor:
                     sheet.ranges.append(RangeInventory(source_location=_loc(workbook_path, "merged_range", ws.title, i, str(merged), str(merged)), address=str(merged), kind="merged_range"))
                     recognized += 1
                 for table in ws.tables.values():
+                    table_columns = [column.name for column in table.tableColumns]
+                    if not all(isinstance(name, str) and name for name in table_columns):
+                        table_columns = []
                     totals_row_count = table.totalsRowCount
                     if totals_row_count is None:
-                        totals_row_count = 1 if table.totalsRowShown is True else 0
-                    table_columns = [column.name for column in table.tableColumns if column.name]
+                        if table.totalsRowShown is True:
+                            totals_row_count = 1
+                        elif table.totalsRowShown in {None, False}:
+                            totals_row_count = 0
                     sheet.ranges.append(RangeInventory(
                         source_location=_loc(workbook_path, "table", ws.title, i, table.ref, table.name),
                         name=table.name,
                         address=table.ref,
                         kind="table",
-                        metadata={"display_name": table.displayName, "columns": table_columns,
-                                  "header_row_count": table.headerRowCount, "totals_row_count": totals_row_count},
+                        metadata={
+                            "display_name": table.displayName,
+                            "columns": table_columns,
+                            "header_row_count": table.headerRowCount,
+                            "totals_row_count": totals_row_count,
+                            "totals_row_shown": table.totalsRowShown,
+                        },
                     ))
                     recognized += 1
                 for spec in data_tables.get(ws.title, []):
@@ -198,6 +280,7 @@ class OpenpyxlInventoryExtractor:
                             )
                         )
                         recognized += 1
+            print_areas = {ws.title: str(ws.print_area) for ws in wb.worksheets if ws.print_area}
         finally:
             wb.close()
         if formula_cells and cached_hits == 0:
@@ -214,9 +297,39 @@ class OpenpyxlInventoryExtractor:
                     metadata={"formula_cells": formula_cells, "cells_with_cached_value": cached_hits},
                 )
             )
-        opaque_count = len(unsupported)
-        coverage = CoverageSummary(recognized_inventory_objects=recognized, unsupported_or_opaque_objects=opaque_count, discovered_workbook_objects=recognized + opaque_count)
-        return WorkbookInventory(workbook_sha256=manifest.sha256, sheets=sheets, workbook_ranges=workbook_ranges, unsupported_features=unsupported, coverage=coverage)
+        inventory = WorkbookInventory(
+            workbook_sha256=manifest.sha256,
+            sheets=sheets,
+            workbook_ranges=workbook_ranges,
+            unsupported_features=unsupported,
+            coverage=CoverageSummary(
+                recognized_inventory_objects=recognized,
+                unsupported_or_opaque_objects=0,
+                discovered_workbook_objects=recognized,
+            ),
+        )
+        try:
+            scan = scan_step1_source(workbook_path)
+        except Exception as exc:
+            raise InvalidFileException(f"Could not scan source XML: {type(exc).__name__}: {exc}") from exc
+        for source in scan["objects"]:
+            details = source["details"]
+            if source["kind"] != "defined_name" or details.get("name") != "_xlnm.Print_Area":
+                continue
+            scope = details.get("scope")
+            area = print_areas.get(scope)
+            if area and not any(item.kind == "defined_name" and item.name == "_xlnm.Print_Area" and item.metadata.get("scope") == scope for item in inventory.workbook_ranges):
+                inventory.workbook_ranges.append(RangeInventory(
+                    source_location=_loc(workbook_path, "defined_name", scope, next(sheet.index for sheet in sheets if sheet.name == scope), area, "_xlnm.Print_Area"),
+                    name="_xlnm.Print_Area", address=area, kind="defined_name",
+                    metadata={"scope": scope, "sheet": scope},
+                ))
+        inventory.coverage = CoverageSummary(
+            recognized_inventory_objects=_attach_source_identities(inventory, scan),
+            unsupported_or_opaque_objects=0,
+            discovered_workbook_objects=len(scan["objects"]),
+        )
+        return inventory
 
     def _layout(self, ws: Any, workbook_path: Path, index: int, sheet: SheetInventory) -> None:
         for row_idx, dim in ws.row_dimensions.items():
@@ -242,7 +355,8 @@ class OpenpyxlInventoryExtractor:
         for dv in getattr(ws.data_validations, "dataValidation", []):
             sheet.layout_objects.append(RangeInventory(source_location=_loc(workbook_path, "data_validation", ws.title, index, str(dv.sqref), f"dv:{dv.sqref}"), address=str(dv.sqref), kind="data_validation", metadata={"type": dv.type, "formula1": dv.formula1, "formula2": dv.formula2}))
         for cf_range in getattr(ws.conditional_formatting, "_cf_rules", {}):
-            sheet.layout_objects.append(RangeInventory(source_location=_loc(workbook_path, "conditional_formatting", ws.title, index, str(cf_range), f"cf:{cf_range}"), address=str(cf_range), kind="conditional_formatting"))
+            address = str(cf_range.sqref)
+            sheet.layout_objects.append(RangeInventory(source_location=_loc(workbook_path, "conditional_formatting", ws.title, index, address, f"cf:{address}"), address=address, kind="conditional_formatting"))
         for row in ws.iter_rows():
             for cell in row:
                 if cell.comment:

@@ -664,4 +664,3 @@ def unsupported_name(name: str) -> Any:
 
 def unsupported_range() -> Any:
     raise CalculationBlocked("active dynamic range was not lowered by the approved semantic plan")
-

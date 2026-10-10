@@ -90,13 +90,15 @@ def _prepared_fixture(tmp_path: Path, monkeypatch, *, scope: dict | None = None,
                       inventory: dict | None = None, workflow_path: Path | None = None) -> tuple[Path, Path, dict]:
     root = tmp_path / "step1"
     root.mkdir(parents=True)
-    inventory_sha = _write_json(root / "inventory.json", inventory if inventory is not None else _inventory())
-    manifest = {"schema_version": "phase1.v1", "artifact_type": "workbook_manifest", "sha256": "source-sha",
+    inventory_value = inventory if inventory is not None else _inventory()
+    source_sha = inventory_value.get("workbook_sha256", "source-sha")
+    inventory_sha = _write_json(root / "inventory.json", inventory_value)
+    manifest = {"schema_version": "phase1.v1", "artifact_type": "workbook_manifest", "sha256": source_sha,
                 "sheets": [{"name": "Main"}, {"name": "Ignored"}]}
     manifest_sha = _write_json(root / "workbook_manifest.json", manifest)
     entry_list = []
     for ordinal in range(entries):
-        entry_list.append({"source_id": f"source-{ordinal}", "source_path": f"book-{ordinal}.xlsx", "source_sha256": "source-sha",
+        entry_list.append({"source_id": f"source-{ordinal}", "source_path": f"book-{ordinal}.xlsx", "source_sha256": source_sha,
                            "run_id": f"run-{ordinal}", "run_path": "run", "status": "pass", "ready_for_next_step": True,
                            "artifacts": [{"name": "inventory.json", "path": "inventory.json", "sha256": inventory_sha},
                                          {"name": "workbook_manifest.json", "path": "workbook_manifest.json", "sha256": manifest_sha}]})
@@ -513,6 +515,78 @@ def test_prepare_stages_validate_and_detect_tampering(tmp_path: Path, monkeypatc
     stale = workflow.build_dependencies(out)
     assert stale["status"] == "blocked"
     assert "checksum mismatch" in stale["diagnostics"][0]["message"]
+
+
+def test_step3_report_rejects_standalone_analysis_without_appending(tmp_path: Path, monkeypatch) -> None:
+    source_workbook = tmp_path / "source.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "Main"
+    workbook.active["A1"] = 1
+    workbook.save(source_workbook)
+    source_sha = conversion_workflow.hash_file(source_workbook)
+
+    inventory = _inventory()
+    inventory["workbook_sha256"] = source_sha
+    analysis_dir, step1_root, prepared = _prepared_fixture(
+        tmp_path / "prepared", monkeypatch, inventory=inventory)
+    assert prepared["status"] == "pass"
+    assert workflow.build_fields(analysis_dir)["status"] == "pass"
+    assert workflow.build_dependencies(analysis_dir)["status"] == "pass"
+    assert workflow.build_plan(analysis_dir)["status"] == "pass"
+    assert workflow.validate_analysis(analysis_dir)["status"] == "pass"
+
+    run_dir = step1_root / "run"
+    run_dir.mkdir()
+    source_copy = run_dir / "source.xlsx"
+    source_copy.write_bytes(source_workbook.read_bytes())
+    workflow_root, _manifest = conversion_workflow.create_workflow(
+        tmp_path / "workflow", {
+            "source_id": "source-0", "run_id": "run-0", "workbook_sha256": source_sha,
+            "workbook_path": str(source_workbook), "step1_source_copy_path": str(source_copy),
+            "step1_run_path": str(run_dir),
+        })
+    stage1 = conversion_workflow.append_stage_artifact(
+        workflow_root, 1, "stage1.json", {"status": "pass"}, "Step 1")
+    for reviewer in ("agent", "human"):
+        conversion_workflow.record_decision(workflow_root, 1, reviewer, "approve", "Fixture approval.")
+    conversion_workflow.append_stage_artifact(
+        workflow_root, 2, "stage2.json", {"status": "pass"}, "Step 2",
+        input_stages={1: stage1["artifact"]})
+    for reviewer in ("agent", "human"):
+        conversion_workflow.record_decision(workflow_root, 2, reviewer, "approve", "Fixture approval.")
+
+    analysis = json.loads((analysis_dir / "analysis.json").read_text(encoding="utf-8"))
+    static_files = {
+        "analysis": "analysis.json", "fields": "fields.json", "dependencies": "dependencies.json",
+        "plan": "execution_plan.json", "validation": "validation.json",
+    }
+    design_input = {
+        "schema_version": "step3.analysis_design.input.v1",
+        "source": {"source_id": "source-0", "run_id": "run-0", "workbook_sha256": source_sha,
+                   "binding_sha256": analysis["binding_sha256"]},
+        "analysis": {"artifacts": {
+            name: {"sha256": conversion_workflow.hash_file(analysis_dir / filename)}
+            for name, filename in static_files.items()
+        }},
+        "targets": [{"target_id": "fixture_output", "selector": "Main!F1", "result_order": 0,
+                      "shape": []}],
+        "scenarios": [{"scenario_id": "fixture", "primary_inputs": {}}],
+        "paths": [], "coverage": {"known_path_ids": []},
+    }
+    design_path = tmp_path / "design.json"
+    _write_json(design_path, design_input)
+    manifest_before = (workflow_root / "workflow.json").read_bytes()
+
+    result = CliRunner().invoke(app, ["step3", "report", "--analysis", str(analysis_dir),
+                                     "--design", str(design_path), "--workflow", str(workflow_root)])
+
+    assert result.exit_code == 1
+    response = json.loads(result.stdout)
+    assert response["status"] == "blocked"
+    assert "analysis was not prepared for this workflow" in response["reason"]
+    assert (workflow_root / "workflow.json").read_bytes() == manifest_before
+    _, manifest_after = conversion_workflow.load_workflow(workflow_root)
+    assert manifest_after["stages"]["3"]["revisions"] == []
 
 
 def test_input_catalog_cli_uses_analysis_top_level_binding_hash(tmp_path: Path, monkeypatch) -> None:

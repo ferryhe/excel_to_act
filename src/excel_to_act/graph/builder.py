@@ -6,7 +6,7 @@ import re
 
 from openpyxl.formula import Tokenizer
 from openpyxl.formula.tokenizer import TokenizerError
-from openpyxl.utils.cell import column_index_from_string
+from openpyxl.utils.cell import column_index_from_string, range_boundaries
 
 from excel_to_act.schemas import (
     FormulaGraph,
@@ -137,7 +137,7 @@ class RegexFormulaGraphBuilder:
                 return None
             selector = match.group("selector")
             selector_key = selector.casefold()
-            item_selector = {"#all": "#All", "#data": "#Data"}.get(selector_key)
+            item_selector = {"#all": "#All", "#data": "#Data", "#headers": "#Headers"}.get(selector_key)
             current_row = selector.startswith("@")
             column = (
                 selector[1:]
@@ -148,10 +148,35 @@ class RegexFormulaGraphBuilder:
             )
             if current_row and not column:
                 return None
-            headers = table.metadata.get("columns")
-            if not headers:
-                # Header text is field evidence, not authoritative table-column metadata.
-                headers = []
+            try:
+                min_col, min_row, max_col, _ = range_boundaries(table.address)
+            except ValueError:
+                return None
+            width = max_col - min_col + 1
+            columns = table.metadata.get("columns")
+            if not isinstance(columns, list) or len(columns) != width or not all(isinstance(header, str) and header for header in columns):
+                columns = []
+            header_row_count = table.metadata.get("header_row_count")
+            headers = columns
+            if header_row_count == 1:
+                try:
+                    sheet = next(
+                        sheet
+                        for sheet in inventory.sheets
+                        if sheet.name == table.source_location.sheet_name
+                    )
+                    header_cells = [
+                        str(cell.value)
+                        for cell in sheet.cells
+                        if cell.row == min_row and min_col <= cell.column <= max_col and cell.value is not None
+                    ]
+                    if len(header_cells) == width and all(header for header in header_cells):
+                        # A single declared header row is supporting field evidence;
+                        # validated table-column metadata remains preferred.
+                        if not headers:
+                            headers = header_cells
+                except (ValueError, StopIteration):
+                    pass
             if column and headers and column.casefold() not in {str(header).casefold() for header in headers}:
                 return None
             if column and headers:
@@ -171,6 +196,9 @@ class RegexFormulaGraphBuilder:
                     "sheet": table.source_location.sheet_name,
                     "column": column,
                     "table_columns": headers or [],
+                    "table_header_row_count": table.metadata.get("header_row_count"),
+                    "table_totals_row_count": table.metadata.get("totals_row_count"),
+                    "table_totals_row_shown": table.metadata.get("totals_row_shown"),
                 },
             )
 

@@ -165,7 +165,8 @@ def test_manifest_inventory_graph_classification_confirmation(tmp_path: Path) ->
     from excel_to_act.classify.classifier import RuleBasedClassifier
 
     classification = RuleBasedClassifier().classify(inventory, graph)
-    assert len(classification.items) >= inventory.coverage.recognized_inventory_objects
+    # Coverage includes sheet identities; classification emits cells/ranges, not sheets.
+    assert len(classification.items) >= inventory.coverage.recognized_inventory_objects - len(inventory.sheets)
     assert all(item.reasons for item in classification.items)
     template = ConfirmationTemplateBuilder().build(classification)
     assert template.schema_version == "phase1.v1"

@@ -395,6 +395,7 @@ def _validate_saved_index(
     index_path: Path, step1_root: Path, skip_entry_keys: set[str] | None = None,
     *, entry_keys: list[str] | None = None,
     on_entry_validated: Callable[[str, Step2IndexEntry, bool], None] | None = None,
+    validated_artifacts: dict[tuple[str, str], tuple[Path, Any]] | None = None,
 ) -> dict[str, Any]:
     """Check a saved index and every referenced artifact using Step 1 contracts."""
     root = step1_root.expanduser().resolve()
@@ -404,7 +405,7 @@ def _validate_saved_index(
         "source": {"index": str(index_path)},
         "run_id": None,
         "artifacts": [],
-        "metrics": {"entries_checked": 0, "artifacts_checked": 0, "input_handoff_checked": 0},
+        "metrics": {"entries_checked": 0, "artifacts_checked": 0, "input_handoff_checked": 0, "inventory_models_deserialized": 0},
         "diagnostics": [],
         "retryable": False,
         "next_tool": None,
@@ -524,6 +525,7 @@ def _validate_saved_index(
                             if mismatch:
                                 handoff_error("source_handoff_identity_mismatch", mismatch)
         for ref in entry.artifacts:
+            artifact_diagnostics_before = len(result["diagnostics"])
             result["metrics"]["artifacts_checked"] += 1
             path = Path(ref.path)
             if path.is_absolute():
@@ -555,6 +557,7 @@ def _validate_saved_index(
                 report("artifact_json_invalid", f"Invalid JSON in {relative.as_posix()}: {exc}", entry, ref)
                 continue
             artifact_name = Path(ref.name).name
+            validated_payload = payload
             model = _MODEL_BY_FILE.get(artifact_name) or _MODEL_BY_FILE.get(resolved.name)
             handoff_reference = artifact_name == "handoff.json" or resolved.name == "handoff.json"
             current_handoff = handoff_reference and isinstance(payload, dict) and payload.get("schema_version") == "step1.v1"
@@ -570,7 +573,9 @@ def _validate_saved_index(
                 continue
             elif model:
                 try:
-                    model.model_validate(payload)
+                    if artifact_name == "inventory.json":
+                        result["metrics"]["inventory_models_deserialized"] += 1
+                    validated_payload = model.model_validate(payload)
                 except ValueError as exc:
                     report("artifact_schema_invalid", f"Invalid {ref.name} schema: {exc}", entry, ref, payload)
                     continue
@@ -617,6 +622,9 @@ def _validate_saved_index(
                             ref,
                             payload,
                         )
+            if (validated_artifacts is not None
+                    and len(result["diagnostics"]) == artifact_diagnostics_before):
+                validated_artifacts[(entry.source_id, artifact_name)] = (resolved, validated_payload)
         if on_entry_validated is not None:
             on_entry_validated(key, entry, input_valid and len(result["diagnostics"]) == diagnostics_before)
 

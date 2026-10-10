@@ -24,6 +24,7 @@ from excel_to_act.schemas import (
     WorkbookInventory,
     WorkbookManifest,
     VbaHandoff,
+    ValidationReport,
 )
 from excel_to_act.schemas.artifacts import SCHEMA_VERSION
 
@@ -35,6 +36,7 @@ ARTIFACT_NAMES: list[tuple[str, str]] = [
     ("module_classification", "module_classification.json"),
     ("confirmation_template", "confirmation_template.json"),
     ("completeness", "completeness.json"),
+    ("validation_report", "validation_report.json"),
     ("handoff", "handoff.json"),
 ]
 
@@ -45,6 +47,7 @@ _MODEL_BY_FILE: dict[str, type[BaseModel]] = {
     "module_classification.json": ModuleClassification,
     "confirmation_template.json": ConfirmationTemplate,
     "completeness.json": CompletenessReport,
+    "validation_report.json": ValidationReport,
     "handoff.json": Handoff,
     "checkbox_bindings.json": CheckboxBindings,
     "activex_events.json": ActiveXEvents,
@@ -194,6 +197,7 @@ class LocalArtifactStore:
         confirmation: ConfirmationTemplate,
         metadata: RunMetadata,
         completeness: CompletenessReport | None = None,
+        validation: ValidationReport | None = None,
     ) -> RunMetadata:
         run_dir = self.run_dir(metadata.workbook_sha256, metadata.run_id)
         written = [
@@ -206,6 +210,8 @@ class LocalArtifactStore:
         if completeness is not None:
             written.append(self.write_json("completeness.json", completeness, run_dir))
             metadata.completeness_status = completeness.status
+        if validation is not None:
+            written.append(self.write_json("validation_report.json", validation, run_dir))
         metadata.artifacts = written
         metadata.completed_at = datetime.now(UTC)
         meta = self.write_json("run_metadata.json", metadata, run_dir)
@@ -215,6 +221,32 @@ class LocalArtifactStore:
         # Rewrite metadata after adding index metadata so canonical run metadata is complete.
         metadata.artifacts[-2] = self.write_json("run_metadata.json", metadata, run_dir)
         self._copy_latest_aliases(metadata)
+        return metadata
+
+    def write_failed_run(
+        self, manifest: WorkbookManifest, completeness: CompletenessReport, metadata: RunMetadata
+    ) -> RunMetadata:
+        """Persist only evidence available when input reading failed."""
+
+        run_dir = self.run_dir(metadata.workbook_sha256, metadata.run_id)
+        metadata.artifacts = [
+            self.write_json("workbook_manifest.json", manifest, run_dir),
+            self.write_json("completeness.json", completeness, run_dir),
+        ]
+        metadata.completeness_status = completeness.status
+        metadata.completed_at = datetime.now(UTC)
+        metadata.artifacts.append(self.write_json("run_metadata.json", metadata, run_dir))
+        metadata.artifacts.append(self._write_index(metadata, run_dir))
+        metadata.artifacts[-2] = self.write_json("run_metadata.json", metadata, run_dir)
+        self._copy_latest_aliases(metadata)
+        for name in (
+            "inventory.json",
+            "dependency_graph.json",
+            "module_classification.json",
+            "confirmation_template.json",
+            "validation_report.json",
+        ):
+            (self.out_dir / name).unlink(missing_ok=True)
         return metadata
 
     def append_artifacts(self, metadata: RunMetadata, artifacts: list[ArtifactMetadata]) -> RunMetadata:

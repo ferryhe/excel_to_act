@@ -19,7 +19,6 @@ from openpyxl.utils.cell import get_column_letter
 
 from excel_to_act.steps.conversion_workflow import (
     append_stage_artifact,
-    current_revision,
     design_question_lines,
     display_report_value,
     hash_file,
@@ -96,6 +95,37 @@ def _stage4(root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any],
     return workflow, revision, report, bundle
 
 
+def _bound_stage3_design(root: Path, workflow: dict[str, Any], stage4_revision: dict[str, Any]) -> dict[str, Any]:
+    """Read only the Step 3 design pair explicitly bound by the approved Stage 4 revision."""
+    binding = stage4_revision.get("input_stages", {}).get("3")
+    if not isinstance(binding, dict):
+        return {}
+    revisions = workflow.get("stages", {}).get("3", {}).get("revisions", [])
+    revision = next((item for item in revisions if item.get("revision") == binding.get("revision")), None)
+    if revision is None:
+        return {}
+    artifact = revision.get("artifact", {})
+    if any(artifact.get(key) != binding.get(key) for key in ("json_sha256", "md_sha256")):
+        raise ValueError("Stage 4 target-shape binding does not match its Stage 3 artifact pair")
+    json_path, md_path = root / artifact.get("json", ""), root / artifact.get("md", "")
+    if (not json_path.is_file() or not md_path.is_file()
+            or hash_file(json_path) != binding.get("json_sha256")
+            or hash_file(md_path) != binding.get("md_sha256")):
+        raise ValueError("bound Stage 3 design artifact pair changed")
+    payload = read_json(json_path)
+    design = payload.get("design") if isinstance(payload, dict) else None
+    return design if isinstance(design, dict) else {}
+
+
+def _target_shapes(design: dict[str, Any]) -> dict[str, list[int]]:
+    targets = design.get("targets")
+    if not isinstance(targets, list):
+        return {}
+    return {item["selector"]: item["shape"] for item in targets
+            if isinstance(item, dict) and isinstance(item.get("selector"), str)
+            and isinstance(item.get("shape"), list)}
+
+
 def capture_oracle(workflow_dir: Path, targets: list[str] | None = None,
                    ranges: list[str] | None = None) -> dict[str, Any]:
     """Capture new native Excel evidence without advancing the Stage 5 checkpoint."""
@@ -118,7 +148,12 @@ def capture_oracle(workflow_dir: Path, targets: list[str] | None = None,
         while (stage5_root / f"oracle-attempt-{attempt:04d}").exists():
             attempt += 1
         output_dir = stage5_root / f"oracle-attempt-{attempt:04d}"
-        result = capture_excel_oracle(source, output_dir, targets=requested_targets, ranges=requested_ranges)
+        design = _bound_stage3_design(root, workflow, stage4_revision)
+        declared_shapes = _target_shapes(design)
+        result = capture_excel_oracle(
+            source, output_dir, targets=requested_targets, ranges=requested_ranges,
+            target_shapes={name: declared_shapes[name] for name in requested_targets if name in declared_shapes},
+        )
         if result.get("status") != "pass":
             return {**result, "tool": "step5.oracle", "status": "blocked"}
         oracle_path = output_dir / "excel_oracle.json"
@@ -349,11 +384,88 @@ def _matches(actual: Any, expected: Any, abs_tol: float, rel_tol: float) -> bool
         actual = actual["excel_error"]
     if isinstance(expected, dict) and "excel_error" in expected:
         expected = expected["excel_error"]
+    if isinstance(actual, (list, tuple)) or isinstance(expected, (list, tuple)):
+        if not isinstance(actual, (list, tuple)) or not isinstance(expected, (list, tuple)):
+            return False
+        return len(actual) == len(expected) and all(
+            _matches(left, right, abs_tol, rel_tol) for left, right in zip(actual, expected)
+        )
     if isinstance(actual, bool) or isinstance(expected, bool):
         return actual is expected
     if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
         return math.isclose(float(actual), float(expected), abs_tol=abs_tol, rel_tol=rel_tol)
     return actual == expected
+
+
+def _value_has_shape(value: Any, shape: list[int]) -> bool:
+    if not shape:
+        return not isinstance(value, (list, tuple))
+    if len(shape) == 1:
+        return (isinstance(value, (list, tuple)) and len(value) == shape[0]
+                and all(not isinstance(item, (list, tuple)) for item in value))
+    if len(shape) == 2:
+        return (isinstance(value, (list, tuple)) and len(value) == shape[0]
+                and all(isinstance(row, (list, tuple)) and len(row) == shape[1]
+                        and all(not isinstance(item, (list, tuple)) for item in row) for row in value))
+    return False
+
+
+def _with_native_errors(value: Any, errors: Any) -> Any:
+    if isinstance(errors, str) and errors:
+        return {"excel_error": errors}
+    if isinstance(value, (list, tuple)) and isinstance(errors, (list, tuple)) and len(value) == len(errors):
+        return [_with_native_errors(item, error) for item, error in zip(value, errors)]
+    return value
+
+
+def _compare_named_targets(
+    expected_names: set[str], actual_targets: Any, native_targets: Any,
+    target_specs: dict[str, Any], abs_tol: float, rel_tol: float,
+) -> tuple[dict[str, Any], list[dict[str, Any]], int]:
+    results: dict[str, Any] = {}
+    mismatches: list[dict[str, Any]] = []
+    compared = 0
+    actual_targets = actual_targets if isinstance(actual_targets, dict) else {}
+    native_targets = native_targets if isinstance(native_targets, dict) else {}
+    for name in sorted(expected_names):
+        native = native_targets.get(name)
+        if not isinstance(native, dict) or "value" not in native:
+            mismatches.append({"kind": "target_missing_from_oracle", "target": name})
+            continue
+        if name not in actual_targets:
+            mismatches.append({"kind": "target_missing_from_model", "target": name})
+            continue
+        compared += 1
+        target = target_specs.get(name)
+        shape = target.get("shape", []) if isinstance(target, dict) else []
+        if not isinstance(shape, list):
+            shape = []
+        model_value = actual_targets[name]
+        excel_value = native["value"]
+        native_errors = native.get("excel_errors")
+        recorded_shape = native.get("shape")
+        shape_mismatch = (
+            (bool(shape) and recorded_shape != shape)
+            or (recorded_shape is not None and recorded_shape != shape)
+            or not _value_has_shape(model_value, shape)
+            or not _value_has_shape(excel_value, shape)
+        )
+        if shape_mismatch:
+            matched = False
+            mismatches.append({"kind": "target_shape", "target": name,
+                               "declared": shape, "model": model_value, "excel": excel_value,
+                               "oracle_shape": recorded_shape})
+        else:
+            if shape:
+                excel_value = _with_native_errors(excel_value, native_errors)
+            elif isinstance(native.get("excel_error"), str) and native["excel_error"]:
+                excel_value = native["excel_error"]
+            matched = _matches(model_value, excel_value, abs_tol, rel_tol)
+        results[name] = {"model": model_value, "excel": excel_value, "matched": matched}
+        if not matched and not shape_mismatch:
+            mismatches.append({"kind": "target_value", "target": name,
+                               "model": model_value, "excel": excel_value})
+    return results, mismatches, compared
 
 
 def _preflight_oracle(oracle: Any, source_hash: str, stage4_hash: str) -> dict[str, Any]:
@@ -427,6 +539,40 @@ def _oracle_range_cells(oracle: dict[str, Any]) -> tuple[dict[str, dict[str, Any
                     continue
                 cells[key] = record_value
     return cells, sorted(selectors)
+
+
+def _active_formula_range_coverage(oracle: dict[str, Any], compared_addresses: list[str]) -> list[dict[str, Any]]:
+    """Describe captured ranges against the exact active-formula addresses compared."""
+    raw_ranges = oracle.get("ranges")
+    if not isinstance(raw_ranges, dict):
+        return []
+    parsed_addresses = []
+    for address in compared_addresses:
+        reference = _parse_reference(address, "")
+        if reference is not None and reference.sheet:
+            parsed_addresses.append((address, reference))
+    coverage = []
+    for selector, record in sorted(raw_ranges.items()):
+        if not isinstance(record, dict):
+            continue
+        qualified = record.get("qualified_address", selector)
+        bounds = _parse_reference(qualified, "")
+        if bounds is None or not bounds.sheet:
+            continue
+        matched = sorted(
+            address for address, reference in parsed_addresses
+            if reference.sheet.casefold() == bounds.sheet.casefold()
+            and bounds.min_row <= reference.min_row <= bounds.max_row
+            and bounds.min_col <= reference.min_col <= bounds.max_col
+        )
+        coverage.append({
+            "selector": qualified,
+            "status": ("contains_compared_active_formula_addresses" if matched
+                       else "captured_only_for_active_formula_comparison"),
+            "compared_active_formula_address_count": len(matched),
+            "compared_active_formula_address_examples": matched[:5],
+        })
+    return coverage
 
 
 def _active_formula_details(report: dict[str, Any], manifest: dict[str, Any],
@@ -810,25 +956,14 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
                                   stage4_revision["artifact"]["json_sha256"])
         mismatches: list[dict[str, Any]] = []
         compared_targets = 0
-        target_results: dict[str, Any] = {}
+        design = _bound_stage3_design(root, workflow_manifest, stage4_revision)
+        target_specs = {item["selector"]: item for item in design.get("targets", [])
+                        if isinstance(item, dict) and isinstance(item.get("selector"), str)}
         expected_targets = set(report.get("target_names", []))
-        native_targets = oracle.get("named_targets", {})
-        actual_targets = model_result.get("targets", {})
-        for name in sorted(expected_targets):
-            native = native_targets.get(name)
-            if not isinstance(native, dict) or "value" not in native:
-                mismatches.append({"kind": "target_missing_from_oracle", "target": name})
-                continue
-            if name not in actual_targets:
-                mismatches.append({"kind": "target_missing_from_model", "target": name})
-                continue
-            compared_targets += 1
-            excel_value = native.get("excel_error") if native.get("excel_error") is not None else native.get("value")
-            matched = _matches(actual_targets[name], excel_value, abs_tol, rel_tol)
-            target_results[name] = {"model": actual_targets[name], "excel": excel_value, "matched": matched}
-            if not matched:
-                mismatches.append({"kind": "target_value", "target": name,
-                                   "model": actual_targets[name], "excel": excel_value})
+        target_results, target_mismatches, compared_targets = _compare_named_targets(
+            expected_targets, model_result.get("targets"), oracle.get("named_targets"),
+            target_specs, abs_tol, rel_tol)
+        mismatches.extend(target_mismatches)
         primary_mismatches = []
         raw = read_json(bundle / "source_values.json")
         for address in sorted(_PRIMARY_ADDRESSES):
@@ -840,7 +975,7 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
             mismatches.extend({"kind": "primary_input", **item} for item in primary_mismatches)
 
         generated_manifest = read_json(bundle / "model_manifest.json")
-        native_formula_values, comparison_ranges = _oracle_range_cells(oracle)
+        native_formula_values, captured_ranges = _oracle_range_cells(oracle)
         source_workbook = Path(workflow["source"]["workbook_path"]).resolve()
         active_formula_addresses, expected_formula_texts = _active_formula_details(
             report, generated_manifest, source_workbook, workflow["source"]["workbook_sha256"])
@@ -864,12 +999,13 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
             active_formula_addresses, native_formula_values, model_formula_values,
             expected_formula_texts, abs_tol, rel_tol)
         mismatches.extend(formula_mismatches)
+        comparison_addresses = sorted(
+            (address for address in active_formula_addresses
+             if _address_key(address) in compared_formula_addresses),
+            key=str.casefold,
+        )
+        active_formula_range_coverage = _active_formula_range_coverage(oracle, comparison_addresses)
         status = "ready_for_review" if not mismatches and compared_targets == len(expected_targets) else "not_ready"
-        stage3_revision = current_revision(workflow_manifest, 3)
-        if stage3_revision is None:
-            raise ValueError("approved Stage 3 design artifact is missing")
-        stage3_payload = read_json(root / stage3_revision["artifact"]["json"])
-        design = stage3_payload.get("design", {})
         trace_path = Path(report.get("active_trace", {}).get("path", ""))
         active_trace = read_json(trace_path) if trace_path.is_file() else {}
         stage4_paths = report.get("path_coverage", {})
@@ -945,6 +1081,8 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
                               "source_copy_sha256": oracle.get("source_copy_sha256"),
                               "macros_executed": oracle.get("macros_executed"),
                               "input_overrides": oracle.get("input_overrides")},
+                   "captured": {"range_selectors": captured_ranges,
+                                "active_formula_range_coverage": active_formula_range_coverage},
                    "tolerances": {"absolute": abs_tol, "relative": rel_tol},
                    "target_results": target_results,
                    "path_coverage": path_coverage,
@@ -964,7 +1102,7 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
                                     if (bundle / "external_values.json").is_file() else 0,
                                 "active_premium_formula_cells": sum(
                                     1 for item in active_formula_addresses if item.split("!", 1)[0].casefold() == "premium"),
-                                "comparison_ranges": comparison_ranges},
+                                "comparison_addresses": comparison_addresses},
                    "mismatch_count": len(mismatches), "mismatch_examples": mismatches[:50],
                    "formula_cache_inputs": False, "standalone_project_imports": False}
         next_revision = len(workflow["stages"]["5"]["revisions"]) + 1
@@ -1216,6 +1354,41 @@ def _reconciliation_markdown(
             lines.extend(["", "Array and table values show zero-based positions or recorded field paths. Position labels do not imply a quarter, year, or other business-axis origin; only explicitly recorded axis keys provide semantic labels. The full Model and Excel values remain in the linked machine report."])
         else:
             lines.append("")
+    captured = value.get("captured")
+    captured = captured if isinstance(captured, dict) else {}
+    range_coverage = captured.get("active_formula_range_coverage")
+    range_coverage = range_coverage if isinstance(range_coverage, list) else []
+    comparison_addresses = compared.get("comparison_addresses")
+    if range_coverage or isinstance(comparison_addresses, list):
+        lines.extend(["### Native active-formula range coverage", "",
+                      "This view covers only active formula values compared with generated cells. The report lists named targets, primary inputs, external values, formula cuts, and age keys separately.",
+                      f"- Native range selectors captured: {len(range_coverage)}."])
+        if isinstance(comparison_addresses, list):
+            lines.append(
+                f"- Exact active formula addresses compared: {len(comparison_addresses)} / "
+                f"{cell(compared.get('required_active_formula_members'))}."
+            )
+            if comparison_addresses:
+                shown_addresses = comparison_addresses[:12]
+                address_text = ", ".join(f"`{cell(address)}`" for address in shown_addresses)
+                if len(comparison_addresses) > len(shown_addresses):
+                    address_text += f" (and {len(comparison_addresses) - len(shown_addresses)} more)"
+                lines.append(f"- Address examples: {address_text}. The full list is in the linked machine report.")
+        for item in range_coverage:
+            if not isinstance(item, dict):
+                continue
+            selector = cell(item.get("selector"))
+            if item.get("status") == "captured_only_for_active_formula_comparison":
+                detail = "captured-only for active-formula comparison; no active formula address from this selector was compared"
+            elif item.get("status") == "contains_compared_active_formula_addresses":
+                count = item.get("compared_active_formula_address_count")
+                examples = item.get("compared_active_formula_address_examples")
+                detail = f"contains {cell(count)} compared active formula address(es)"
+                if isinstance(examples, list) and examples:
+                    detail += ": " + ", ".join(f"`{cell(address)}`" for address in examples)
+            else:
+                detail = "comparison coverage not recorded"
+            lines.append(f"- Captured selector `{selector}`: {detail}.")
     tolerances = value.get("tolerances")
     if isinstance(tolerances, dict):
         lines.append(

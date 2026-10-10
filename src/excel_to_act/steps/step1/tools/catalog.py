@@ -38,7 +38,7 @@ def tool_catalog() -> dict[str, Any]:
         "tools": catalog_tools,
         "review_workflow": [
             "workflow status --workflow DIR",
-            "workflow confirm --workflow DIR --stage 1 --reviewer agent|human --decision approve|reject --message TEXT [--return-to N]",
+            "workflow confirm --workflow DIR --stage 1 --reviewer agent|human --decision approve --message TEXT",
             "workflow reject --workflow DIR --stage 1 --reviewer agent|human --return-to 1 --message TEXT",
             "The human receipt may be recorded only after an explicit user response; do not infer or fabricate approval.",
         ],

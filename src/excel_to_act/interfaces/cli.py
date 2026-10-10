@@ -13,6 +13,9 @@ from excel_to_act.ingest.control_artifacts import ARTIFACT_FILES, build_single_c
 from excel_to_act.schemas import VbaHandoff
 from excel_to_act.steps.step2.workflow import build_index, execute_tool as execute_step2_tool, validate_saved_index
 from excel_to_act.steps.step2.tools import tool_catalog as step2_tool_catalog
+from excel_to_act.steps.step2.prepare import prepare as prepare_step2
+from excel_to_act.steps.step2.query import QueryFailure, query as query_step2, validate_evidence_packet
+from excel_to_act.steps.step2.trace import trace as trace_step2
 from excel_to_act.steps.step3 import build_dependencies, build_fields, build_plan, prepare_analysis, query as step3_query, trace as step3_trace, validate_analysis
 from excel_to_act.steps.step3.tools import tool_catalog as step3_tool_catalog
 from excel_to_act.steps.step3.semantic import build_semantic_plan, validate_semantic_plan
@@ -71,7 +74,7 @@ def main() -> None:
 
 @app.command()
 def inspect(
-    workbook: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True, help=".xlsx/.xlsm workbook to inspect"),
+    workbook: Path = typer.Argument(..., help=".xlsx/.xlsm workbook to inspect"),
     out: Path = typer.Option(Path("artifacts"), "--out", "-o", help="Output directory for Phase 1 JSON artifacts"),
 ) -> None:
     """Inspect a workbook and produce Phase 1 artifacts."""
@@ -85,7 +88,14 @@ def inspect(
         typer.echo(f"Handoff: {handoff}")
     typer.echo(f"Completeness: {status}")
     if status == "fail":
-        typer.echo("Completeness check failed; see completeness.json for blocking gaps.", err=True)
+        completeness = next((a.path for a in metadata.artifacts if a.name == "completeness.json"), "completeness.json")
+        try:
+            blockers = json.loads(Path(completeness).read_text(encoding="utf-8")).get("blocking_reasons", [])
+            reason = blockers[0] if blockers else "Input could not be read or the output is incomplete."
+        except (OSError, ValueError, IndexError, TypeError):
+            reason = "Input could not be read or the output is incomplete."
+        typer.echo(f"Reason: {reason}", err=True)
+        typer.echo(f"Diagnostic: {completeness}", err=True)
         raise typer.Exit(code=1)
 
 
@@ -163,6 +173,80 @@ def step2_tools() -> None:
     """Print the initial machine-readable Step 2 action catalogue."""
 
     _emit_json(step2_tool_catalog())
+
+
+@step2_app.command("prepare")
+def step2_prepare(
+    index: Path = typer.Option(..., "--index", help="Validated native Step 2 index.json"),
+    step1_root: Path = typer.Option(..., "--step1-root", help="Step 1 output root for resolving indexed artifacts"),
+    out: Path = typer.Option(..., "--out", help="Reading package output directory"),
+    scope: Path | None = typer.Option(None, "--scope", help="Source/run-bound analysis.scope.v1 JSON"),
+    resume: bool = typer.Option(False, "--resume", help="Reuse a matching package after verifying every saved output hash"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report capabilities and planned files without writing"),
+) -> None:
+    """Prepare validated Step 1 and Step 2 artifacts for progressive reading."""
+    result = prepare_step2(index, step1_root, out, scope_path=scope, resume=resume, dry_run=dry_run)
+    _emit_json(result)
+    if result["status"] == "blocked":
+        raise typer.Exit(code=1)
+
+
+@step2_app.command("query")
+def step2_query(
+    manifest: Path = typer.Option(..., "--manifest", exists=True, dir_okay=False, readable=True, help="#30 prepared reading manifest.json"),
+    source_id: str = typer.Option(..., "--source-id", help="Exact source ID from the manifest; never inferred"),
+    kind: str = typer.Option(..., "--kind", help="overview, sheet, cell, range, name, control, vba, or feature"),
+    target: str | None = typer.Option(None, "--target", help="Cell, name, control, module, feature, or sheet target"),
+    sheet: str | None = typer.Option(None, "--sheet", help="Worksheet context for a selector"),
+    range_address: str | None = typer.Option(None, "--range", help="A1 range for a range query"),
+    budget: int = typer.Option(1200, "--budget", min=1, help="Estimated token budget; records are never split"),
+    cursor: str | None = typer.Option(None, "--cursor", help="Continue the same source-bound selector page"),
+    out: Path | None = typer.Option(None, "--out", help="Optional evidence packet path"),
+) -> None:
+    """Read a bounded page from a prepared Step 2 evidence package."""
+    try:
+        result = query_step2(manifest, source_id, kind, target=target, sheet=sheet,
+                             address=range_address, budget=budget, cursor=cursor)
+    except QueryFailure as exc:
+        _emit_json({"tool": "step2.query", "status": exc.status, "diagnostics": [exc.diagnostic]})
+        raise typer.Exit(code=1) from exc
+    if out is not None:
+        out = out.expanduser().resolve()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _emit_json(result)
+    if result.get("status") in {"integrity_failed", "unavailable", "unsupported", "not_found", "needs_selection", "out_of_scope", "needs_scope_resolution", "oversized"}:
+        raise typer.Exit(code=1)
+
+
+@step2_app.command("trace")
+def step2_trace(
+    manifest: Path = typer.Option(..., "--manifest", exists=True, dir_okay=False, readable=True),
+    source_id: str = typer.Option(..., "--source-id", help="Exact manifest source ID; required"),
+    kind: str = typer.Option(..., "--kind", help="cell, range, or name"),
+    target: str = typer.Option(..., "--target", help="A1 cell/range or defined name"),
+    direction: str = typer.Option(..., "--direction", help="upstream dependencies, downstream consumers, or both"),
+    sheet: str | None = typer.Option(None, "--sheet", help="Worksheet or name scope"),
+    max_depth: int = typer.Option(8, "--max-depth", help="Depth bound (0..100)"),
+    max_nodes: int = typer.Option(100, "--max-nodes", help="Node bound (1..10000)"),
+    max_edges: int = typer.Option(200, "--max-edges", help="Edge bound (1..20000)"),
+    out: Path | None = typer.Option(None, "--out", help="Optional evidence packet path"),
+) -> None:
+    """Trace a bounded static dependency path using a prepared graph and source records."""
+    try:
+        result = trace_step2(manifest, source_id, kind, target, sheet=sheet, direction=direction,
+                             max_depth=max_depth, max_nodes=max_nodes, max_edges=max_edges)
+        if out is not None:
+            out = out.expanduser().resolve()
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except (QueryFailure, OSError) as exc:
+        diagnostic = exc.diagnostic if isinstance(exc, QueryFailure) else {"code": "trace_write_failed", "severity": "error", "message": str(exc)}
+        _emit_json({"tool": "step2.trace", "status": exc.status if isinstance(exc, QueryFailure) else "unavailable", "diagnostics": [diagnostic]})
+        raise typer.Exit(code=1) from exc
+    _emit_json(result)
+    if result["status"] == "needs_selection":
+        raise typer.Exit(code=1)
 
 
 @step2_app.command("index")
@@ -555,7 +639,7 @@ def step4_discover(workflow: Path = typer.Option(..., "--workflow", exists=True,
 def step4_capture_external(
     workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
 ) -> None:
-    """Capture only the five formula-derived input vectors approved by the current Step 3 design."""
+    """Capture only formula-derived input vectors approved by the current Step 3 design."""
     result = capture_external_inputs(workflow)
     _emit_json(result)
     if result.get("status") != "pass":
@@ -667,10 +751,20 @@ def views_validate(
     views_file: Path = typer.Option(..., "--views", exists=True, dir_okay=False),
     output: Path = typer.Option(..., "--output", exists=True, dir_okay=False),
 ) -> None:
-    """Validate a JSON Agent response against compiled views."""
-    views = [WorkbookView.model_validate(item) for item in json.loads(views_file.read_text(encoding="utf-8"))]
-    result = validate_agent_output(json.loads(output.read_text(encoding="utf-8")), views)
+    """Validate claims against a legacy view list or a source-bound evidence packet."""
+    try:
+        view_data = json.loads(views_file.read_text(encoding="utf-8"))
+        agent_output = json.loads(output.read_text(encoding="utf-8"))
+        if isinstance(view_data, list):
+            views = [WorkbookView.model_validate(item) for item in view_data]
+            result = validate_agent_output(agent_output, views)
+        else:
+            result = validate_evidence_packet(view_data, agent_output)
+    except (OSError, ValueError, TypeError) as exc:
+        result = {"valid": False, "diagnostics": [{"code": "validation_input_invalid", "severity": "error", "message": str(exc)}]}
     _emit_json(result)
+    if result.get("valid") is not True:
+        raise typer.Exit(code=1)
 
 
 @step1_app.command("tools")

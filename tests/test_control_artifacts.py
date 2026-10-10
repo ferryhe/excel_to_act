@@ -189,4 +189,3 @@ def test_step1_modules_survive_finalize_and_step2_validation(tmp_path: Path) -> 
     assert validated["status"] == "pass"
     markdown = (step2_out / "INDEX.md").read_text(encoding="utf-8")
     assert "Human control/VBA handoff" in markdown
-

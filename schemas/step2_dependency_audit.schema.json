@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "DependencyAuditSource": {
+      "properties": {
+        "diagnostics": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Diagnostics",
+          "type": "array"
+        },
+        "ranges": {
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "title": "Ranges",
+          "type": "array"
+        },
+        "references": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "References",
+          "type": "array"
+        },
+        "retained_dependency_range_count": {
+          "minimum": 0,
+          "title": "Retained Dependency Range Count",
+          "type": "integer"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "scope_sha256": {
+          "title": "Scope Sha256",
+          "type": "string"
+        },
+        "source_id": {
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_sha256": {
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "supported_static_inbound_reference_count": {
+          "minimum": 0,
+          "title": "Supported Static Inbound Reference Count",
+          "type": "integer"
+        },
+        "unresolved_static_reference_count": {
+          "minimum": 0,
+          "title": "Unresolved Static Reference Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_sha256",
+        "run_id",
+        "scope_sha256",
+        "supported_static_inbound_reference_count",
+        "retained_dependency_range_count",
+        "unresolved_static_reference_count"
+      ],
+      "title": "DependencyAuditSource",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifact_type": {
+      "const": "dependency_audit",
+      "default": "dependency_audit",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "ignored_legacy_sidecars": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Ignored Legacy Sidecars",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "step2.dependency_audit.v1",
+      "default": "step2.dependency_audit.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/DependencyAuditSource"
+      },
+      "title": "Sources",
+      "type": "array"
+    }
+  },
+  "title": "Step2DependencyAudit",
+  "type": "object"
+}

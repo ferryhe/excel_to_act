@@ -40,6 +40,18 @@
           "title": "Opaque",
           "type": "boolean"
         },
+        "opaque_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Opaque Reason"
+        },
         "source_location": {
           "$ref": "#/$defs/SourceLocation"
         }
@@ -167,6 +179,18 @@
           ],
           "default": null,
           "title": "Ooxml Part"
+        },
+        "source_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Identity"
         }
       },
       "required": [

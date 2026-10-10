@@ -19,8 +19,9 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 
-from excel_to_act.ingest.data_table import sheet_xml_parts
+from excel_to_act.ingest.data_table import PACKAGE_READ_ERRORS, sheet_xml_parts
 
 CellValue = str | int | float | bool | None
 
@@ -39,7 +40,10 @@ def _safe_value(value: Any) -> CellValue:
     return str(value)
 
 
-def _empty_string_formula_caches(workbook_path: Path) -> set[tuple[str, str]]:
+def _empty_string_formula_caches(
+    workbook_path: Path, source_types: dict[tuple[str, str], str] | None = None,
+    numeric_cache_texts: dict[tuple[str, str], str] | None = None,
+) -> set[tuple[str, str]]:
     """Find formula cells whose stored string result is present but empty."""
 
     empty: set[tuple[str, str]] = set()
@@ -53,16 +57,26 @@ def _empty_string_formula_caches(workbook_path: Path) -> set[tuple[str, str]]:
             except (KeyError, ET.ParseError):
                 continue
             for cell in root.iter():
-                if cell.tag.rsplit("}", 1)[-1] != "c" or cell.attrib.get("t") != "str":
+                if cell.tag.rsplit("}", 1)[-1] != "c":
                     continue
                 formula = next((child for child in cell if child.tag.rsplit("}", 1)[-1] == "f"), None)
                 value = next((child for child in cell if child.tag.rsplit("}", 1)[-1] == "v"), None)
-                if formula is not None and value is not None and value.text in (None, ""):
-                    empty.add((sheet, cell.attrib["r"]))
+                if formula is not None and value is not None:
+                    key = (sheet, cell.attrib["r"])
+                    cell_type = cell.attrib.get("t", "n")
+                    if source_types is not None:
+                        source_types[key] = cell_type
+                    if numeric_cache_texts is not None and cell_type == "n" and value.text is not None:
+                        numeric_cache_texts[key] = value.text
+                    if cell_type == "str" and value.text in (None, ""):
+                        empty.add(key)
     return empty
 
 
-def read_cached_values(workbook_path: Path) -> CachedValueMap:
+def read_cached_values(
+    workbook_path: Path, source_types: dict[tuple[str, str], str] | None = None,
+    numeric_cache_texts: dict[tuple[str, str], str] | None = None,
+) -> CachedValueMap:
     """Return ``{(sheet_title, coordinate): cached value}`` for every stored result.
 
     Cells without a stored result are absent from the map, so callers must use
@@ -71,8 +85,18 @@ def read_cached_values(workbook_path: Path) -> CachedValueMap:
 
     workbook_path = workbook_path.expanduser().resolve()
     values: CachedValueMap = {}
-    empty_string_caches = _empty_string_formula_caches(workbook_path)
-    wb = load_workbook(workbook_path, data_only=True, read_only=True)
+    try:
+        empty_string_caches = _empty_string_formula_caches(workbook_path, source_types, numeric_cache_texts)
+    except PACKAGE_READ_ERRORS as exc:
+        raise InvalidFileException(
+            f"Could not read workbook formula-cache package parts: {type(exc).__name__}: {exc}"
+        ) from exc
+    try:
+        wb = load_workbook(workbook_path, data_only=True, read_only=True)
+    except Exception as exc:
+        raise InvalidFileException(
+            f"openpyxl could not read workbook: {type(exc).__name__}: {exc}"
+        ) from exc
     try:
         for ws in wb.worksheets:
             # In read-only mode the iteration bounds come from the declared
@@ -84,7 +108,20 @@ def read_cached_values(workbook_path: Path) -> CachedValueMap:
                     ws.calculate_dimension(force=True)
                 except UnboundLocalError:  # openpyxl's dimension scan finds no cells
                     continue
-            for row in ws.iter_rows():
+                except Exception as exc:
+                    raise InvalidFileException(
+                        f"openpyxl could not read workbook rows: {type(exc).__name__}: {exc}"
+                    ) from exc
+            rows = iter(ws.iter_rows())
+            while True:
+                try:
+                    row = next(rows)
+                except StopIteration:
+                    break
+                except Exception as exc:
+                    raise InvalidFileException(
+                        f"openpyxl could not read workbook rows: {type(exc).__name__}: {exc}"
+                    ) from exc
                 for cell in row:
                     if cell.value is None:
                         continue

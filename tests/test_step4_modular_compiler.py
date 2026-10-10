@@ -1220,4 +1220,3 @@ def test_external_formula_extent_is_indexed_as_an_input_not_an_emitted_family() 
     assert index[("rates", 5, 23)] == [
         SourceCell("external.ci_rate", (0,), ("attained_age",), "external_boundary_input")]
     assert index[("rates", 7, 23)][0].indices == (2,)
-

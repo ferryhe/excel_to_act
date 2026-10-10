@@ -1,0 +1,196 @@
+{
+  "$defs": {
+    "ValidationCoverage": {
+      "properties": {
+        "formula_cells": {
+          "minimum": 0,
+          "title": "Formula Cells",
+          "type": "integer"
+        },
+        "cached_cells": {
+          "minimum": 0,
+          "title": "Cached Cells",
+          "type": "integer"
+        },
+        "recalculated_cells": {
+          "minimum": 0,
+          "title": "Recalculated Cells",
+          "type": "integer"
+        },
+        "compared_cells": {
+          "minimum": 0,
+          "title": "Compared Cells",
+          "type": "integer"
+        },
+        "missing_cache": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Cache",
+          "type": "array"
+        },
+        "unsupported_formula": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Unsupported Formula",
+          "type": "array"
+        }
+      },
+      "required": [
+        "formula_cells",
+        "cached_cells",
+        "recalculated_cells",
+        "compared_cells"
+      ],
+      "title": "ValidationCoverage",
+      "type": "object"
+    },
+    "ValidationDifference": {
+      "properties": {
+        "sheet": {
+          "title": "Sheet",
+          "type": "string"
+        },
+        "address": {
+          "title": "Address",
+          "type": "string"
+        },
+        "baseline": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Baseline"
+        },
+        "actual": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Actual"
+        },
+        "tolerance": {
+          "minimum": 0,
+          "title": "Tolerance",
+          "type": "number"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sheet",
+        "address",
+        "baseline",
+        "actual",
+        "tolerance",
+        "reason"
+      ],
+      "title": "ValidationDifference",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "default": "phase1.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "artifact_type": {
+      "const": "validation_report",
+      "default": "validation_report",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "workbook_sha256": {
+      "title": "Workbook Sha256",
+      "type": "string"
+    },
+    "baseline_source": {
+      "const": "saved_workbook_cache",
+      "default": "saved_workbook_cache",
+      "title": "Baseline Source",
+      "type": "string"
+    },
+    "actual_source": {
+      "const": "formulas",
+      "default": "formulas",
+      "title": "Actual Source",
+      "type": "string"
+    },
+    "cache_freshness": {
+      "const": "unknown",
+      "default": "unknown",
+      "title": "Cache Freshness",
+      "type": "string"
+    },
+    "status": {
+      "default": "not_run",
+      "enum": [
+        "pass",
+        "fail",
+        "incomplete",
+        "not_run"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "absolute_tolerance": {
+      "default": 1e-09,
+      "minimum": 0,
+      "title": "Absolute Tolerance",
+      "type": "number"
+    },
+    "coverage": {
+      "$ref": "#/$defs/ValidationCoverage"
+    },
+    "differences": {
+      "items": {
+        "$ref": "#/$defs/ValidationDifference"
+      },
+      "title": "Differences",
+      "type": "array"
+    },
+    "diagnostics": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Diagnostics",
+      "type": "array"
+    }
+  },
+  "required": [
+    "workbook_sha256",
+    "coverage"
+  ],
+  "title": "ValidationReport",
+  "type": "object"
+}

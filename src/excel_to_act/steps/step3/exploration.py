@@ -950,4 +950,3 @@ def validate_model_spec(analysis_dir: Path, spec_path: Path) -> dict[str, Any]:
                 "artifacts": {"json": str(json_path), "markdown": str(markdown_path)}}
     except Exception as exc:
         return workflow._blocked("step3.validate_spec", exc)
-

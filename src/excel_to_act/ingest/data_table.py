@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import posixpath
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -25,6 +26,16 @@ from openpyxl.utils.exceptions import CellCoordinatesException
 _DOC_REL = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _PKG_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 _SUPPORTED_SUFFIXES = {".xlsx", ".xlsm"}
+PACKAGE_READ_ERRORS = (
+    OSError,
+    EOFError,
+    zipfile.BadZipFile,
+    zipfile.LargeZipFile,
+    zlib.error,
+    RuntimeError,
+    KeyError,
+    ET.ParseError,
+)
 
 
 @dataclass(frozen=True)

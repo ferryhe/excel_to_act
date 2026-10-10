@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from openpyxl import Workbook
+from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.formula import ArrayFormula
 from typer.testing import CliRunner
 
@@ -320,16 +321,31 @@ def test_native_oracle_resolves_requested_sheet_names_case_insensitively(
     workbook.active.title = "AMR_Table"
     workbook.create_sheet("Premium")
     workbook.create_sheet("Qtable")
+    for name, reference in {
+        "RowVector": "'AMR_Table'!$A$1:$B$1",
+        "ColumnVector": "'AMR_Table'!$D$1:$D$2",
+        "SingletonVector": "'AMR_Table'!$F$1",
+        "Matrix": "'AMR_Table'!$A$4:$B$5",
+        "RowTable": "'AMR_Table'!$D$4:$E$4",
+        "ColumnTable": "'AMR_Table'!$G$4:$G$5",
+    }.items():
+        workbook.defined_names.add(DefinedName(name, attr_text=reference))
     workbook.save(source)
     workbook.close()
 
     calls = []
+    requests = []
+    target_shapes = {
+        "RowVector": [2], "ColumnVector": [2], "SingletonVector": [1],
+        "Matrix": [2, 2], "RowTable": [1, 2], "ColumnTable": [2, 1],
+    }
 
     def fake_run(args, **_kwargs):
         calls.append(args)
         request_path = Path(args[args.index("-RequestPath") + 1])
         output_path = Path(args[args.index("-OutputPath") + 1])
         request = json.loads(request_path.read_text(encoding="utf-8"))
+        requests.append(request)
         ranges = {}
         for record in request["ranges"]:
             start, *end = record["address"].split(":")
@@ -360,14 +376,16 @@ def test_native_oracle_resolves_requested_sheet_names_case_insensitively(
     monkeypatch.setattr(calculation.subprocess, "run", fake_run)
     oracle_dir = tmp_path.parent / f"{tmp_path.name}-oracle"
     result = calculation.capture_excel_oracle(
-        source, oracle_dir, targets=[],
+        source, oracle_dir,
         ranges=["amr_table!A1:B2", "premium!C3", "qtable!D5:D6"],
+        targets=list(target_shapes), target_shapes=target_shapes,
     )
 
     assert result["status"] == "pass", result
     saved = json.loads(Path(result["artifacts"][0]).read_text(encoding="utf-8"))
     assert saved["requested_ranges"] == ["AMR_Table!A1:B2", "Premium!C3", "Qtable!D5:D6"]
     assert set(saved["ranges"]) == set(saved["requested_ranges"])
+    assert requests[0]["target_shapes"] == target_shapes
     assert len(calls) == 1
 
     missing_sheet = calculation.capture_excel_oracle(

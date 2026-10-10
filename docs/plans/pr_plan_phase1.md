@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.11+, openpyxl, Python stdlib OOXML zip/XML scanning, Pydantic, NetworkX, Typer, pytest, optional formulas/xlcalculator behind plugin interfaces.
 
+> **Status note:** PR-01–PR-12 are the original proposed sequence, not a list of work still missing. PR-13 records the #7 extension implemented in this branch, pending review and merge. The legacy `inspect` workflow implements the manifest/inventory/graph, rule classification, confirmation questions, structural completeness, numerical comparison, store and handoff path. Human Step 1/2 provides a separate source conversion/check, batch index, deterministic reading views and evidence navigation. Rule classifications are not the broader semantic-analysis target in README Step 3. Current file status and artifact contracts are maintained in [layered architecture](../design/layered_architecture.md).
+
 ---
 
 ## Current confirmation needed
@@ -29,6 +31,8 @@ This PR plan avoids depending on that answer.
 5. Formula graph work parses dependencies only; no formula evaluation and no Python generation in Phase 1.
 6. Plugin stages exchange typed artifact contracts, not raw openpyxl objects across the whole pipeline.
 
+Structural completeness and numerical verification are separate gates. #5's `CompletenessReport` checks source/output accounting; #7's `ValidationReport` in the legacy `inspect` run compares saved workbook caches with actual `formulas` recalculation. The report records missing cache, unsupported formula, and unavailable backend coverage. That pre-generation workbook-baseline check is distinct from post-generation code-equivalence, which requires generated output and is a later target.
+
 ## PR overview
 
 | PR | Goal | Main files | Depends on | Acceptance |
@@ -45,6 +49,7 @@ This PR plan avoids depending on that answer.
 | PR-10 | Local artifact store | `store/local_store.py`, tests | PR-09 | run artifacts persisted with hashes/metadata |
 | PR-11 | Orchestrator + CLI JSON artifacts | `orchestrator/phase1.py`, `interfaces/cli.py`, tests | PR-10 | CLI writes JSON artifacts |
 | PR-12 | Markdown report | `report/markdown.py`, tests | PR-11 | report shows coverage, opaque content, and confirmation checklist |
+| PR-13 (#7) | Saved cache versus actual recalculation | `verify/numerical.py`, schemas, store, handoff, tests, CI | #4, #13, #9 backend proof | Distinct sources; type-aware differences and coverage; read-back; default fallback and real backend checks |
 
 ## PR-01: Skeleton + architecture plan
 
@@ -269,6 +274,10 @@ This PR plan avoids depending on that answer.
 - Report shows per-sheet unclassified/opaque counts.
 - Markdown snapshot test passes for fixture workbook.
 
+## PR-13 (#7): Numerical workbook baseline
+
+**Status:** Implemented in this branch; pending review and merge. Legacy `inspect` stores a `ValidationReport` and separates numerical from structural handoff status. The optional `formulas` backend recalculates the workbook; absent backend and missing or unsupported results remain visible as uncovered. CI checks both default fallback and actual recalculation. Human Step 1/2 integration and generated-code equivalence remain later work.
+
 ## Risks and mitigations
 
 | Risk | Mitigation |
@@ -289,3 +298,4 @@ This PR plan avoids depending on that answer.
 4. Build ingestion/inventory/graph/classification in order.
 5. Add confirmation/store/orchestrator/report only after artifact contracts stabilize.
 6. Start Python generation only in a later separate plan after Phase 1 reports prove decomposition coverage.
+7. #7's pre-generation numerical comparison extends the legacy `inspect` path after the #9 backend proof; it does not start Python generation.

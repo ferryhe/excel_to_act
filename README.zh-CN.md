@@ -32,6 +32,8 @@ flowchart TD
 
 进入每一步前，请运行 `workflow status`，检查上游证据是否仍然有效以及当前允许进入的阶段。创建草稿或工具检查通过本身不会批准或推进流程。旧版独立来源探索 API 仍可用于发现和检查，但不会记录流程批准。
 
+旧版 `inspect` 命令仍可用于单工作簿结构检查和可选数值验证。`formulas` oracle 需要单独选择安装。
+
 ## CLI 与交付物
 
 命令均以 `excel-to-act` 开头。运行 `stepN tools`、`stepN agent` 或 `--help` 查看当前工具约定、Agent 指令和参数。
@@ -39,7 +41,7 @@ flowchart TD
 | 步骤 | 主要命令 | 主要交付物 |
 | --- | --- | --- |
 | 1 · 源事实 | `step1 convert`、`check`、`finalize`、`report` | 保留的工作簿部件、源清单和 `import_checkpoint.{json,md}` |
-| 2 · 索引 | `step2 index`、`validate`、`report` | `index.json`、`INDEX.md`、`state.json` 和 `index_checkpoint.{json,md}` |
+| 2 · 索引与读取 | `step2 index`、`validate`、`report`、`prepare`、`query`、`trace` | `index.json`、`INDEX.md`、`state.json`、读取包、有界证据包和依赖轨迹 |
 | 3 · 分析与设计 | `step3 prepare`、`fields`、`dependencies`、`input-catalog`、`query`、`trace`、`source-trace`、`profile`、`plan`、`check`、`report` | 已确认输入、源候选轨迹及公式族、变量/方程/模块、语义映射及检查、`analysis_design.{json,md}` |
 | 4 · 代码 | `step4 capture-external`、`discover`、`plan`、`generate` | 已绑定的外部向量、活跃源轨迹、实现预检、模块化独立 Python、分开的输入/元数据文件和生成报告 |
 | 5 · 验证 | `step5 validate`、`oracle`、`reconcile` | 隔离代码验证报告、Excel 新算基准和数值对账 |

@@ -1506,4 +1506,3 @@ def confirmed_boundary_reference(root: Path, manifest: dict[str, Any]) -> tuple[
             or not md_path.is_file() or conversion.hash_file(md_path) != reference["artifact"]["md_sha256"]):
         raise ValueError("confirmed input-boundary artifact pair is missing or changed")
     return reference, json_path, md_path
-

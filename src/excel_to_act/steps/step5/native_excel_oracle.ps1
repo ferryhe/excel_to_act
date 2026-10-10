@@ -53,6 +53,85 @@ function Get-RangeRecord($workbook, $item) {
     }
 }
 
+function Get-TargetRecord($namedRange, $shape) {
+    $targetShape = $shape
+    if ($null -eq $targetShape) {
+        $targetShape = @()
+    } elseif ($targetShape -isnot [array]) {
+        $targetShape = @($targetShape)
+    }
+    if ($targetShape.Count -eq 0) {
+        return Get-CellRecord $namedRange.Cells.Item(1, 1)
+    }
+    if ($targetShape.Count -gt 2) {
+        throw 'Named result targets must be scalar, vector, or table values.'
+    }
+    foreach ($size in $targetShape) {
+        if ([int]$size -lt 0) {
+            throw 'Named result target dimensions cannot be negative.'
+        }
+    }
+    if ($namedRange.Areas.Count -ne 1) {
+        throw 'A non-scalar named result target must be one contiguous range.'
+    }
+    if (($targetShape | Where-Object { [int]$_ -eq 0 }).Count -gt 0) {
+        $emptyValue = if ($targetShape.Count -eq 1) { @() } else {
+            $emptyRows = [System.Collections.Generic.List[object]]::new()
+            for ($row = 0; $row -lt [int]$targetShape[0]; $row++) {
+                $emptyRows.Add(@())
+            }
+            @($emptyRows.ToArray())
+        }
+        return @{ value = $emptyValue; shape = $targetShape; formulas = @(); excel_errors = @() }
+    }
+    $rowsCount = [int]$namedRange.Rows.Count
+    $columnsCount = [int]$namedRange.Columns.Count
+    if ($targetShape.Count -eq 1) {
+        $expectedCount = [int]$targetShape[0]
+        if (($rowsCount -ne 1 -and $columnsCount -ne 1) -or ($rowsCount * $columnsCount -ne $expectedCount)) {
+            throw "Named vector range $($namedRange.Address) has $rowsCount rows and $columnsCount columns; declared shape is [$expectedCount]."
+        }
+    } elseif ($rowsCount -ne [int]$targetShape[0] -or $columnsCount -ne [int]$targetShape[1]) {
+        throw "Named table range $($namedRange.Address) has shape [$rowsCount,$columnsCount]; declared shape is [$($targetShape -join ',')]."
+    }
+
+    $values = [System.Collections.Generic.List[object]]::new()
+    $formulas = [System.Collections.Generic.List[object]]::new()
+    $errors = [System.Collections.Generic.List[object]]::new()
+    if ($targetShape.Count -eq 1) {
+        for ($index = 1; $index -le $rowsCount * $columnsCount; $index++) {
+            if ($rowsCount -eq 1) {
+                $cell = $namedRange.Cells.Item(1, $index)
+            } else {
+                $cell = $namedRange.Cells.Item($index, 1)
+            }
+            $record = Get-CellRecord $cell
+            $values.Add($record.value)
+            $formulas.Add($record.formula)
+            $errors.Add($record.excel_error)
+        }
+        return @{ value = @($values.ToArray()); shape = $targetShape;
+            formulas = @($formulas.ToArray()); excel_errors = @($errors.ToArray()) }
+    }
+
+    for ($row = 1; $row -le $rowsCount; $row++) {
+        $valueRow = [System.Collections.Generic.List[object]]::new()
+        $formulaRow = [System.Collections.Generic.List[object]]::new()
+        $errorRow = [System.Collections.Generic.List[object]]::new()
+        for ($column = 1; $column -le $columnsCount; $column++) {
+            $record = Get-CellRecord $namedRange.Cells.Item($row, $column)
+            $valueRow.Add($record.value)
+            $formulaRow.Add($record.formula)
+            $errorRow.Add($record.excel_error)
+        }
+        $values.Add(@($valueRow.ToArray()))
+        $formulas.Add(@($formulaRow.ToArray()))
+        $errors.Add(@($errorRow.ToArray()))
+    }
+    return @{ value = @($values.ToArray()); shape = $targetShape;
+        formulas = @($formulas.ToArray()); excel_errors = @($errors.ToArray()) }
+}
+
 try {
     $excel = New-Object -ComObject Excel.Application
     $excel.Visible = $false
@@ -71,7 +150,9 @@ try {
     $beforeTargets = @{}
     foreach ($name in $request.targets) {
         $namedRange = $book.Names.Item([string]$name).RefersToRange
-        $beforeTargets[[string]$name] = Get-CellRecord $namedRange.Cells.Item(1, 1)
+        $shapeProperty = $request.target_shapes.PSObject.Properties[[string]$name]
+        $shape = if ($null -ne $shapeProperty) { $shapeProperty.Value } else { @() }
+        $beforeTargets[[string]$name] = Get-TargetRecord $namedRange $shape
     }
     $timer = [System.Diagnostics.Stopwatch]::StartNew()
     $excel.CalculateFullRebuild()
@@ -80,7 +161,9 @@ try {
     $afterTargets = @{}
     foreach ($name in $request.targets) {
         $namedRange = $book.Names.Item([string]$name).RefersToRange
-        $afterTargets[[string]$name] = Get-CellRecord $namedRange.Cells.Item(1, 1)
+        $shapeProperty = $request.target_shapes.PSObject.Properties[[string]$name]
+        $shape = if ($null -ne $shapeProperty) { $shapeProperty.Value } else { @() }
+        $afterTargets[[string]$name] = Get-TargetRecord $namedRange $shape
     }
     $afterRanges = @{}
     foreach ($item in $request.ranges) {

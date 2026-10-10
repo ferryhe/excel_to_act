@@ -316,11 +316,13 @@ def _cell(value: Any, fallback: str = "Not recorded") -> str:
     return _plain(value, fallback).replace("|", "\\|")
 
 
-def _human_value(value: Any) -> str:
+def _human_value(value: Any, *, null_text: str = "Not recorded") -> str:
+    if value is None:
+        return null_text
     if isinstance(value, bool):
         return "True" if value else "False"
     if isinstance(value, (list, tuple)):
-        return ", ".join(_human_value(item) for item in value)
+        return ", ".join(_human_value(item, null_text=null_text) for item in value)
     if isinstance(value, dict):
         return "structured value"
     return _plain(value)
@@ -340,10 +342,14 @@ def _items(values: Any) -> list[str]:
             for value in values if isinstance(value, (str, int, float))]
 
 
-def _format_result(value: Any) -> str:
+def _format_result(value: Any, *, present: bool = False) -> str:
+    if not present:
+        return "Not recorded"
+    if value is None:
+        return "null"
     if isinstance(value, float):
         return repr(value)
-    return _human_value(value)
+    return _human_value(value, null_text="null")
 
 
 def _result_metadata(target: dict[str, Any] | None) -> str:
@@ -409,7 +415,7 @@ def _structured_result(value: Any, target: dict[str, Any] | None, limit: int = 1
 
     def atom(item: Any) -> str:
         if item is None:
-            return "Not recorded"
+            return "null"
         if isinstance(item, bool):
             return "True" if item else "False"
         if isinstance(item, (dict, list)):
@@ -438,10 +444,11 @@ def _result_row(
     check = ("Matched" if record.get("matched") is True else "Not matched"
              if record.get("matched") is False else "Not reported")
     model_text = (_structured_result(model_value, target) if isinstance(model_value, (list, dict))
-                  else _format_result(model_value))
+                  else _format_result(model_value, present="model" in record))
     excel_text = (_structured_result(excel_value, target) if isinstance(excel_value, (list, dict))
-                  else _format_result(excel_value))
-    return [classification, name, model_text, excel_text, _format_result(difference), check]
+                  else _format_result(excel_value, present="excel" in record))
+    return [classification, name, model_text, excel_text,
+            _format_result(difference, present=difference is not None), check]
 
 def _link(label: str, path: Any, workflow_root: Path | None, report_directory: Path | None) -> str:
     if not isinstance(path, str) or not path:
@@ -916,7 +923,8 @@ def _report_markdown(
         lines.append("")
     max_difference = validation.get("active_formula_max_abs_difference")
     if max_difference is not None:
-        lines.append(f"Maximum absolute difference across active formula values: {_format_result(max_difference)}.")
+        lines.append(f"Maximum absolute difference across active formula values: "
+                     f"{_format_result(max_difference, present=max_difference is not None)}.")
     tolerances = report.get("tolerances", {})
     if isinstance(tolerances, dict):
         lines.append(f"Comparison tolerances: absolute {_plain(tolerances.get('absolute'))}; "
@@ -1160,8 +1168,10 @@ def _report_markdown(
             continue
         for name, details in sorted(primary_inputs.items()):
             if isinstance(details, dict):
+                source_literal = (_human_value(details["source_literal"], null_text="null")
+                                  if "source_literal" in details else "Not recorded")
                 scenario_rows.append([scenario_id, name, details.get("source_cell"),
-                                      _human_value(details.get("source_literal"))])
+                                      source_literal])
             else:
                 scenario_rows.append([scenario_id, name, "", _human_value(details)])
     if scenario_rows:

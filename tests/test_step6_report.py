@@ -463,6 +463,53 @@ def test_step6_reader_preserves_non_scalar_positions_metadata_and_scalar_style(t
     ]
     assert report == original
 
+
+def test_step6_reader_distinguishes_explicit_nulls_from_absent_result_fields(tmp_path: Path) -> None:
+    import copy
+
+    root, _catalog_json, _catalog_markdown = _build_workflow(tmp_path / "workflow")
+    result = create_conversion_report(root)
+    report = read_json(root / result["artifact"]["json"])
+    targets = report["design_summary"]["targets"]
+    targets[0].update({"selector": "NullScalar", "shape": [], "result_kind": "scalar"})
+    targets.extend([
+        {"target_id": "T_ABSENT", "selector": "AbsentResult", "result_order": 1,
+         "shape": [], "result_kind": "scalar"},
+        {"target_id": "T_VECTOR", "selector": "NullVector", "result_order": 2,
+         "shape": [2], "result_kind": "vector"},
+        {"target_id": "T_TABLE", "selector": "NullTable", "result_order": 3,
+         "shape": [1, 2], "result_kind": "table"},
+    ])
+    report["target_results"] = {
+        "NullScalar": {"model": None, "excel": None, "matched": True},
+        "AbsentResult": {"matched": None},
+        "NullVector": {"model": [None, 0], "excel": [None, 0], "matched": True},
+        "NullTable": {"model": [[None, 1]], "excel": [[None, 1]], "matched": True},
+    }
+    report["design_summary"]["scenarios"] = [{
+        "scenario_id": "null-case",
+        "primary_inputs": {
+            "ExplicitNull": {"source_cell": "Inputs!A1", "source_literal": None},
+            "AbsentLiteral": {"source_cell": "Inputs!A2"},
+            "StringNone": {"source_cell": "Inputs!A3", "source_literal": "None"},
+        },
+    }]
+    original = copy.deepcopy(report)
+
+    markdown = _report_markdown(report)
+    primary = markdown.split("## Purpose/intended use/scope", 1)[0]
+
+    assert "| Requested result | NullScalar | null | null | Not recorded | Matched |" in primary
+    assert "| Requested result | AbsentResult | Not recorded | Not recorded | Not recorded | Not reported |" in primary
+    vector_line = next(line for line in primary.splitlines() if "| Requested result | NullVector |" in line)
+    assert vector_line.count("position [0] = null") == 2 and vector_line.count("position [1] = 0") == 2
+    table_line = next(line for line in primary.splitlines() if "| Requested result | NullTable |" in line)
+    assert table_line.count("position [0, 0] = null") == 2 and table_line.count("position [0, 1] = 1") == 2
+    assert "| null-case | ExplicitNull | Inputs!A1 | null |" in markdown
+    assert "| null-case | AbsentLiteral | Inputs!A2 | Not recorded |" in markdown
+    assert "| null-case | StringNone | Inputs!A3 | None |" in markdown
+    assert report == original
+
 def test_step6_legacy_report_marks_catalog_facts_unavailable_without_guessing() -> None:
     report = {
         "source": {}, "stages": {

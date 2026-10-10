@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import zipfile
@@ -23,8 +24,9 @@ from typer.testing import CliRunner
 from excel_to_act.interfaces.cli import app
 from excel_to_act.ingest.openpyxl_reader import OpenpyxlWorkbookReader
 from excel_to_act.inventory.extractor import OpenpyxlInventoryExtractor
-from excel_to_act.schemas import CellInventory
+from excel_to_act.schemas import CellInventory, CompletenessReport, Handoff, RunMetadata, WorkbookManifest
 from excel_to_act.steps.step1.source_scan import SourceScanError, scan_step1_source
+from excel_to_act.store.local_store import LocalArtifactStore
 from excel_to_act.steps.step1.workflow import _hash_file, auto_recover, convert_directory, execute_tool, finalize_run
 
 
@@ -368,6 +370,28 @@ def _add_phonetic_string_cases(path: Path) -> tuple[bytes, bytes]:
     _rewrite_package(path, replacements=replacements, additions={"xl/sharedStrings.xml": strings_xml})
     with zipfile.ZipFile(path, "r") as source:
         return source.read("xl/sharedStrings.xml"), source.read("xl/worksheets/sheet1.xml")
+
+
+def _make_missing_phonetic_font_id(path: Path, *, shared: bool) -> Path:
+    _make_book(path)
+    _add_phonetic_string_cases(path)
+    part = "xl/sharedStrings.xml" if shared else "xl/worksheets/sheet1.xml"
+    with zipfile.ZipFile(path) as source:
+        root = ET.fromstring(source.read(part))
+    if shared:
+        phonetic = next(node for node in root.iter() if node.tag == MAIN + "phoneticPr")
+    else:
+        inline = next(
+            node for node in root.iter()
+            if node.tag == MAIN + "c" and node.attrib.get("r") == "A3"
+        )
+        phonetic = next(node for node in inline.iter() if node.tag == MAIN + "phoneticPr")
+    del phonetic.attrib["fontId"]
+    _rewrite_package(
+        path,
+        replacements={part: ET.tostring(root, encoding="utf-8", xml_declaration=True)},
+    )
+    return path
 
 
 def _make_shared_string_index_case(path: Path, index: str, *, formula: bool) -> Path:
@@ -1180,6 +1204,93 @@ def test_identityless_projection_multiset_and_parent_ownership_are_checked(tmp_p
     assert execute_tool("inventory.extract", run)["status"] == "pass"
     assert execute_tool("step1.check", run)["status"] == "pass"
     assert source.is_file()
+
+
+@pytest.mark.parametrize(("shared", "part"), [(False, "xl/worksheets/sheet1.xml"), (True, "xl/sharedStrings.xml")])
+def test_missing_phonetic_font_id_is_a_source_error(tmp_path: Path, shared: bool, part: str) -> None:
+    source = _make_missing_phonetic_font_id(tmp_path / f"bad-{shared}.xlsx", shared=shared)
+
+    with pytest.raises(SourceScanError, match=rf"{part}: openpyxl could not parse rich text"):
+        scan_step1_source(source)
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_phonetic_parse_failure_writes_cli_diagnostic_and_preserves_prior_run(
+    tmp_path: Path, shared: bool
+) -> None:
+    out = tmp_path / "artifacts"
+    good = _make_book(tmp_path / "good.xlsx")
+    success = CliRunner().invoke(app, ["inspect", str(good), "--out", str(out)])
+    assert success.exit_code == 0, success.output
+
+    prior_metadata = RunMetadata.model_validate_json((out / "run_metadata.json").read_bytes())
+    prior_paths = [Path(artifact.path) for artifact in prior_metadata.artifacts]
+    aliases = {
+        "inventory.json",
+        "dependency_graph.json",
+        "module_classification.json",
+        "confirmation_template.json",
+    }
+    assert aliases <= {path.name for path in prior_paths}
+    assert all((out / name).exists() for name in aliases)
+
+    broken = _make_missing_phonetic_font_id(tmp_path / f"bad-{shared}.xlsx", shared=shared)
+    with (
+        patch("excel_to_act.orchestrator.phase1.OpenpyxlInventoryExtractor.extract") as extract,
+        patch("excel_to_act.orchestrator.phase1.RegexFormulaGraphBuilder.build") as graph,
+        patch("excel_to_act.orchestrator.phase1.RuleBasedClassifier.classify") as classify,
+        patch("excel_to_act.orchestrator.phase1.extract_vba_project") as vba,
+        patch("excel_to_act.orchestrator.phase1.ConfirmationTemplateBuilder.build") as confirmation,
+    ):
+        failure = CliRunner().invoke(app, ["inspect", str(broken), "--out", str(out)])
+
+    assert failure.exit_code == 1, failure.output
+    assert "Traceback" not in failure.output
+    assert "Reason: Could not read workbook: SourceScanError:" in failure.output
+    package_part = "xl/sharedStrings.xml" if shared else "xl/worksheets/sheet1.xml"
+    assert package_part in failure.output
+    assert "Diagnostic:" in failure.output
+    for downstream in (extract, graph, classify, vba, confirmation):
+        downstream.assert_not_called()
+    assert not any((out / name).exists() for name in aliases)
+    assert all(path.exists() for path in prior_paths)
+
+    store = LocalArtifactStore(out)
+    prior = store.read_run(prior_metadata.workbook_sha256, prior_metadata.run_id)
+    assert aliases <= {Path(artifact.path).name for artifact in prior.artifacts}
+    failed_metadata = RunMetadata.model_validate_json((out / "run_metadata.json").read_bytes())
+    failed = store.read_run(failed_metadata.workbook_sha256, failed_metadata.run_id)
+    assert failed.completeness_status == "fail"
+    names = {artifact.name for artifact in failed.artifacts}
+    assert names.isdisjoint(aliases)
+    assert names <= {
+        "workbook_manifest.json",
+        "completeness.json",
+        "handoff.json",
+        "handoff.md",
+        "run_metadata.json",
+        "artifact_index.json",
+    }
+    assert {"workbook_manifest.json", "completeness.json", "handoff.json", "handoff.md"} <= names
+    manifest = store.read_json(
+        next(artifact.path for artifact in failed.artifacts if artifact.name == "workbook_manifest.json"),
+        WorkbookManifest,
+    )
+    handoff = store.read_json(
+        next(artifact.path for artifact in failed.artifacts if artifact.name == "handoff.json"), Handoff
+    )
+    completeness = store.read_json(
+        next(artifact.path for artifact in failed.artifacts if artifact.name == "completeness.json"),
+        CompletenessReport,
+    )
+    assert manifest.unsupported_features[0].description.startswith("Could not read workbook: SourceScanError:")
+    assert handoff.status == "fail"
+    assert completeness.status == "fail"
+    assert package_part in completeness.blocking_reasons[0]
+    assert all(
+        hashlib.sha256(Path(artifact.path).read_bytes()).hexdigest() == artifact.sha256
+        for artifact in handoff.artifacts
+    )
 
 
 def test_canonical_source_and_inventory_comparisons_distinguish_false_from_zero(tmp_path: Path) -> None:

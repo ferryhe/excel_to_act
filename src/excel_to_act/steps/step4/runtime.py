@@ -552,4 +552,3 @@ class Runtime:
                   "cell_count": len(values), "formula_count": len(self.formulas)}
         output_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
         return result
-

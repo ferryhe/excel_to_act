@@ -32,6 +32,8 @@ Put the source Excel workbook in `input/`. Stage outputs and each source-bound w
 
 Before entering a stage, check `workflow status` for its current upstream evidence and permitted stage. Creating a draft or passing a tool check does not itself approve or advance the workflow. Legacy standalone source-exploration APIs remain available for discovery; they do not create workflow approvals.
 
+The legacy `inspect` command remains available for one-shot structural and optional numerical validation. Its `formulas` oracle is a separate opt-in extra.
+
 ## CLI and deliverables
 
 Commands start with `excel-to-act`. Run `stepN tools`, `stepN agent` or `--help` for the current tool contracts, Agent instructions and arguments.
@@ -39,7 +41,7 @@ Commands start with `excel-to-act`. Run `stepN tools`, `stepN agent` or `--help`
 | Step | Main commands | Main deliverables |
 | --- | --- | --- |
 | 1 · Source | `step1 convert`, `check`, `finalize`, `report` | Preserved workbook parts, source inventories and `import_checkpoint.{json,md}` |
-| 2 · Index | `step2 index`, `validate`, `report` | `index.json`, `INDEX.md`, `state.json` and `index_checkpoint.{json,md}` |
+| 2 · Index and reading | `step2 index`, `validate`, `report`, `prepare`, `query`, `trace` | `index.json`, `INDEX.md`, `state.json`, prepared reading package, bounded evidence packets and dependency traces |
 | 3 · Analysis and design | `step3 prepare`, `fields`, `dependencies`, `input-catalog`, `query`, `trace`, `source-trace`, `profile`, `plan`, `check`, `report` | Confirmed inputs, source candidate trace/profile, variables/equations/modules, semantic plan/check, `analysis_design.{json,md}` |
 | 4 · Code | `step4 capture-external`, `discover`, `plan`, `generate` | Bound external vectors, active source trace, implementation preflight, standalone modular Python, separate input/metadata files and generation report |
 | 5 · Verification | `step5 validate`, `oracle`, `reconcile` | Isolated code-validation report, fresh native Excel capture and numerical reconciliation |

@@ -98,7 +98,11 @@ Phase 1 may attach non-authoritative hints based on names, sheet labels, formula
 
 These are confidence-scored hints, not final model structure. They must be confirmable and overridable through `confirm/`.
 
+This list is a planning vocabulary, not the runtime enum contract. The implemented `ActuarialHint` values are `assumption`, `rate_table`, `cashflow`, `projection`, `output`, and `unknown`; see [layered architecture](../design/layered_architecture.md). Do not add enum values solely to match this proposal.
+
 ## Repository architecture
+
+This plan records the intended Phase 1 sequence, not the complete current runtime map. The legacy `inspect` path runs rule classification, confirmation-question generation, structural completeness checks, numerical cache-versus-recalculation comparison, and handoff. The newer human `step1`/`step2` path performs source conversion/checks, indexing, deterministic views, and evidence navigation. README Step 3's broader semantic analysis and Python generation are not complete. See [layered architecture and artifact boundaries](../design/layered_architecture.md) for implemented files, actual artifact contracts, and planned boundaries.
 
 ```text
 src/excel_to_act/
@@ -295,17 +299,17 @@ excel-to-act --help
 
 ## Mapping to the README pipeline
 
-The README divides the long-term roadmap into Steps 0–5. This plan's Phase 1 **covers only Steps 0–3** (ingest → inventory → graph → classify → confirm → store → report). The README's Step 4 (Python generation) is explicitly excluded by this plan's "Non-goals" section; Step 5 (reconciliation across multiple oracles) is unscheduled, with only LibreOffice/xlwings reserved in this plan's "Existing tools" section.
+The README divides the long-term roadmap into Steps 0–5. This plan's Phase 1 **targets Steps 0–3** (ingest → inventory → graph → classify → confirm → store → report); it does not mean the broader README Step 3 semantic analysis is already implemented. The legacy `inspect` path has rule classification, confirmation questions, and #7's pre-generation saved-cache versus actual-recalculation check, while human Step 1/2 focuses on decomposition and evidence navigation. The README's Step 4 (Python generation) is excluded by this plan's "Non-goals" section; post-generation code-equivalence remains later work.
 
 ### Current artifact layout vs. the Step 1 target
 
 - **Current legacy `inspect` layout:** The CLI command is `excel-to-act inspect <workbook> --out <dir>` and remains single-workbook. It writes flat artifacts under `<out>/workbooks/<sha256>/<run_id>/`, including `workbook_manifest.json`, `inventory.json`, `dependency_graph.json`, `module_classification.json`, `confirmation_template.json`, `completeness.json`, `handoff.json`, `handoff.md`, and `run_metadata.json`, plus artifact-index files and latest-run aliases.
-- **Current human Step 1 layout:** `excel-to-act step1 convert <directory> --out <dir>` is a separate directory-based workflow. Each source run writes `source.json`, `workbook_manifest.json`, `inventory.json`, `source_facts.json`, `logical_objects.json`, `package_parts.json`, `quality.json`, and `handoff.json` / `handoff.md`; original source evidence and copied package-part bytes are stored alongside them. The batch writes its own JSON and Markdown handoff. See README §3.1.
+- **Current human Step 1/2 layout:** `excel-to-act step1 convert <directory> --out <dir>` writes source-bound facts, inventory, object/part ledgers, quality and handoff artifacts, plus control/VBA handoffs where available; original source evidence and copied package-part bytes are stored alongside them. Human Step 2 writes a separate batch index and prepared reading package with deterministic views and evidence handoffs. See README §1 and [layered architecture](../design/layered_architecture.md).
 - **Step 1 target layout:** See README §3.2 — directories by content type, both Markdown and JSON for each type, and separate contracts for `coverage` and `handoff`. This remains a future layout. Keep `<sha256>/<run_id>/` as the namespace; **do not use a filename slug** (different content with the same name can collide, and renaming breaks links).
 
 ### Confirmed hard-constraint gaps
 
-- **The coverage invariant is not currently enforced:** `inventory/extractor.py` sets `CoverageSummary.discovered_workbook_objects` directly to `recognized + opaque`, which is an identity and therefore always passes. `discovered` must be counted independently (issue #5, P0).
+- **The legacy coverage summary is not independent:** `inventory/extractor.py` sets `CoverageSummary.discovered_workbook_objects` directly to `recognized + opaque`, which is an identity and therefore always passes. Human Step 1 has separate source-side coverage checks; #5 still defines the outstanding object-accounting scope (see [layered architecture](../design/layered_architecture.md)).
 - **`OPAQUE_MARKERS` has been completed:** it grew from 8 to 18 tokens, adding `xl/model/`, `_xmlsignatures/`, `calcChain.xml`, `/ctrlProps/`, `/slicers/`, `/timelines/`, `/macrosheets/`, `/customXml/`, `volatileDependencies.xml`, and `/webExtensions/`. These parts were previously neither collected nor marked opaque, so they were silently dropped.
 - **Encrypted/damaged files raise uncaught exceptions:** `ZipFile()` in `scan_ooxml_package()` has no exception handling, violating the "report an error, do not panic" requirement (issue #8, P1).
 

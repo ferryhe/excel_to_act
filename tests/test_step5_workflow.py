@@ -17,15 +17,132 @@ from excel_to_act.steps.conversion_workflow import (
 from excel_to_act.steps.step5.workflow import (
     _active_formula_addresses,
     _active_formula_details,
+    _bound_stage3_design,
+    _compare_named_targets,
     _compare_active_formula_members,
     _compare_external_boundary,
     _oracle_range_cells,
     _preflight_oracle,
+    _matches,
+    _target_shapes,
+    _value_has_shape,
     _reconciliation_markdown,
     _verify_python,
     reconcile,
     validate_generated,
 )
+from excel_to_act.steps.step5 import workflow as step5_workflow
+
+
+def test_stage5_reconciles_declared_vector_and_table_values_recursively() -> None:
+    specs = {
+        "Scalar": {"shape": []},
+        "Vector": {"shape": [2], "result_kind": "vector"},
+        "Matrix": {"shape": [2, 2], "result_kind": "table"},
+        "Singleton": {"shape": [1], "result_kind": "vector"},
+        "RowTable": {"shape": [1, 2], "result_kind": "table"},
+        "ColumnTable": {"shape": [2, 1], "result_kind": "table"},
+        "BadShape": {"shape": [2, 2], "result_kind": "table"},
+    }
+    model = {
+        "Scalar": 5,
+        "Vector": [1.0000000001, {"excel_error": "#N/A"}],
+        "Matrix": [[1.0, 2.0], [3.0, 4.0]],
+        "Singleton": [False],
+        "RowTable": [[None, 2]],
+        "ColumnTable": [[3], [4]],
+        "BadShape": [[1, 2]],
+    }
+    native = {
+        "Scalar": {"value": 5},
+        "Vector": {"shape": [2], "value": [1.0, None], "excel_errors": [None, "#N/A"]},
+        "Matrix": {"shape": [2, 2], "value": [[1.0, 2.0000000001], [3.0, 4.0]],
+                   "excel_errors": [[None, None], [None, None]]},
+        "Singleton": {"shape": [1], "value": [False], "excel_errors": [None]},
+        "RowTable": {"shape": [1, 2], "value": [[None, 2]], "excel_errors": [[None, None]]},
+        "ColumnTable": {"shape": [2, 1], "value": [[3], [4]], "excel_errors": [[None], [None]]},
+        "BadShape": {"shape": [2, 2], "value": [[1, 2], [3, 4]],
+                     "excel_errors": [[None, None], [None, None]]},
+    }
+
+    results, mismatches, compared = _compare_named_targets(
+        set(specs), model, native, specs, abs_tol=1e-9, rel_tol=0.0)
+
+    assert compared == len(specs)
+    assert {name for name, record in results.items() if record["matched"]} == {
+        "Scalar", "Vector", "Matrix", "Singleton", "RowTable", "ColumnTable",
+    }
+    assert results["Vector"]["excel"] == [1.0, {"excel_error": "#N/A"}]
+    assert [item["kind"] for item in mismatches] == ["target_shape"]
+    assert _matches([[1.0, 2.0000000001], [3.0, 4.0]], [[1, 2], [3, 4]], 1e-9, 0)
+    assert not _matches([[1.0, 2.1]], [[1.0], [2.1]], 0.5, 0)
+    assert not _matches([True], [1], 1.0, 0.0)
+    assert _matches([None], [None], 0.0, 0.0)
+    assert _value_has_shape([[3], [4]], [2, 1])
+    assert not _value_has_shape([[3, 4]], [2, 1])
+
+
+def test_step5_reads_target_shapes_only_from_the_stage3_pair_bound_by_stage4(tmp_path: Path) -> None:
+    root = tmp_path / "workflow"
+    source = root / "source.xlsx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"synthetic source")
+    create_workflow(root, {"workbook_sha256": hash_file(source), "workbook_path": str(source),
+                           "run_id": "synthetic-run"})
+    stage3 = append_stage_artifact(
+        root, 3, "analysis_design.json",
+        {"schema_version": "step3.analysis_design.v1", "design": {
+            "targets": [{"selector": "Vector", "result_order": 0, "shape": [2], "result_kind": "vector"},
+                        {"selector": "Scalar", "result_order": 1, "shape": [], "result_kind": "scalar"}],
+        }},
+        "Synthetic design.",
+    )
+    stage4 = append_stage_artifact(
+        root, 4, "generation_report.json", {"schema_version": "step4.generation_report.v1"},
+        "Synthetic generation.", input_stages={3: stage3["artifact"]["json_sha256"]},
+    )
+    _root, manifest = load_workflow(root)
+
+    design = _bound_stage3_design(root, manifest, stage4)
+
+    assert _target_shapes(design) == {"Vector": [2], "Scalar": []}
+
+
+def test_step5_capture_passes_bound_design_shapes_to_native_oracle(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "workflow"
+    source = root / "source.xlsx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"synthetic source")
+    create_workflow(root, {"workbook_sha256": hash_file(source), "workbook_path": str(source),
+                           "run_id": "synthetic-run"})
+    stage3 = append_stage_artifact(
+        root, 3, "analysis_design.json",
+        {"schema_version": "step3.analysis_design.v1", "design": {
+            "targets": [{"selector": "Vector", "result_order": 0, "shape": [2]}],
+        }},
+        "Synthetic design.",
+    )
+    stage4 = append_stage_artifact(
+        root, 4, "generation_report.json", {"schema_version": "step4.generation_report.v1"},
+        "Synthetic generation.", input_stages={3: stage3["artifact"]["json_sha256"]},
+    )
+    _root, manifest = load_workflow(root)
+    captured = {}
+
+    def fake_capture(_source, output_dir, *, targets, ranges, target_shapes):
+        captured.update(targets=targets, ranges=ranges, target_shapes=target_shapes)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "excel_oracle.json").write_text(json.dumps({"status": "pass"}), encoding="utf-8")
+        return {"status": "pass", "tool": "step5.oracle"}
+
+    monkeypatch.setattr(step5_workflow, "_stage4", lambda _root: (
+        manifest, stage4, {"target_names": ["Vector"], "oracle_ranges": []}, root / "stage4" / "bundle"))
+    monkeypatch.setattr(step5_workflow, "capture_excel_oracle", fake_capture)
+
+    result = step5_workflow.capture_oracle(root)
+
+    assert result["status"] == "pass", result
+    assert captured == {"targets": ["Vector"], "ranges": [], "target_shapes": {"Vector": [2]}}
 
 
 def _canonical_hash(value: object) -> str:
@@ -476,7 +593,7 @@ def test_step5_validates_separate_external_ledger_and_disallows_overlap(tmp_path
     assert any("external_values.json is stale" in failure for failure in _verify_python(bundle, stale))
 
 
-def test_step5_validates_a_synthetic_modular_generation_end_to_end(tmp_path: Path) -> None:
+def test_step5_reconciles_synthetic_generation_and_separates_extra_capture(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "workflow"
     source = root / "source" / "fixture.xlsm"
     source.parent.mkdir(parents=True)
@@ -490,8 +607,13 @@ def test_step5_validates_a_synthetic_modular_generation_end_to_end(tmp_path: Pat
 
     previous = None
     for stage in (1, 2, 3):
+        stage_payload = {"status": "ready_for_review"}
+        if stage == 3:
+            stage_payload["design"] = {"targets": [
+                {"selector": "GP", "result_order": 0, "shape": [], "result_kind": "scalar"},
+            ]}
         revision = append_stage_artifact(
-            root, stage, f"stage{stage}.json", {"status": "ready_for_review"},
+            root, stage, f"stage{stage}.json", stage_payload,
             f"Synthetic stage {stage}.",
             input_stages={stage - 1: previous["artifact"]["json_sha256"]} if previous else None)
         for reviewer in ("agent", "human"):
@@ -509,12 +631,13 @@ def test_step5_validates_a_synthetic_modular_generation_end_to_end(tmp_path: Pat
             "    parser.add_argument('--out', type=Path, default=Path('model_result.json'))\n"
             "    args = parser.parse_args()\n"
             "    args.out.write_text(json.dumps({'status':'pass','targets':{'GP':1},"
-            "'cells':{'Main!A1':1},'cell_count':1,'formula_count':1}), encoding='utf-8')\n"
+            "'cells':{'Main!A1':2},'cell_count':1,'formula_count':1}), encoding='utf-8')\n"
             "if __name__ == '__main__': main()\n"
         ),
         "modular_runtime.py": "VALUE = 1\n",
         "input_layout.json": '{"external_bindings": [], "external_capture": null}\n',
-        "source_values.json": '{"main!B1": 2}\n',
+        "source_values.json": json.dumps({f"main!{address}": 1 for address in
+                                           ("C3", "C4", "C6", "C7", "C8", "J48", "O26")}) + "\n",
     }
     for name, content in files.items():
         (bundle / name).write_text(content, encoding="utf-8")
@@ -523,15 +646,23 @@ def test_step5_validates_a_synthetic_modular_generation_end_to_end(tmp_path: Pat
         "schema_version": "step4.modular_model.v1", "execution_kind": "modular",
         "source_sha256": source_hash, "files": bundle_files,
         "formula_count": 1, "array_member_count": 0, "array_instance_count": 0,
-        "formula_addresses": ["Main!A1"], "raw_input_addresses": ["main!B1"],
+        "formula_addresses": ["Main!A1"],
+        "raw_input_addresses": ["main!C3", "main!C4", "main!C6", "main!C7", "main!C8", "main!J48", "main!O26"],
         "active_formula_addresses": ["Main!A1"], "formula_cache_inputs": False,
     }
     (bundle / "model_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     report_files = {**bundle_files, "model_manifest.json": hash_file(bundle / "model_manifest.json")}
+    trace_path = root / "stage4" / "active_trace.json"
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    trace_path.write_text(json.dumps({"source_sha256": source_hash, "cells": [
+        {"address": "Main!A1", "role": "calculated_formula", "formula": "=1+1"},
+    ]}), encoding="utf-8")
     append_stage_artifact(
         root, 4, "generation_report.json",
         {"schema_version": "step4.generation_report.v1", "status": "ready_for_review",
-         "source_sha256": source_hash, "bundle": {"path": str(bundle), "files": report_files}},
+         "source_sha256": source_hash, "target_names": ["GP"], "oracle_ranges": ["Main!A1"],
+         "active_trace": {"path": str(trace_path), "sha256": hash_file(trace_path)},
+         "bundle": {"path": str(bundle), "files": report_files}},
         "Synthetic modular generation.", input_stages={3: previous["artifact"]["json_sha256"]})
     for reviewer in ("agent", "human"):
         record_decision(root, 4, reviewer, "approve", "Synthetic Stage 4 review.")
@@ -560,3 +691,54 @@ def test_step5_validates_a_synthetic_modular_generation_end_to_end(tmp_path: Pat
     assert "calculation must be complete" in blocked["reason"]
     _current_root, after_workflow = load_workflow(root)
     assert len(after_workflow["stages"]["5"]["revisions"]) == revisions_before
+
+    def fake_capture(_source, output_dir, *, targets, ranges, target_shapes):
+        assert targets == ["GP", "ExtraTarget"]
+        assert ranges == ["Main!A1", "Main!B1"]
+        assert target_shapes == {"GP": []}
+        range_records = {}
+        for selector, value, formula in (("Main!A1", 2, "=1+1"), ("Main!B1", 42, "=40+2")):
+            range_records[selector] = {
+                "qualified_address": selector, "values": [[value]], "formulas": [[formula]],
+                "excel_errors": [[None]],
+            }
+        native = {
+            "schema_version": "gp.excel_oracle.v1", "tool": "step5.oracle", "status": "pass",
+            "engine": "Microsoft Excel", "calculation_state": 0,
+            "source_sha256": source_hash, "source_copy_sha256": source_hash,
+            "macros_executed": False, "input_overrides": [],
+            "primary_inputs": {address: {"value": 1} for address in
+                               ("C3", "C4", "C6", "C7", "C8", "J48", "O26")},
+            "named_targets": {"GP": {"value": 1}, "ExtraTarget": {"value": 999}},
+            "ranges": range_records,
+        }
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "excel_oracle.json").write_text(json.dumps(native), encoding="utf-8")
+        return {"status": "pass", "tool": "step5.oracle"}
+
+    monkeypatch.setattr(step5_workflow, "capture_excel_oracle", fake_capture)
+    captured = step5_workflow.capture_oracle(
+        root, targets=["GP", "ExtraTarget"], ranges=["Main!A1", "Main!B1"])
+    assert captured["status"] == "pass", captured
+    assert captured["stage_advanced"] is False
+
+    reconciled = reconcile(root, Path(result["validation"]), Path(captured["artifact"]))
+    assert reconciled["status"] == "pass", reconciled
+    report_path = root / reconciled["artifact"]["json"]
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "ready_for_review"
+    assert report["compared"]["named_targets"] == 1
+    assert report["compared"]["active_formula_members"] == 1
+    assert report["compared"]["comparison_addresses"] == ["Main!A1"]
+    assert "comparison_ranges" not in report["compared"]
+    assert report["captured"]["range_selectors"] == ["Main!A1", "Main!B1"]
+    coverage = {item["selector"]: item for item in report["captured"]["active_formula_range_coverage"]}
+    assert coverage["Main!A1"]["status"] == "contains_compared_active_formula_addresses"
+    assert coverage["Main!A1"]["compared_active_formula_address_count"] == 1
+    assert coverage["Main!B1"]["status"] == "captured_only_for_active_formula_comparison"
+    assert coverage["Main!B1"]["compared_active_formula_address_count"] == 0
+    markdown = (root / reconciled["artifact"]["md"]).read_text(encoding="utf-8")
+    assert "Exact active formula addresses compared: 1 / 1" in markdown
+    assert "Captured selector `Main!B1`: captured-only for active-formula comparison; no active formula address from this selector was compared." in markdown
+    assert "The report lists named targets, primary inputs, external values, formula cuts, and age keys separately." in markdown
+    assert "ExtraTarget" not in report["target_results"]

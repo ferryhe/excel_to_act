@@ -1173,7 +1173,7 @@ def _oracle_markdown(result: dict[str, Any]) -> str:
 
 
 def capture_excel_oracle(workbook_path: Path, out_dir: Path, *, targets: list[str],
-                         ranges: list[str]) -> dict[str, Any]:
+                         ranges: list[str], target_shapes: dict[str, list[int]] | None = None) -> dict[str, Any]:
     """Capture requested cells from a private read-only copy using native Excel on Windows."""
     source = workbook_path.expanduser().resolve()
     try:
@@ -1197,6 +1197,21 @@ def capture_excel_oracle(workbook_path: Path, out_dir: Path, *, targets: list[st
 
     source_hash = _hash_file(source)
     canonical_targets = list(dict.fromkeys(targets))
+    canonical_shapes: dict[str, list[int]] = {}
+    target_cells = 0
+    try:
+        for name in canonical_targets:
+            shape = (target_shapes or {}).get(name, [])
+            if (not isinstance(shape, list) or len(shape) > 2
+                    or any(isinstance(size, bool) or not isinstance(size, int) or size < 0 for size in shape)):
+                raise ValueError(f"target {name} needs a scalar, vector, or table shape")
+            canonical_shapes[name] = shape
+            target_cells += math.prod(shape) if shape else 1
+            if target_cells > 50_000:
+                raise ValueError("requested named targets exceed the 50,000-cell limit")
+    except (TypeError, ValueError) as exc:
+        return {"schema_version": "gp.excel_oracle.v1", "tool": "step5.oracle", "status": "blocked",
+                "reason": str(exc)}
     canonical_ranges: list[dict[str, Any]] = []
     total_cells = 0
     try:
@@ -1241,7 +1256,7 @@ def capture_excel_oracle(workbook_path: Path, out_dir: Path, *, targets: list[st
             shutil.copy2(source, copy_path)
             copy_hash = _hash_file(copy_path)
             request = {"source_path": str(source), "source_sha256": source_hash, "copy_path": str(copy_path),
-                       "targets": canonical_targets, "ranges": canonical_ranges,
+                       "targets": canonical_targets, "target_shapes": canonical_shapes, "ranges": canonical_ranges,
                        "primary_input_addresses": primary_addresses}
             request_path.write_bytes(_json_bytes(request))
             completed = subprocess.run(
@@ -1295,4 +1310,3 @@ def capture_excel_oracle(workbook_path: Path, out_dir: Path, *, targets: list[st
             "macros_executed": payload["macros_executed"], "input_overrides": payload["input_overrides"],
             "named_targets": payload.get("named_targets", {}), "ranges": range_summaries,
             "artifacts": [str(result_path), str(out / "excel_oracle.md")]}
-
