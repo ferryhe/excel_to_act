@@ -2,460 +2,80 @@
 
 English | [简体中文](README.zh-CN.md)
 
-The root README is available in English and Simplified Chinese. All other documentation, code comments, and docstrings are maintained in English.
+Convert Excel to modular Python through six reviewed steps. Every step produces paired JSON evidence and a readable report. The Agent selects stage tools, explores the current source-bound evidence, checks the results, and reviews the exact pair before the actual human reviews it. A valid, explicitly scoped live TypeSafe delegation may replace the human reviewer for final Step 3 and Steps 4–6; Agent review still comes first, and the input catalog always requires an actual human decision. Ask the user about material ambiguity. Rejection returns to the responsible current or earlier step; changed evidence invalidates affected approvals.
 
-Excel-to-actuarial-model tooling: **CLI + API + agent-ready**, installable as a skill for any agent.
-
-First principle: **lossless decomposition before understanding and generation**. Anything that cannot be interpreted must be recorded as opaque; silent omission is forbidden.
-
-```text
-recognized_inventory_objects + unsupported_or_opaque_objects = discovered_workbook_objects
-```
-
-> ⚠️ Scope: this global invariant **is not yet enforced by the legacy `inspect` workflow**. `inventory/extractor.py:100` sets `discovered` directly to `recognized + opaque`, making the equality a tautology. Several parts are neither collected nor marked opaque (see the "silent omissions" in §4). The current human Step 1, `step1 convert`, independently verifies the supported objects and OOXML parts declared on this page; this does not mean every Excel feature has been semantically parsed. Legacy gaps remain documented in `docs/issues/backlog.md`, issue #5, and §4 I.
-
----
-
-## 1. Pipeline overview
+## Workflow
 
 ```mermaid
 flowchart TD
-    IN["input/ · Raw directory<br/>Current Step 1: step1 convert &lt;dir&gt; --out<br/>legacy: inspect &lt;workbook&gt; --out"]
-    S0["Step 0 · Intake &amp; Identify<br/>Identify format / encryption / package integrity"]
-    S1["Step 1 · Lossless Decomposition<br/>Extract all content by type"]
-    O1[("output/step1_decomposition/<br/>md + json by content type")]
-    V["verify_completeness<br/>Independently recount and compare source objects"]
-    H["handoff.json + handoff.md<br/>Step 1's sole exit"]
-    S2["Step 2 · Artifact Index<br/>Index and summarize artifacts for downstream agents"]
-    O2[("output/step2_index/<br/>INDEX.md + index.json")]
-    S3["Step 3 · Semantic Analysis<br/>Module classification / domain tags / structure contracts"]
-    O3[("output/step3_analysis/")]
-    S4["Step 4 · Structured Python Generation"]
-    O4[("output/step4_generation/")]
-    S5["Step 5 · Validation &amp; Reconciliation<br/>Numerical reconciliation across multiple oracles"]
-    O5[("output/step5_validation/")]
-
-    IN --> S0 --> S1 --> O1 --> V --> H --> S2 --> O2 --> S3 --> O3 --> S4 --> O4 --> S5 --> O5
-
-    style S1 fill:#dff5e1,stroke:#2e7d32,stroke-width:2px
-    style O1 fill:#eef7ff,stroke:#1565c0
+    X[Excel source] --> S1[1 · Extract and preserve]
+    S1 --> A1{Agent → human}
+    A1 -->|approved| S2[2 · Index and validate references]
+    S2 --> A2{Agent → human}
+    A2 -->|approved| S3I[3a · Classify and confirm inputs]
+    S3I --> A3I{Agent → human}
+    A3I -->|confirmed| S3[3b · Analyze targets and design]
+    S3 --> A3{Agent → human, or scoped TypeSafe}
+    A3 -->|approved| S4[4 · Generate standalone Python]
+    S4 --> A4{Agent → human, or scoped TypeSafe}
+    A4 -->|approved| S5[5 · Validate and reconcile]
+    S5 --> A5{Agent → human, or scoped TypeSafe}
+    A5 -->|approved| S6[6 · Report conversion results]
+    S6 --> A6{Agent → human, or scoped TypeSafe}
+    A6 -->|approved| D[Accepted conversion]
+    A1 & A2 & A3I & A3 & A4 & A5 & A6 -->|rejected| R[Return to selected step · revise · reconfirm]
 ```
 
-**Implementation status**: Steps 0–2 are partly implemented (human Step 1 lives in `steps/step1/`; shared modules live in `ingest/`, `inventory/`, `graph/`, `classify/`, `confirm/`, `store/`, `orchestrator/`, and `interfaces/`). Step 2 also provides a batch navigation index at `output/step2_index/index.json` and `INDEX.md`; this is separate from the legacy per-workbook `artifact_index.json` produced by `store/local_store.py`. Step 3 is within the plan's Phase 1 scope and partly implemented in `classify/`. Step 1's JSON and Markdown handoffs are implemented; **Steps 4–5 have not started**.
+`workflow.json` records versions, evidence hashes, reviewer identities, decisions and return reasons.
 
-The diagram shows the complete target route, including unfinished steps. The current human entry point is `excel-to-act step1 convert <raw-directory> --out <output-directory>`. Legacy `inspect` remains available for the single-workbook Phase 1 workflow.
+Put the source Excel workbook in `input/`. Stage outputs and each source-bound workflow live under `output/`; use a new workflow directory for a new source/run. Each step has an `agent.md` contract and a nonempty `tools/` catalog provider, exposed through `stepN agent` and `stepN tools`. The Agent chooses actions from that catalog and adapts exploration to the current source and request.
 
-### Available now: human Step 1 → human Step 2
+Before entering a stage, check `workflow status` for its current upstream evidence and permitted stage. Creating a draft or passing a tool check does not itself approve or advance the workflow. Legacy standalone source-exploration APIs remain available for discovery; they do not create workflow approvals.
 
-The new `step1` command accepts a raw directory and recursively records every file. `.xlsx` / `.xlsm` files enter conversion; other formats, damaged files, and unreadable files remain as failed entries. Each input is stored separately by source SHA-256, relative-path key, and run ID. The batch handoff summarizes every input without a root alias for the "last file".
+## CLI and deliverables
 
-Step 2 indexes that handoff and its per-source references:
+Commands start with `excel-to-act`. Run `stepN tools`, `stepN agent` or `--help` for the current tool contracts, Agent instructions and arguments.
 
-```text
-excel-to-act step2 agent
-excel-to-act step2 tools
-excel-to-act step2 index --handoff PATH --step1-root DIR [--out DIR] [--resume]
-excel-to-act step2 validate --index output/step2_index/index.json --step1-root DIR
-output/step2_index/index.json
-output/step2_index/INDEX.md
-```
+| Step | Main commands | Main deliverables |
+| --- | --- | --- |
+| 1 · Source | `step1 convert`, `check`, `finalize`, `report` | Preserved workbook parts, source inventories and `import_checkpoint.{json,md}` |
+| 2 · Index | `step2 index`, `validate`, `report` | `index.json`, `INDEX.md`, `state.json` and `index_checkpoint.{json,md}` |
+| 3 · Analysis and design | `step3 prepare`, `fields`, `dependencies`, `input-catalog`, `query`, `trace`, `source-trace`, `profile`, `plan`, `check`, `report` | Confirmed inputs, source candidate trace/profile, variables/equations/modules, semantic plan/check, `analysis_design.{json,md}` |
+| 4 · Code | `step4 capture-external`, `discover`, `plan`, `generate` | Bound external vectors, active source trace, implementation preflight, standalone modular Python, separate input/metadata files and generation report |
+| 5 · Verification | `step5 validate`, `oracle`, `reconcile` | Isolated code-validation report, fresh native Excel capture and numerical reconciliation |
+| 6 · Delivery | `step6 report`, `step6 skill`, `step6 template`; [$excel-to-act-step6](src/excel_to_act/steps/step6/excel-to-act-step6/SKILL.md) | Human conversion report: results, scope, inputs/modules, reconciliation, limits and run instructions; JSON evidence |
+| Review | `workflow status`, `confirm`, `reject`, `delegate`, `typesafe` | Current workflow state and separate, hash-bound review decisions |
 
-The Step 2 batch index is distinct from the legacy per-workbook `artifact_index.json` shown below.
+Step 3 works backward from a scalar, several values or a column. It first confirms scalar/vector/table inputs and source locations, then describes paths, alternatives, equations, recurrence order and grouping. Formula-derived intermediates may become approved external inputs. `source-trace` and `profile --source-trace` support a new workbook without Step 4 history; static candidates and unresolved lookups remain distinct from runtime evidence. Final design approval is separate from input confirmation.
 
-If the output directory is inside the input directory, discovery excludes that output subtree and records the excluded path in the batch's `discovery` information. Identical input and output directories produce an explicit error.
+Step 4 produces logical-variable and recurrence code. Step 5 independently runs it and compares declared results with a fresh Excel calculation. Step 6 leads with results and explains the model, reconciliation and handover; detailed audit evidence goes in appendices. Formula caches are never inputs; extraction does not run VBA. Known-scenario coverage does not imply all-configuration or GPU support.
+
+## Reports and handoffs
+
+Every primary checkpoint leads with what the person is accepting, its purpose and scope, verified results, limits and open choices, links to its JSON and Markdown handoffs, and the next review action. Detailed formulas, source coordinates, question dispositions and hashes stay in the evidence appendix and JSON. Cell coordinates are provenance; input counts describe logical business objects. Missing facts are “Not recorded” or unknown, never zero. Step 3 design is planning evidence, Step 4 smoke is generated-code execution, and only Step 5 provides the separate native Excel comparison. Results are labeled as requested targets only when the bound design supports that classification; other values remain named checks or diagnostics.
+
+## Current implementation and status
+
+Pricing: **Steps 1–6 are accepted for the unchanged saved GP case.** The final human report, revision 4, has independent review PASS plus Agent and delegated TypeSafe acceptance. The existing source, input, design, code and validation approvals remain recorded in the workflow.
+
+Inputs: **44 business objects — 18 scalars, 24 vectors and two sparse tables; 39 raw objects and five external CI curves.** Source tabs: Main 18, Qtable 22, Premium 2, AMR_Table 2. The model has 88 variables, including 44 derived variables, and 76 equation-family functions with ordered projection passes.
+
+Native Excel reconciliation: **GP = 2.7283284514524744**; 8,507/8,507 formula identities and values, 4/4 result checks, 530/530 CI values/formula cuts, 106/106 age keys and 7/7 numerical routes pass. There are zero mismatches at absolute/relative `1e-12`; maximum absolute difference is `2.220446049250313e-16`. [Workflow](output/stage36_20261008/workflow.json) is the acceptance ledger.
+
+Deliverables: [final human conversion report](output/stage36_20261008/stage6/revision-0004/conversion_report.md), [confirmed inputs](output/stage36_20261008/stage3/revision-0022/input_boundary.md), [analysis/design](output/stage36_20261008/stage3/revision-0025/analysis_design.md), [pricing code](output/stage36_20261008/stage4/bundles/revision-0006/bundle/pricing.py), [portable Python bundle](output/gp_source_analysis_20261009/delivery/gp_python_saved_case.zip), and [validation/reconciliation](output/stage36_20261008/stage5/revision-0006/validation_report.md).
+
+This delivery covers the unchanged saved GP case. [WaiverOfPrem is disabled](docs/plans/gp_waiver_scope.md): `Main!F40:F45=None`, with zero waiver payouts and costs. Source extraction remains partial; opaque parts and invalid checkbox bindings are retained. Other parameters, upstream CI algorithms, a feedback solver and GPU execution are outside the accepted scope.
+
+## Use
+
+Python 3.11+ is required. Native Excel reconciliation requires Windows and Microsoft Excel.
 
 ```powershell
-excel-to-act step1 tools                         # JSON tool catalogue
-excel-to-act step1 agent                         # Reusable host-agent definition
-excel-to-act step1 convert .\raw --out .\output # Step 1: extract and check facts
-excel-to-act step1 check --run <run-dir>         # Reread the current source and check candidate artifacts
-excel-to-act step1 coverage --run <run-dir>      # Check logical objects and OOXML parts separately
-excel-to-act step1 fidelity --run <run-dir>      # Compare raw XML fields with normalized facts
-excel-to-act step1 finalize --run <run-dir>      # Publish the final conversion directory after fresh checks
+python -m pip install -e ".[vba]"
+excel-to-act step1 tools
+excel-to-act step1 agent
+excel-to-act workflow status --workflow DIR
+python output/stage36_20261008/stage4/bundles/revision-0006/bundle/model.py --out output/gp_result.json
 ```
 
-Default thresholds require 100% logical-object traceability, byte-for-byte OOXML part preservation, and exact agreement for supported facts. Unknown or unparsed parts are still preserved. The default policy reports them as `partial` and allows handoff to Step 2 only after all other checks pass. Use `--no-allow-opaque` to prohibit this handoff. Manually lowering `--fidelity-min` explicitly produces a partial result; it cannot bypass missing supported objects, damaged XML, source changes, or verification errors. Step 1 does not calculate formulas or interpret actuarial meaning. After a person confirms the Step 1 handoff, Step 2 starts indexing and deciding what interpretation work is needed. `inspect <workbook> --out <dir>` retains the original single-workbook Phase 1 behavior.
-
-The parsed and opaque package-part ratios use the same unit (all non-directory OOXML ZIP parts), separately from logical-object coverage. `parsed_coverage_ratio` is the proportion of supported logical objects linked to inventory identities; `parsed_package_parts_ratio` is the proportion of parts read and classified as non-opaque in a fresh scan; `opaque_rate` is the proportion of opaque parts. `--parsed-package-min` and `--opaque-max` both accept `[0,1]` and default to `0` and `1`, respectively, allowing an explicit opaque `partial` handoff. Raising the former or lowering the latter independently tightens package-part requirements. `--no-allow-opaque` always prohibits opaque parts. No numeric threshold can override missing objects, source read/verification errors, or byte-preservation failures.
-
-Each source's quality result and tool responses include `metrics_state`. `measured` means a fresh scan succeeded. `unavailable` means the current source cannot be read or verified: source-derived denominators, counts, ratios, and fidelity differences are JSON `null`. An old report or candidate ledger never substitutes for current measurement. Numeric `0` is used only for a zero actually measured during a successful scan. Unavailable measurement always blocks approval; even zero thresholds cannot allow finalization or promotion.
-
-`raw_value_text`, raw formula text/attributes, cached text, and date serials are verbatim source evidence. Downstream consumers requiring exact numeric text should read `raw_value_text`. Normalized numbers become integers or floats, so long decimals may have floating-point approximation; dates use the workbook's 1900/1904 date system. Formula caches represent only the results saved in the file. Missing caches stay missing, and conversion never recalculates formulas.
-
-These extended source facts have values only after actual Step1 measurement. A `null` in legacy `inspect` output or earlier JSON means unmeasured, rather than `false` or the 1900 date system.
-
-Normalized strings join OOXML body `<t>` and rich-text `<r><t>` elements, excluding `<rPh>` phonetic text and container formatting whitespace. Original worksheet and shared-string parts are still preserved and verified byte for byte.
-
-Each batch produces `batches/<batch-id>/batch_handoff.{json,md}`. Each source has a separate candidate directory containing `source_facts.json`, `logical_objects.json`, `package_parts.json`, `quality.json`, and both handoff formats. Candidates accepted by `finalize` are copied to a unique `final/` directory. Blocked candidates still have a handoff and actionable next steps.
-
-**Next development target: extend Step 1 lossless decomposition** (see the gap list in §4). Directory conversion, independent coverage/fidelity checks, and both handoff formats are already available through the `step1` commands above.
-
-### Mapping to `phase1_excel_decomposition_plan.md`
-
-| README pipeline | Location in the plan |
-|---|---|
-| Steps 0–3 | **Within the plan's Phase 1 scope** (ingest → inventory → graph → classify → confirm → store → report) |
-| Step 4 (generate Python) | Explicitly excluded by the plan's "Non-goals" |
-| Step 5 (reconciliation) | LibreOffice/xlwings are mentioned as future oracles, without a schedule |
-
----
-
-## 2. Agents and tools for each step
-
-Tool status: `implemented` means a corresponding implementation exists in `src/`; `target` means not yet implemented and defined in `docs/issues/backlog.md`.
-
-| Step | Agent | Responsibility (capability) | Main tools | Status |
-|---|---|---|---|---|
-| 0 | `intake-agent` | Identify file authenticity and parseability; report an error when blocked | `scan_ooxml_package` `OpenpyxlWorkbookReader.read_manifest` (`detect_format`/`decrypt_probe` are targets) | Partial |
-| **1** | **`decomposition-agent`** | **Extract all content by type without semantic decisions** | See the Step 1 tool diagram below | Partial |
-| **1b** | `completeness-agent` | Independently verify output coverage of the input and produce a handoff | `verify_completeness`, `build_handoff`, `render_handoff_markdown` | Implemented |
-| 2 | `index-agent` | Index and summarize Step 1 artifacts | `_write_index` (implemented); `build_index`/`summarize_artifacts` are targets | Partial |
-| 3 | `analysis-agent` | Classify modules, tag domains, and confirm boundaries | `classify/rules.py`+`classifier.py`, `confirm/templates.py` (implemented) | Partial |
-| 4 | `generation-agent` | Generate structured Python with provenance | `emit_module` / `emit_package` (targets) | Target |
-| 5 | `validation-agent` | Numerical regression and reconciliation across multiple oracles | `cached_value` / `formulas_oracle` / `libreoffice_oracle` (targets, issue #7) | Target |
-
-### Step 1 internal flow
-
-```mermaid
-flowchart LR
-    subgraph STEP1 ["Step 1 · Lossless Decomposition"]
-        direction TB
-        PKG["scan_package<br/>All OOXML parts"]
-        CEL["extract_cells<br/>Values + formulas + cached values"]
-        FRM["extract_formulas<br/>tokenizer → references"]
-        NAM["extract_names<br/>defined names / LAMBDA"]
-        STY["extract_styles<br/>numFmt / fill / font"]
-        TBL["extract_tables<br/>ListObjects / pivot"]
-        VLD["extract_validation<br/>Dropdowns / what-if data tables"]
-        CTL["extract_controls<br/>Form-control linkedCell"]
-        CMT["extract_comments"]
-        EXT["extract_external<br/>External links / connections"]
-        VBA["extract_vba<br/>oletools → module source"]
-        XLINK["extract_vba_cell_links<br/>VBA ↔ cell dependency edges"]
-        OPA["extract_opaque<br/>Charts / pivot caches / PowerPivot"]
-        COV["verify_coverage<br/>Verify the coverage invariant"]
-    end
-
-    PKG --> CEL --> FRM --> COV
-    PKG --> NAM --> COV
-    PKG --> STY --> COV
-    PKG --> TBL --> COV
-    PKG --> VLD --> COV
-    PKG --> CTL --> COV
-    PKG --> CMT --> COV
-    PKG --> EXT --> COV
-    PKG --> VBA --> XLINK --> COV
-    PKG --> OPA --> COV
-```
-
-The legacy `inspect` workflow **does not yet have** `verify_coverage`. Its `CoverageSummary.discovered` is the tautology `recognized + opaque`, so it cannot provide independent coverage. The current `step1 coverage` command separately compares logical objects and package parts using the OOXML source census and output identities.
-
----
-
-## 3. Step 1 output directories
-
-### 3.1 Current implementation
-
-The legacy single-workbook `inspect` CLI is `excel-to-act inspect <workbook> --out <dir>`, with `dir_okay=False`: it does not accept a directory input. Directory batches use the new `excel-to-act step1 convert` described above. Each `inspect` run writes seven data JSON files, `run_metadata.json`, and a human-readable `handoff.md`:
-
-```text
-<out>/workbooks/<workbook_sha256>/<run_id>/
-  workbook_manifest.json
-  inventory.json
-  dependency_graph.json
-  module_classification.json
-  confirmation_template.json
-  completeness.json
-  handoff.json
-  handoff.md
-  run_metadata.json
-<out>/workbooks/<workbook_sha256>/artifact_index.json
-<out>/artifact_index.json
-<out>/<artifact>               # Convenience alias for the latest run's artifacts, including handoff.md
-```
-
-The latest run's artifacts are copied to the root as convenience aliases, including `handoff.md` and `handoff.json`.
-
-### 3.2 Target layout (Step 1)
-
-- `--input` supports **directories** (batches).
-- Keep the `<workbook_sha256>/<run_id>/` namespace, **without a slug**. Filename-derived slugs mix different contents sharing a name and break links when files are renamed.
-- Each content type produces both `.md` (for people) and `.json` (for machines).
-- The legacy `inspect` workflow's `Handoff` contract is implemented with JSON/Markdown output. Its `CoverageSummary` remains embedded in `WorkbookInventory`; an independent coverage artifact belongs to the legacy target layout. Current directory-based `step1` uses the independent checks and batch handoff described here.
-
-```text
-output/step1_decomposition/workbooks/<workbook_sha256>/<run_id>/
-  00_manifest.{md,json}         File identity, sha256, format, encryption status
-  01_package.{md,json}          All OOXML parts + content type + relation
-  02_sheets/                    Sheet name/order/visibility/type/dimensions
-  03_cells/                     Cell values, formulas, cached values, number_format
-  04_formulas/                  Formula reference graph, including VBA edges
-  05_names/                     Defined names, LAMBDA, hidden names
-  06_tables/                    ListObjects, structured references, pivot definitions and caches
-  07_styles/                    numFmt / font / fill / border / dxfs
-  08_conditional_formatting/
-  09_validation/                Data validation + what-if data tables (dataTable)
-  10_comments/                  Comments and authors
-  11_charts/
-  12_external/                  externalLinks, connections, Power Query
-  13_controls/                  Form-control linkedCell, slicers, timelines
-  14_vba/                       Module source + procedure inventory + static call relationships
-  15_xlm_macros/                Excel 4.0 macros and DDE
-  99_opaque/                    Chart binaries, Power Pivot, OLE, signatures, etc.
-  coverage.{md,json}            Legacy inspect target; current step1 coverage has separate logical-object/part ledgers
-  handoff.{md,json}             Legacy inspect target; current step1 already writes both handoff formats
-```
-
-`handoff.json` is the sole downstream contract: it lists each artifact type's paths, counts, schema versions, and `opaque` summary.
-
----
-
-## 4. Completing Step 1: completeness checks and handoff
-
-Decomposition **must be checked for completeness before producing the handoff**. This is Step 1's exit and the only entry downstream agents need to read.
-
-`verify_completeness()` in `verify/completeness.py` **does not reuse** `WorkbookInventory.coverage`, whose `discovered` is the tautology `recognized + opaque`. Instead, it **independently recounts source objects from the package** (nonempty cells in worksheet XML plus package-part enumeration) and compares them with the output:
-
-| Check | Criterion | Severity |
-|---|---|---|
-| `sheets_accounted` | Every `<sheet>` in `workbook.xml` has a corresponding `SheetInventory` | error |
-| `cells_accounted` | Per-sheet cell counts match an independent worksheet XML scan | error |
-| `content_parts_accounted` | Every content part **has output evidence** (e.g. `xl/tables/` requires a `table` range) or is marked opaque | error |
-| `formulas_linked` | Every formula cell has an outgoing edge or a `formula_reference_parse` record | warning |
-| `metadata_parts_accounted` | Metadata parts such as `docProps/` that are not yet modeled | info |
-| `coverage_arithmetic` | Whether `recognized + opaque` equals independently recounted `discovered` | info |
-
-> A part is considered "collected" based on **corresponding output evidence**, rather than its path prefix. Otherwise, removing extraction logic would not trigger a failed check.
-
-Statuses and consequences:
-
-- `fail`: any error-level check fails → **CLI exit code 1**. Artifacts are still written but must be treated as unusable.
-- `warn`: only warning-level checks fail.
-- `pass`: every check passes.
-
-Artifacts (run directory `<out>/workbooks/<sha256>/<run_id>/`; `handoff.md` and `handoff.json` are also copied to the `<out>/` root for convenient access):
-
-| File | Audience | Contents |
-|---|---|---|
-| `completeness.json` | Machines | Checks, expected/actual counts, gaps, blocking_reasons |
-| `handoff.json` | Machines | `summary` counts, artifact inventory (path / sha256 / count), coverage, opaque summary, blockers, warnings, next_actions |
-| `handoff.md` | **People** | A short English summary of the same information, with `At a glance` / `Blockers` / `Warnings` / `Artifacts` / `Unresolved (opaque)` / `Next steps`. **Assess whether decomposition is trustworthy without opening JSON.** |
-
-The top of `handoff.md` sketches the workbook (sheets / cells / formula cells / cached values / defined names / tables / merged ranges / what-if data tables / form controls / VBA modules / graph nodes and edges) so a person can quickly check the file's identity and scale.
-
-## 5. Step 1 content coverage checklist
-
-**Legend (three states)**
-
-| Label | Meaning |
-|---|---|
-| `collected` | Present in `inventory.json` |
-| `opaque` | Explicitly recorded as unparsed or unsupported; Step 1 also preserves package bytes |
-| **silent omission** | Neither collected nor explicitly classified as opaque — violates the hard constraint |
-
-### A. Package and file layer
-
-| Content | OOXML source | Status |
-|---|---|---|
-| File identity (sha256/size/format) | — | Collected |
-| All parts + content type | `[Content_Types].xml` | Collected |
-| Document properties | `docProps/*.xml` | **Missing**: should be collected, rather than marked opaque (parseable) |
-| Custom XML / Power Query `DataMashup` | `customXml/` | Opaque (markers added; see group I); M code itself is unparsed |
-| Digital signatures | `_xmlsignatures/` | Opaque (markers added; see group I) |
-| Encrypted / damaged files | `EncryptedPackage` | **Confirmed hard-constraint violation**: `ZipFile()` in `ingest/ooxml_package.py:51` has no exception handling and raises an uncaught exception (issue #8, P0). Required behavior: report an error without crashing |
-
-### B. Workbook structure layer
-
-| Content | Status |
-|---|---|
-| Sheet name/order/visibility/dimensions | Collected |
-| `calcMode` (manual/auto) | Collected (`WorkbookManifest.calc_mode`) |
-| Other `calcPr` fields (iterate / iterateCount / iterateDelta / calcId / fullCalcOnLoad) | **Silent omission** — iterative settings directly determine how circular references are solved |
-| `xl/calcChain.xml` (last calculation order) | Opaque package part recorded and byte-preserved by Step 1; calculation order is not interpreted |
-| Defined names | Workbook- and sheet-scoped declarations are collected; range destinations expand to bare A1 addresses (one inventory row per area) while inventory metadata retains declaration scope. Step 1's source census counts each declaration once and keeps its raw name text. The `hidden` flag is not collected |
-| LAMBDA / custom functions defined in names | Step 1 preserves raw name text, but **LAMBDA detection is missing**, as is reference parsing within name formulas |
-
-### C. Cell content layer
-
-| Content | Status |
-|---|---|
-| Values / formulas / errors (`#N/A`, `#REF!`) | Collected (errors stored as literals) |
-| number_format, data_type, style_id | Collected |
-| Blank cells | **Not collected**: `extractor.py:55` immediately executes `continue`; `CellKind.blank` is unused (either collect blanks or remove the enum value) |
-| Cached values (`data_only=True`) | **Collected and accepted** ([PR #15](https://github.com/ferryhe/excel_to_act/pull/15) and [PR #16](https://github.com/ferryhe/excel_to_act/pull/16) are merged; [Issue #4](https://github.com/ferryhe/excel_to_act/issues/4) is closed): `cached_value` + `cached_value_available`; `missing_cached_values` warning when the whole workbook lacks cached results. Foundation for a reconciliation oracle |
-| `cell.formula_attributes` | Step 1 preserves raw formula text and the complete `<f>` attribute map in `source_facts.json` and `CellInventory`, including shared, array, and `dataTable` attributes. Legacy `inspect` does not populate these raw formula facts; nullable presence and date fields remain unknown. Preserving the attributes does not interpret dynamic-array spill behavior |
-| Rich-text runs, phonetic text | **Silent omission** |
-
-### D. Styles and presentation layer (key signals for identifying inputs/outputs)
-
-| Content | Status |
-|---|---|
-| Merged cells | Collected |
-| Row heights, column widths, hidden rows/columns, frozen panes | Collected |
-| Sheet protection | Collected |
-| Comments (text + author), hyperlinks (target + location) | Collected |
-| Conditional formatting | **Ranges** collected; `cfRule` types/dataBar/colorScale/iconSet are not collected |
-| fonts / fills / borders / numFmts / dxfs | **Silent omission** |
-| Print settings, headers/footers | **Silent omission** |
-
-### E. Structured object layer
-
-| Content | Status |
-|---|---|
-| Data validation | Ranges + `type`/`formula1`/`formula2` collected; `operator`/`allowBlank`/`showDropDown`/prompt and error messages are missing, and list sources are not resolved to ranges |
-| Excel Tables (ListObjects) | `ref`+`name` collected; **column definitions, totalsRow, sort/filter states are not collected** |
-| Pivot definitions + cached records | Opaque (`/pivot` is in `OPAQUE_MARKERS`) |
-| `xl/connections.xml` | Opaque (`/connections` is included) |
-| Slicers / timelines (`xl/slicers/`, `xl/timelines/`) | Recorded as opaque and byte-preserved by Step 1; semantic content is unparsed |
-| Power Query `DataMashup` | `customXml/` parts are recorded as opaque and byte-preserved by Step 1; M code is unparsed |
-
-### F. Graphics and controls layer
-
-| Content | Status |
-|---|---|
-| Charts (including `SERIES()` references) | Opaque (`/charts/` is included) |
-| Images / shapes / text-box cell links | Opaque (`/drawings/`, `/media/` are included) |
-| Embedded OLE objects | Opaque (`/embeddings/` is included) |
-| **Form-control `linkedCell`** (`vmlDrawing` + `ctrlProps`) | Step 1 extracts bound `ClientData` links from `xl/drawings/vmlDrawing*.vml`. A VML part is non-opaque only when every shape has one supported bound `ClientData`; Note/Pict, unbound or missing `ClientData`, and other VML shape objects make the whole part opaque. Supported bindings in a mixed part are still extracted, and the original part is byte-preserved |
-| **What-if data tables `dataTable`** | Step 1 reads `<f t="dataTable" ref r1 r2>` directly from worksheet XML and emits a `data_table` range object plus input-cell facts. It preserves source attributes; formulas and table results are not evaluated or recalculated |
-
-### G. Code and automation layer
-
-The `Tool` column distinguishes dependency libraries from in-house parsers.
-
-| Content | Source | Tool | Status |
-|---|---|---|---|
-| **VBA module source** | `xl/vbaProject.bin` | Dependency `oletools` (olevba) `>=0.60.2`, BSD-3 (verified 2026-10-02; latest PyPI version 0.60.2 / 2024-07-02) | **Extraction path implemented on the current branch** (local task `LOCAL-VBA`; see [PR #15](https://github.com/ferryhe/excel_to_act/pull/15)): `extract_vba_project` produces module source + procedure names; missing oletools degrades to a warning without crashing |
-| **VBA ↔ cell dependency edges** | Source from the previous step | In-house `extract_vba_cell_links` → `build_vba_edges` | **Collected**: `FormulaGraph` adds `relationship="vba_ref"` edges in the formula graph's node namespace (new `GraphNodeKind.vba` and `GraphEdge.confidence`) |
-| **Excel 4.0 macros (XLM)** | `xl/macrosheets/` | Dependency oletools `olevba` (XLM uses another entry point and needs the optional `XLMMacroDeobfuscator` dependency) | Opaque package part recorded and byte-preserved by Step 1; macro content is not extracted |
-| **DDE links** | — | Dependency oletools `msodde` | **Silent omission** |
-| **LAMBDA / custom named functions** | Defined names | In-house `extract_names` | Names collected; detection missing |
-| **RTD / add-ins** | `volatileDependencies.xml`, `webExtensions/` | In-house `scan_package` | Opaque package parts recorded and byte-preserved by Step 1; add-in behavior is not interpreted |
-
-**Why VBA source must be extracted**: legacy actuarial models commonly drive calculations through `Range("B7")` / `Names("Mort_qx")`. These dependencies are invisible in a formula-only graph, producing a **disconnected dependency graph** (`graph/builder.py` currently does not inspect VBA).
-
-Implementation constraints (fixed to avoid rework):
-
-1. Extracted edges **must be written into `FormulaGraph`**, using `GraphEdge.relationship = "vba_ref"`. **Do not create another contract or edge type**: two node namespaces in `dependency_graph.json` would prevent Step 5 reconciliation from closing.
-2. Literal matching misses `Cells(r, c)`, `"B" & i` concatenation, and indirect addressing through variables/named ranges. Results must include `confidence`. Statically unresolved references must be recorded as `vba_ref_unresolved` and sent to confirmation without claiming certainty.
-
-### H. Semantic signal layer
-
-| Content | Status |
-|---|---|
-| Comments | Collected |
-| Data-validation dropdown sources | `formula1` collected; not resolved to ranges |
-| What-if data tables | Collected by Step 1 as described in group F; results are not recalculated |
-| Grouping/outlines, Excel Scenario Manager | **Silent omission** |
-| Solver / Goal Seek (stored in `Solver_*` hidden names + VBA) | **Silent omission** |
-
-### I. Package parts recorded as opaque
-
-`OPAQUE_MARKERS` now includes the following parts. Step 1 records them as opaque and preserves their bytes; the markers do not imply semantic parsing. They are not current silent omissions:
-
-```text
-xl/model/                     Power Pivot data model (ABF binary)
-_xmlsignatures/               Digital signatures
-xl/calcChain.xml              Calculation chain
-xl/ctrlProps/                 Form-control properties (linkedCell)
-xl/slicers/  xl/timelines/    Slicers / timelines
-xl/macrosheets/               Excel 4.0 macros
-customXml/                    Power Query / custom XML mappings
-xl/volatileDependencies.xml   RTD
-webExtensions/                Office add-ins
-```
-
-Document properties should be collected directly rather than marked opaque:
-
-```text
-docProps/*.xml                Document properties (parseable)
-```
-
-What-if data tables are already collected from worksheet XML as described in group F. Opaque recording guarantees preservation, but does not guarantee usability. Continue implementing the remaining semantic gaps in groups A–H as needed. Step 1 already reads cached formula results and supported VML control bindings.
-
-### J. Unparseable content (record as opaque without interpretation)
-
-Power Pivot data models, pivot-cache binaries, chart rendering, embedded media, encrypted content, signatures.
-
-### K. Known contract drift (outside content classification, but affects coverage credibility)
-
-| Definition source | Definition count | Implementation | Difference |
-|---|---|---|---|
-| `phase1_excel_decomposition_plan.md:67-80` module category | 12 | `schemas/artifacts.py:180-189`, 9 values | Missing `workbook_meta` / `sheet_structure` / `calculation_chain` / `macro_or_code` |
-| `phase1_excel_decomposition_plan.md:88-97` actuarial hint | 10 | `artifacts.py:192-199`, 6 values | Missing `expense` / `claim_or_benefit` / `reserve` / `discount_curve` |
-
-Recorded in `docs/issues/backlog.md`; not expanded again here.
-
----
-
-## 6. Current code layout and directory roadmap
-
-The current Step 1 workflow, its dedicated OOXML source scanner, and the agent definition distributed with the package live in the same business-step package:
-
-```text
-src/excel_to_act/
-  steps/
-    __init__.py
-    step1/
-      __init__.py
-      workflow.py
-      source_scan.py
-      agent.md
-  interfaces/                 CLI entry point, reusing the Step 1 workflow
-  ingest/                     Shared file reading and OOXML part capabilities
-  inventory/ verify/ graph/   Shared inventory, verification, and graph capabilities
-  classify/ confirm/          Shared classification and confirmation capabilities
-  schemas/ store/ report/     Shared data contracts, storage, and reporting
-  plugins/ orchestrator/      Shared tool contracts / legacy Phase 1 orchestration
-tests/
-```
-
-Each implemented human business step has an agent definition in `steps/<step>/` and may split implementation files by responsibility. Step 1 separates the conversion workflow and source scanner into two Python files. Step packages reuse existing shared modules without duplicating shared capabilities or creating empty packages for unfinished steps.
-
-### Previously proposed target layout (roadmap reference only)
-
-The directory sketch and notes below retain the earlier roadmap proposal. They describe a future proposal, rather than the current source tree.
-
-```text
-excel_to_act/
-  src/excel_to_act/          Library core (layering unchanged; L0-L3 definitions await issue #11)
-    interfaces/              CLI + API + agent entry points
-    orchestrator/            Step state machine
-    plugins/                 Replaceable tool contracts and registry
-    ingest/ inventory/ graph/ classify/ confirm/ store/ report/ schemas/
-    tools/                   Step 1 tool catalogue (importable, distributed with the package)
-      step0_intake/  step1_decomposition/  step2_index/ ...
-    validation/              Step 5 oracle runners (awaiting issue #7)
-  agents/                    Agent definitions per step: capabilities / tools / IO contracts
-    step1_decomposition.agent.md ...
-  skills/                    Skill packages installable for external agents
-    excel-to-act/SKILL.md
-  input/                     Default input directory (CLI accepts any directory; gitignored)
-  output/                    Directories by step (gitignored)
-    step1_decomposition/ step2_index/ step3_analysis/ step4_generation/ step5_validation/
-  schemas/ docs/ examples/ tests/
-```
-
-Notes:
-
-- `tools/` **belongs under `src/excel_to_act/`**, rather than the repository root: `packages.find where = ["src"]` in `pyproject.toml` does not package root-level Python packages. Each tool implements one of the 6 existing Protocols in `plugins/contracts.py` (`WorkbookReader`/`InventoryExtractor`/`GraphBuilder`/`Classifier`/`ConfirmationBuilder`/`ArtifactStore`); `OracleRunner` awaits issue #7.
-- The global `registry` in `plugins/registry.py` is currently **used only by tests**; production modules are not registered yet. Registration remains a target.
-- Each file in `agents/` defines fixed capability boundaries, callable tools, input/output artifacts, and prohibitions.
-- `skills/` needs `package-data`/`include-package-data` to be included in wheels. That configuration is currently absent and remains to be added.
-- `input/` and `output/` are **default locations**; CLI arguments determine the runtime paths.
-
----
-
-## 7. Phase boundaries
-
-- Steps 0–2 perform decomposition, indexing, and summaries **without semantic decisions**.
-- Step 3 (approximately the plan's Phase 1 classification) may decide what a module represents, with confirmation and overrides through `confirm/`.
-- Reconciliation (Step 5) must pass before Python generation (Step 4).
-- Current Phase 1 writes seven data JSON files, `run_metadata.json`, and `handoff.md` by workbook and run ID, with root aliases (see §3.1). It does **not** use the directory layout in §3.2.
-
-## See also
-
-- `docs/plans/phase1_excel_decomposition_plan.md` (Phase 1 plan, approximately Steps 0–3 here)
-- `docs/plans/pr_plan_phase1.md` (PR breakdown and acceptance criteria)
-- `docs/research/excel_tooling_survey.md` (A1: conclusions on existing tools)
-- `docs/issues/backlog.md` (Issue source, organized as task / deliverables / validation)
+See the [six-step contracts](docs/plans/step3_step6_workflow.md), [generic Agent rules](docs/design/generic_agent_contracts.md), [human report structure](docs/design/model_conversion_report.md), [case and manual checks](docs/examples/pricing_conversion_case.md), and [Step 3 CLI guide](docs/step3_cli.md). Local data/reports are Git-ignored under `input/` and `output/`. Only this README pair is bilingual; other project artifacts are English, with source labels preserved.

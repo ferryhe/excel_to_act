@@ -1240,7 +1240,8 @@ def test_unchanged_inputs_produce_identical_index_files(tmp_path: Path) -> None:
 def test_tools_catalogue_documents_resolver_and_builder_contracts() -> None:
     tools = tool_catalog()["tools"]
 
-    assert [tool["name"] for tool in tools] == ["step2.handoff.resolve", "step2.index.build", "step2.index.validate"]
+    assert [tool["name"] for tool in tools] == ["step2.handoff.resolve", "step2.index.build", "step2.index.validate", "step2.report",
+                                                "workflow.status", "workflow.confirm", "workflow.reject"]
     for tool in tools:
         assert tool["command"]
         assert tool["inputs"]

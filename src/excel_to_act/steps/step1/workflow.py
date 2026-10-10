@@ -15,6 +15,14 @@ from uuid import uuid4
 from openpyxl.utils.cell import coordinate_to_tuple
 
 from excel_to_act.graph.builder import RegexFormulaGraphBuilder
+from excel_to_act.ingest.control_artifacts import (
+    ARTIFACT_FILES as CONTROL_ARTIFACT_FILES,
+    build_control_artifacts,
+    clear_declared_vba_sources,
+    controls_handoff_markdown,
+    enrich_form_controls,
+    vba_handoff_markdown,
+)
 from excel_to_act.ingest.ooxml_package import OPAQUE_MARKERS
 from excel_to_act.ingest.openpyxl_reader import OpenpyxlWorkbookReader
 from excel_to_act.inventory.extractor import OpenpyxlInventoryExtractor
@@ -22,12 +30,16 @@ from excel_to_act.steps.step1.source_scan import SourceScanError, object_identit
 from excel_to_act.schemas import (
     CellInventory,
     CellKind,
+    ActiveXEvents,
+    CheckboxBindings,
     CoverageSummary,
     RangeInventory,
     SheetInventory,
     SourceLocation,
     WorkbookInventory,
     WorkbookManifest,
+    VbaModule,
+    VbaHandoff,
 )
 
 _SUPPORTED = {".xlsx", ".xlsm"}
@@ -39,9 +51,11 @@ _ARTIFACT_FILES = (
     "source_facts.json",
     "logical_objects.json",
     "package_parts.json",
+    "checkbox_bindings.json",
+    "activex_events.json",
+    "vba_handoff.json",
 )
-_SOURCE_METRIC_FIELDS = (
-    "logical_objects_total",
+_SOURCE_METRIC_FIELDS = ("logical_objects_total",
     "logical_objects_accounted",
     "traceability_ratio",
     "parsed_objects_total",
@@ -463,15 +477,26 @@ def _decorate_inventory(inventory: WorkbookInventory, scan: dict[str, Any]) -> W
     return inventory
 
 
-def _build_conversion(source_path: Path, scan: dict[str, Any]) -> tuple[WorkbookManifest, WorkbookInventory]:
+def _build_conversion(source_path: Path, scan: dict[str, Any]) -> tuple[WorkbookManifest, WorkbookInventory, CheckboxBindings, ActiveXEvents, VbaHandoff, dict[str, bytes]]:
     manifest = OpenpyxlWorkbookReader().read_manifest(source_path)
     part_facts = scan["parts"]
     for part in manifest.package_parts:
         source_part = part_facts.get(part.name)
         if source_part is not None:
             part.opaque = bool(source_part.get("opaque"))
-    inventory = OpenpyxlInventoryExtractor().extract(source_path, manifest)
-    return manifest, _decorate_inventory(inventory, scan)
+    inventory = _decorate_inventory(OpenpyxlInventoryExtractor().extract(source_path, manifest), scan)
+    checkboxes, activex, vba, sources = build_control_artifacts(source_path)
+    enrich_form_controls(inventory, checkboxes)
+    inventory.vba_modules = [
+        VbaModule(
+            name=module.name,
+            kind=module.kind,
+            code=sources[module.source_file].decode("utf-8"),
+            procedures=module.procedures,
+        )
+        for module in vba.modules
+    ]
+    return manifest, inventory, checkboxes, activex, vba, sources
 
 
 def _opaque(name: str, metadata: dict[str, Any] | None = None) -> str | None:
@@ -507,8 +532,41 @@ def _preserve_parts(source: Path, run_dir: Path, scan: dict[str, Any]) -> list[d
     return records
 
 
+def _write_control_artifacts(
+    run_dir: Path,
+    checkboxes: CheckboxBindings,
+    activex: ActiveXEvents,
+    vba: VbaHandoff,
+    sources: dict[str, bytes],
+) -> None:
+    metadata_path = run_dir / "source.json"
+    if metadata_path.is_file():
+        metadata = _read_json(metadata_path)
+        metadata["control_modules_version"] = 1
+        _write_json(metadata_path, metadata)
+    previous_vba = None
+    if (run_dir / "vba_handoff.json").is_file():
+        try:
+            previous_vba = VbaHandoff.model_validate(_read_json(run_dir / "vba_handoff.json"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            previous_vba = None
+    clear_declared_vba_sources(run_dir, previous_vba)
+    for name, artifact in (
+        (CONTROL_ARTIFACT_FILES["checkbox"], checkboxes),
+        (CONTROL_ARTIFACT_FILES["activex"], activex),
+        (CONTROL_ARTIFACT_FILES["vba"], vba),
+    ):
+        _write_json(run_dir / name, artifact.model_dump(mode="json"))
+    for relative, content in sources.items():
+        path = run_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    (run_dir / "controls_handoff.md").write_bytes(controls_handoff_markdown(checkboxes, activex, vba).encode("utf-8"))
+    (run_dir / "vba_handoff.md").write_bytes(vba_handoff_markdown(vba).encode("utf-8"))
+
+
 def _write_base(source_path: Path, run_dir: Path, scan: dict[str, Any]) -> tuple[WorkbookManifest, WorkbookInventory, list[dict[str, Any]]]:
-    manifest, inventory = _build_conversion(source_path, scan)
+    manifest, inventory, checkboxes, activex, vba, sources = _build_conversion(source_path, scan)
     _write_json(run_dir / "workbook_manifest.json", manifest.model_dump(mode="json"))
     _write_json(run_dir / "inventory.json", inventory.model_dump(mode="json"))
     _write_json(run_dir / "source_facts.json", {"date_system": scan["date_system"], "cells": scan["cells"]})
@@ -520,6 +578,7 @@ def _write_base(source_path: Path, run_dir: Path, scan: dict[str, Any]) -> tuple
     _write_json(run_dir / "logical_objects.json", logical)
     parts = _preserve_parts(source_path, run_dir, scan)
     _write_json(run_dir / "package_parts.json", parts)
+    _write_control_artifacts(run_dir, checkboxes, activex, vba, sources)
     evidence = run_dir / "source_evidence" / source_path.name
     evidence.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source_path, evidence)
@@ -558,6 +617,14 @@ def _artifact_refs(run_dir: Path) -> list[dict[str, Any]]:
         path = run_dir / name
         if path.is_file():
             refs.append({"name": name, "path": name, "sha256": _hash_file(path)})
+    for path in sorted((run_dir / "vba_sources").glob("*")) if (run_dir / "vba_sources").is_dir() else []:
+        if path.is_file():
+            relative = path.relative_to(run_dir).as_posix()
+            refs.append({"name": path.name, "path": relative, "sha256": _hash_file(path)})
+    for human_name in ("controls_handoff.md", "vba_handoff.md"):
+        human_path = run_dir / human_name
+        if human_path.is_file():
+            refs.append({"name": human_path.name, "path": human_path.name, "sha256": _hash_file(human_path)})
     return refs
 
 
@@ -643,6 +710,10 @@ def _check_run(run_dir: Path, *, write: bool = True) -> dict[str, Any]:
     fresh_scan: dict[str, Any] | None = None
     fresh_manifest: WorkbookManifest | None = None
     fresh_inventory: WorkbookInventory | None = None
+    fresh_checkboxes: CheckboxBindings | None = None
+    fresh_activex: ActiveXEvents | None = None
+    fresh_vba: VbaHandoff | None = None
+    fresh_vba_sources: dict[str, bytes] = {}
     hard_blockers: list[str] = []
     fidelity_deviations: list[dict[str, Any]] = []
     attempt_history: dict[str, Any] | None = None
@@ -680,7 +751,7 @@ def _check_run(run_dir: Path, *, write: bool = True) -> dict[str, Any]:
         elif source_hash is not None:
             try:
                 fresh_scan = scan_step1_source(original)
-                fresh_manifest, fresh_inventory = _build_conversion(original, fresh_scan)
+                fresh_manifest, fresh_inventory, fresh_checkboxes, fresh_activex, fresh_vba, fresh_vba_sources = _build_conversion(original, fresh_scan)
             except (OSError, ValueError, zipfile.BadZipFile, SourceScanError, Exception) as exc:
                 diagnostics.append(_diagnostic("source_xml_unreadable", "error", f"Source scan failed: {type(exc).__name__}: {exc}"))
                 hard_blockers.append("source XML could not be read")
@@ -767,6 +838,81 @@ def _check_run(run_dir: Path, *, write: bool = True) -> dict[str, Any]:
                 candidate_parts = decoded_parts
 
     if fresh_scan is not None and fresh_manifest is not None and fresh_inventory is not None:
+        if source.get("control_modules_version") == 1 and fresh_checkboxes and fresh_activex and fresh_vba:
+            expected_artifacts = (
+                ("checkbox_bindings.json", CheckboxBindings, fresh_checkboxes),
+                ("activex_events.json", ActiveXEvents, fresh_activex),
+                ("vba_handoff.json", VbaHandoff, fresh_vba),
+            )
+            for filename, model, expected in expected_artifacts:
+                try:
+                    actual = model.model_validate(_read_json(run_dir / filename))
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    hard_blockers.append(f"{filename} is missing or invalid")
+                    diagnostics.append(_diagnostic("control_artifact_unreadable", "error", f"Cannot read {filename}: {exc}"))
+                    continue
+                if _json_bytes(actual.model_dump(mode="json")) != _json_bytes(expected.model_dump(mode="json")):
+                    hard_blockers.append(f"{filename} differs from the current source")
+                    diagnostics.append(_diagnostic("control_artifact_mismatch", "error", f"{filename} is changed or describes another source."))
+
+            expected_modules = [module.model_dump(mode="json") for module in fresh_inventory.vba_modules]
+            actual_modules = [module.model_dump(mode="json") for module in candidate_inventory.vba_modules] if candidate_inventory else []
+            if _json_bytes(expected_modules) != _json_bytes(actual_modules):
+                hard_blockers.append("inventory VBA modules differ from fresh source extraction")
+                diagnostics.append(_diagnostic("vba_inventory_mismatch", "error", "inventory.json VBA modules are missing, changed, or stale."))
+
+            expected_source_paths = set(fresh_vba_sources)
+            source_directory = run_dir / "vba_sources"
+            actual_source_paths = {
+                path.relative_to(run_dir).as_posix()
+                for path in source_directory.rglob("*")
+                if path.is_file()
+            } if source_directory.is_dir() else set()
+            bad_sources = []
+            for relative, expected_bytes in fresh_vba_sources.items():
+                path = (run_dir / relative).resolve()
+                try:
+                    path.relative_to(run_dir.resolve())
+                    if not path.is_file() or path.read_bytes() != expected_bytes:
+                        bad_sources.append(relative)
+                except (OSError, ValueError):
+                    bad_sources.append(relative)
+            if expected_source_paths != actual_source_paths or bad_sources:
+                hard_blockers.append("exported VBA source files are missing, extra, or changed")
+                diagnostics.append(_diagnostic("vba_sources_mismatch", "error", f"VBA source file accounting differs (missing={len(expected_source_paths - actual_source_paths)}, extra={len(actual_source_paths - expected_source_paths)}, changed={len(bad_sources)})."))
+
+            expected_human = controls_handoff_markdown(fresh_checkboxes, fresh_activex, fresh_vba).encode("utf-8")
+            human_path = run_dir / "controls_handoff.md"
+            if not human_path.is_file() or human_path.read_bytes() != expected_human:
+                hard_blockers.append("controls_handoff.md is missing or differs from fresh source")
+                diagnostics.append(_diagnostic("control_handoff_mismatch", "error", "controls_handoff.md is missing, changed, or stale."))
+            vba_handoff_path = run_dir / "vba_handoff.md"
+            if not vba_handoff_path.is_file() or vba_handoff_path.read_bytes() != vba_handoff_markdown(fresh_vba).encode("utf-8"):
+                hard_blockers.append("vba_handoff.md is missing or differs from fresh source")
+                diagnostics.append(_diagnostic("vba_handoff_mismatch", "error", "vba_handoff.md is missing, changed, or stale."))
+
+            checkbox_counts = Counter(item.binding_status for item in fresh_checkboxes.bindings)
+            activex_matched = sum(item.binding_status == "resolved" for item in fresh_activex.controls)
+            partial_status = any(
+                artifact.status in {"partial", "unavailable"}
+                for artifact in (fresh_checkboxes, fresh_activex, fresh_vba)
+            )
+            metrics["control_modules"] = {
+                "status": "partial" if partial_status else "complete",
+                "checkbox_controls": len(fresh_checkboxes.bindings),
+                "checkbox_resolved": checkbox_counts["resolved"],
+                "checkbox_invalid": checkbox_counts["invalid"],
+                "checkbox_named": checkbox_counts["named"],
+                "checkbox_dynamic": checkbox_counts["dynamic"],
+                "checkbox_unresolved": checkbox_counts["unresolved"],
+                "activex_controls": len(fresh_activex.controls),
+                "activex_handlers": activex_matched,
+                "vba_modules": len(fresh_vba.modules),
+                "vba_procedures": sum(len(module.procedures) for module in fresh_vba.modules),
+            }
+            if partial_status:
+                diagnostics.append(_diagnostic("control_modules_partial", "warning", f"Static controls/VBA handoff is partial: {len(fresh_checkboxes.bindings)} checkboxes ({checkbox_counts['resolved']} resolved, {checkbox_counts['invalid']} invalid), {len(fresh_activex.controls)} ActiveX controls ({activex_matched} handlers), {len(fresh_vba.modules)} extracted VBA modules."))
+
         expected_cells = {cell["identity"]: cell for cell in fresh_scan["cells"]}
         expected_objects = {obj["identity"]: obj for obj in fresh_scan["objects"]}
         expected_parts = fresh_scan["parts"]
@@ -1074,7 +1220,7 @@ def _check_run(run_dir: Path, *, write: bool = True) -> dict[str, Any]:
     if blockers:
         status = "fail"
         ready = False
-    elif metrics.get("opaque_parts", 0) or fidelity_deviations:
+    elif metrics.get("opaque_parts", 0) or fidelity_deviations or metrics.get("control_modules", {}).get("status") == "partial":
         status = "partial"
         ready = True
     else:
@@ -1249,6 +1395,22 @@ def _write_handoff(
         lines.extend(["## Recovery stopped", "", f"- Reason: `{quality.get('stop_reason')}`.", f"- Remaining suggested tool: `{pending.get('name')}` (do not retry automatically).", ""])
     if quality.get("metrics", {}).get("opaque_parts"):
         lines.extend(["## Opaque parts", "", f"{quality['metrics']['opaque_parts']} original package part(s) were preserved byte-for-byte and were not parsed.", ""])
+    control_metrics = metrics.get("control_modules")
+    if isinstance(control_metrics, dict):
+        lines.extend(
+            [
+                "## Static controls and VBA",
+                "",
+                f"- Status: **{control_metrics.get('status')}**.",
+                f"- Checkboxes: {control_metrics.get('checkbox_controls', 0)} total; {control_metrics.get('checkbox_resolved', 0)} linked to A1 cells; {control_metrics.get('checkbox_invalid', 0)} have invalid source links.",
+                f"- ActiveX: {control_metrics.get('activex_controls', 0)} controls; {control_metrics.get('activex_handlers', 0)} declared handlers matched to worksheet modules.",
+                f"- VBA: {control_metrics.get('vba_modules', 0)} readable source modules; {control_metrics.get('vba_procedures', 0)} declared procedures.",
+                "- Details and source index: [controls_handoff.md](controls_handoff.md).",
+                "- VBA source files: [vba_handoff.md](vba_handoff.md).",
+                "- Exported VBA is source handoff only; ActiveX binary streams remain opaque and macros were not executed.",
+                "",
+            ]
+        )
     if final_path:
         lines.extend(["## Final converted output", "", f"`{final_path}`", ""])
     lines.extend(["## Candidate artifacts", "", *[f"- `{ref['path']}` · SHA-256 `{ref['sha256']}`" for ref in refs], ""])
@@ -1468,7 +1630,7 @@ def convert_directory(
 
 
 _TOOLS: list[dict[str, Any]] = [
-    {"name": "step1.convert", "command": "step1 convert INPUT_DIR --out OUTPUT_DIR [quality options]", "inputs": {"input_dir": "recursive directory", "out": "output root", "traceability_min": "number in [0,1], default 1; denominator is supported logical objects", "fidelity_min": "number in [0,1], default 1; denominator is supported inventory facts", "parsed_package_min": "number in [0,1], default 0; denominator is all non-directory OOXML parts", "opaque_max": "number in [0,1], default 1; denominator is all non-directory OOXML parts", "allow_opaque": "boolean, default true; false blocks every opaque part"}, "outputs": ["per-source candidate files", "package part copies", "separate logical and package ratios", "batch_handoff.json", "batch_handoff.md"], "next": ["step1.check", "step1.finalize"]},
+    {"name": "step1.convert", "command": "step1 convert INPUT_DIR --out OUTPUT_DIR [quality options]", "inputs": {"input_dir": "recursive directory", "out": "output root", "traceability_min": "number in [0,1], default 1; denominator is supported logical objects", "fidelity_min": "number in [0,1], default 1; denominator is supported inventory facts", "parsed_package_min": "number in [0,1], default 0; denominator is all non-directory OOXML parts", "opaque_max": "number in [0,1], default 1; denominator is all non-directory OOXML parts", "allow_opaque": "boolean, default true; false blocks every opaque part"}, "outputs": ["per-source candidate files", "package part copies", "separate logical and package ratios", "checkbox_bindings.json", "activex_events.json", "vba_handoff.json and checksummed vba_sources/", "controls_handoff.md", "vba_handoff.md", "batch_handoff.json", "batch_handoff.md"], "next": ["step1.check", "step1.finalize"]},
     {"name": "step1.check", "command": "step1 check --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["fresh quality.json", "handoff.json", "handoff.md", "metrics", "diagnostics"], "next": ["inventory.extract", "source_facts.refresh", "package.preserve", "step1.finalize"]},
     {"name": "step1.coverage", "command": "step1 coverage --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["logical object and package part ledgers", "logical parsed_coverage_ratio", "package parsed_package_parts_ratio and opaque_rate", "separate denominators and declared coverage_scope"], "next": ["inventory.extract", "package.preserve"]},
     {"name": "step1.fidelity", "command": "step1 fidelity --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["raw source facts", "normalized projection comparisons", "source locations"], "next": ["inventory.extract", "source_facts.refresh"]},
@@ -1476,8 +1638,8 @@ _TOOLS: list[dict[str, Any]] = [
     {"name": "inventory.extract", "command": "step1 tool inventory.extract --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["persisted inventory.json with normalized values and raw OOXML fields"], "next": ["step1.check"]},
     {"name": "cached_values.read", "command": "step1 tool cached_values.read --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["persisted cached values and availability flags in inventory.json"], "next": ["step1.fidelity"]},
     {"name": "data_tables.read", "command": "step1 tool data_tables.read --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["persisted data-table ranges and source formula attributes"], "next": ["step1.coverage"]},
-    {"name": "form_controls.read", "command": "step1 tool form_controls.read --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["persisted legacy form-control facts and links"], "next": ["step1.coverage"]},
-    {"name": "vba.extract", "command": "step1 tool vba.extract --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["persisted VBA modules or explicit opaque/skipped diagnostics"], "next": ["step1.check", "graph.build"]},
+    {"name": "form_controls.read", "command": "step1 tool form_controls.read --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["persisted form-control facts enriched with modern and VML checkbox links", "control-module handoff artifacts"], "next": ["step1.coverage"]},
+    {"name": "vba.extract", "command": "step1 tool vba.extract --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["inventory VBA modules", "vba_handoff.json and checksummed source files or explicit unavailable diagnostics", "control-module handoff artifacts"], "next": ["step1.check", "graph.build"]},
     {"name": "vba.cell_links", "command": "step1 tool vba.cell_links --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["persisted VBA-to-cell graph edges"], "next": ["graph.build"]},
     {"name": "graph.build", "command": "step1 tool graph.build --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["persisted dependency_graph.json"], "next": ["step1.check"]},
     {"name": "classify.rules", "command": "step1 tool classify.rules --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["persisted module_classification.json (later-stage heuristic aid)"], "next": ["confirmation.build"]},
@@ -1488,30 +1650,14 @@ _TOOLS: list[dict[str, Any]] = [
     {"name": "report.handoff", "command": "step1 tool report.handoff --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["fresh human and machine handoff"], "next": ["step1.finalize"]},
     {"name": "step1.auto_recover", "command": "step1 auto-recover --run RUN_DIR --max-attempts 3", "inputs": {"run": "per-source run directory", "max_attempts": "integer from 1 to 3"}, "outputs": ["bounded persisted recovery history and fresh checks"], "next": ["step1.check", "step1.finalize"]},
     {"name": "step1.finalize", "command": "step1 finalize --run RUN_DIR", "inputs": {"run": "per-source run directory"}, "outputs": ["fresh quality report and unique promoted final folder when accepted"], "next": ["step2_index"]},
+    {"name": "step1.report", "command": "step1 report --run FINAL_RUN --out WORKFLOW", "inputs": {"run": "finalized per-source run"}, "outputs": ["full promotion-ledger and source-hash-bound import checkpoint"], "next": ["workflow status", "workflow confirm --stage 1"]},
 ]
 
 
 def tool_catalog() -> dict[str, Any]:
-    return {
-        "tool": "step1.tools",
-        "status": "ok",
-        "source": None,
-        "run_id": None,
-        "coverage_scope": _coverage_scope(),
-        "metrics_contract": {
-            "state_field": "metrics_state",
-            "states": {"measured": "A fresh source scan supplied the current denominators and ratios.", "unavailable": "A fresh source scan could not be validated; source-derived totals, counts, ratios, and deviations are null."},
-            "zero_denominator": "Numeric zero is used only when a fresh scan measured an empty denominator; empty corpora still fail.",
-            "gate": "Unavailable metrics never satisfy thresholds, including thresholds set to zero; source/read blockers prevent finalization.",
-        },
-        "artifacts": [],
-        "metrics": {"tool_count": len(_TOOLS)},
-        "diagnostics": [],
-        "retryable": False,
-        "next_tool": None,
-        "tools": _TOOLS,
-    }
+    from excel_to_act.steps.step1.tools import tool_catalog as catalog
 
+    return catalog()
 
 def _load_run_inventory(run_dir: Path) -> WorkbookInventory:
     return WorkbookInventory.model_validate(_read_json(run_dir / "inventory.json"))
@@ -1523,13 +1669,14 @@ def _refresh_from_source(run_dir: Path, component: str) -> dict[str, Any]:
     if not path.is_file() or _hash_file(path) != source["sha256"]:
         raise ValueError("source is missing or changed; candidate refresh is unsafe")
     scan = scan_step1_source(path)
-    manifest, inventory = _build_conversion(path, scan)
-    if component in {"inventory.extract", "cached_values.read", "data_tables.read", "form_controls.read", "manifest.read"}:
+    manifest, inventory, checkboxes, activex, vba, sources = _build_conversion(path, scan)
+    if component != "source_facts.refresh":
         _write_json(run_dir / "workbook_manifest.json", manifest.model_dump(mode="json"))
         _write_json(run_dir / "inventory.json", inventory.model_dump(mode="json"))
+        _write_control_artifacts(run_dir, checkboxes, activex, vba, sources)
     if component == "source_facts.refresh":
         _write_json(run_dir / "source_facts.json", {"date_system": scan["date_system"], "cells": scan["cells"]})
-        ids = _inventory_ids(inventory)
+        ids = _inventory_ids(_load_run_inventory(run_dir))
         _write_json(run_dir / "logical_objects.json", [{**item, "accounted": item["identity"] in ids, "opaque": False} for item in scan["objects"]])
     if component == "package.preserve":
         parts = _preserve_parts(path, run_dir, scan)
@@ -1537,7 +1684,7 @@ def _refresh_from_source(run_dir: Path, component: str) -> dict[str, Any]:
         evidence = run_dir / "source_evidence" / path.name
         evidence.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, evidence)
-    return {"source": {"path": source["relative_path"], "sha256": source["sha256"]}, "metrics": {"objects": len(scan["objects"]), "cells": len(scan["cells"]), "parts": len(scan["parts"])}, "artifacts": [component]}
+    return {"source": {"path": source["relative_path"], "sha256": source["sha256"]}, "metrics": {"objects": len(scan["objects"]), "cells": len(scan["cells"]), "parts": len(scan["parts"]), "vba_modules": len(vba.modules), "vba_available": vba.available}, "artifacts": [component, *CONTROL_ARTIFACT_FILES.values(), "controls_handoff.md"]}
 
 
 def _tool_action(name: str, run_dir: Path) -> dict[str, Any]:
@@ -1550,12 +1697,31 @@ def _tool_action(name: str, run_dir: Path) -> dict[str, Any]:
         inventory = WorkbookInventory.model_validate(_read_json(run_dir / "inventory.json"))
         if manifest.sha256 != source.get("sha256") or inventory.workbook_sha256 != source.get("sha256"):
             raise ValueError("manifest or inventory source hash does not match source.json")
-        for artifact in _ARTIFACT_FILES:
+        artifact_files = _ARTIFACT_FILES if source.get("control_modules_version") == 1 else _ARTIFACT_FILES[:6]
+        for artifact in artifact_files:
             path = run_dir / artifact
             if not path.is_file():
                 raise ValueError(f"candidate artifact is missing: {artifact}")
-            _read_json(path)
+            decoded = _read_json(path)
+            models = {
+                "workbook_manifest.json": WorkbookManifest,
+                "inventory.json": WorkbookInventory,
+                "checkbox_bindings.json": CheckboxBindings,
+                "activex_events.json": ActiveXEvents,
+                "vba_handoff.json": VbaHandoff,
+            }
+            if artifact in models:
+                models[artifact].model_validate(decoded)
             checked.append({"name": artifact, "sha256": _hash_file(path)})
+        if source.get("control_modules_version") == 1:
+            for path in sorted((run_dir / "vba_sources").glob("*")) if (run_dir / "vba_sources").is_dir() else []:
+                if path.is_file():
+                    checked.append({"name": path.relative_to(run_dir).as_posix(), "sha256": _hash_file(path)})
+            for human_name in ("controls_handoff.md", "vba_handoff.md"):
+                human_path = run_dir / human_name
+                if not human_path.is_file():
+                    raise ValueError(f"candidate artifact is missing: {human_name}")
+                checked.append({"name": human_path.name, "sha256": _hash_file(human_path)})
         return {"artifacts": checked, "metrics": {"validated_artifacts": len(checked), "inventory_records": len(_inventory_records(inventory))}}
     if name == "report.handoff":
         quality = _check_run(run_dir)
@@ -1565,13 +1731,9 @@ def _tool_action(name: str, run_dir: Path) -> dict[str, Any]:
         _write_json(run_dir / "dependency_graph.json", graph.model_dump(mode="json"))
         return {"artifacts": ["dependency_graph.json"], "metrics": {"nodes": len(graph.nodes), "edges": len(graph.edges)}}
     if name == "vba.extract":
-        from excel_to_act.ingest.vba import extract_vba_project
-
-        inventory = _load_run_inventory(run_dir)
-        project = extract_vba_project(Path(_run_source(run_dir)["source_path"]))
-        inventory.vba_modules = list(project.modules)
-        _write_json(run_dir / "inventory.json", inventory.model_dump(mode="json"))
-        return {"artifacts": ["inventory.json"], "metrics": {"vba_modules": len(project.modules), "available": project.available}, "diagnostics": [project.error] if project.error else []}
+        action = _refresh_from_source(run_dir, name)
+        action["metrics"]["available"] = action["metrics"].pop("vba_available")
+        return action
     if name == "vba.cell_links":
         from excel_to_act.ingest.vba import extract_vba_project
         from excel_to_act.inventory.vba_links import build_vba_edges, extract_vba_cell_links

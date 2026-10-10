@@ -6,7 +6,7 @@ import re
 
 from openpyxl.formula import Tokenizer
 from openpyxl.formula.tokenizer import TokenizerError
-from openpyxl.utils.cell import column_index_from_string, range_boundaries
+from openpyxl.utils.cell import column_index_from_string
 
 from excel_to_act.schemas import (
     FormulaGraph,
@@ -150,20 +150,8 @@ class RegexFormulaGraphBuilder:
                 return None
             headers = table.metadata.get("columns")
             if not headers:
-                try:
-                    min_col, min_row, max_col, _ = range_boundaries(table.address)
-                    sheet = next(
-                        sheet
-                        for sheet in inventory.sheets
-                        if sheet.name == table.source_location.sheet_name
-                    )
-                    headers = [
-                        str(cell.value)
-                        for cell in sheet.cells
-                        if cell.row == min_row and min_col <= cell.column <= max_col and cell.value is not None
-                    ]
-                except (ValueError, StopIteration):
-                    headers = []
+                # Header text is field evidence, not authoritative table-column metadata.
+                headers = []
             if column and headers and column.casefold() not in {str(header).casefold() for header in headers}:
                 return None
             if column and headers:
@@ -177,6 +165,7 @@ class RegexFormulaGraphBuilder:
                 source_location=table.source_location,
                 metadata={
                     "structured_reference": operand,
+                    "current_row": current_row,
                     "table": table.name,
                     "table_ref": table.address,
                     "sheet": table.source_location.sheet_name,

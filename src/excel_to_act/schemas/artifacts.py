@@ -165,6 +165,68 @@ class VbaModule(BaseModel):
     procedures: list[str] = Field(default_factory=list)
 
 
+class CheckboxBinding(BaseModel):
+    sheet: str
+    sheet_part: str
+    shape_id: str | None = None
+    control_name: str | None = None
+    legacy_control_id: str | None = None
+    linked_cell_raw: str | None = None
+    linked_cell: str | None = None
+    linked_sheet: str | None = None
+    linked_address: str | None = None
+    binding_status: Literal["resolved", "named", "dynamic", "invalid", "unresolved"]
+    sources: list[str] = Field(default_factory=list)
+    diagnostic: str | None = None
+
+
+class CheckboxBindings(Artifact):
+    artifact_type: Literal["checkbox_bindings"] = "checkbox_bindings"
+    workbook_sha256: str
+    status: Literal["complete", "partial", "not_applicable"]
+    bindings: list[CheckboxBinding] = Field(default_factory=list)
+    diagnostics: list[str] = Field(default_factory=list)
+
+
+class ActiveXControl(BaseModel):
+    sheet: str
+    sheet_part: str
+    sheet_code_name: str | None = None
+    shape_id: str
+    control_name: str
+    class_id: str | None = None
+    part: str
+    binary_part: str | None = None
+    event_procedures: list[str] = Field(default_factory=list)
+    binding_status: Literal["resolved", "unresolved", "unavailable"]
+    diagnostic: str | None = None
+
+
+class ActiveXEvents(Artifact):
+    artifact_type: Literal["activex_events"] = "activex_events"
+    workbook_sha256: str
+    status: Literal["complete", "partial", "not_applicable", "unavailable"]
+    controls: list[ActiveXControl] = Field(default_factory=list)
+    diagnostics: list[str] = Field(default_factory=list)
+
+
+class VbaSource(BaseModel):
+    name: str
+    kind: str
+    procedures: list[str] = Field(default_factory=list)
+    source_file: str
+    sha256: str
+
+
+class VbaHandoff(Artifact):
+    artifact_type: Literal["vba_handoff"] = "vba_handoff"
+    workbook_sha256: str
+    available: bool
+    status: Literal["complete", "partial", "not_applicable", "unavailable"]
+    modules: list[VbaSource] = Field(default_factory=list)
+    diagnostics: list[str] = Field(default_factory=list)
+
+
 class WorkbookInventory(Artifact):
     artifact_type: Literal["workbook_inventory"] = "workbook_inventory"
     workbook_sha256: str

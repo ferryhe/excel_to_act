@@ -109,7 +109,18 @@ class OpenpyxlInventoryExtractor:
                     sheet.ranges.append(RangeInventory(source_location=_loc(workbook_path, "merged_range", ws.title, i, str(merged), str(merged)), address=str(merged), kind="merged_range"))
                     recognized += 1
                 for table in ws.tables.values():
-                    sheet.ranges.append(RangeInventory(source_location=_loc(workbook_path, "table", ws.title, i, table.ref, table.name), name=table.name, address=table.ref, kind="table", metadata={"display_name": table.displayName}))
+                    totals_row_count = table.totalsRowCount
+                    if totals_row_count is None:
+                        totals_row_count = 1 if table.totalsRowShown is True else 0
+                    table_columns = [column.name for column in table.tableColumns if column.name]
+                    sheet.ranges.append(RangeInventory(
+                        source_location=_loc(workbook_path, "table", ws.title, i, table.ref, table.name),
+                        name=table.name,
+                        address=table.ref,
+                        kind="table",
+                        metadata={"display_name": table.displayName, "columns": table_columns,
+                                  "header_row_count": table.headerRowCount, "totals_row_count": totals_row_count},
+                    ))
                     recognized += 1
                 for spec in data_tables.get(ws.title, []):
                     sheet.ranges.append(
