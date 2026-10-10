@@ -371,7 +371,9 @@ def test_native_oracle_resolves_requested_sheet_names_case_insensitively(
         }), encoding="utf-8")
         return SimpleNamespace(returncode=0, stderr="", stdout="")
 
-    monkeypatch.setattr(calculation.os, "name", "nt")
+    # Replace this module's platform probe without mutating the shared ``os``
+    # module used by pathlib and pytest on non-Windows hosts.
+    monkeypatch.setattr(calculation, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(calculation.shutil, "which", lambda _name: "powershell.exe")
     monkeypatch.setattr(calculation.subprocess, "run", fake_run)
     oracle_dir = tmp_path.parent / f"{tmp_path.name}-oracle"

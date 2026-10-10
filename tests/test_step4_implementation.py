@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+from click import unstyle
 from openpyxl import Workbook
 from typer.testing import CliRunner
 
@@ -140,7 +141,7 @@ def test_step4_plan_command_and_catalog_are_public() -> None:
     runner = CliRunner()
     help_result = runner.invoke(app, ["step4", "plan", "--help"])
     assert help_result.exit_code == 0, help_result.stdout
-    assert "--implementation" in help_result.stdout
+    assert "--implementation" in unstyle(help_result.stdout)
 
     catalog_result = runner.invoke(app, ["step4", "tools"])
     assert catalog_result.exit_code == 0, catalog_result.stdout
