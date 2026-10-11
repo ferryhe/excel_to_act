@@ -25,6 +25,7 @@ from excel_to_act.steps.step3.profiling import (
     profile_source_families,
 )
 from excel_to_act.steps.step3.input_boundary import create_input_boundary
+from excel_to_act.steps.step3.tools.interface import export_tool_interface
 from excel_to_act.steps.conversion_workflow import record_decision, register_review_delegation, submit_typesafe_review, workflow_status
 from excel_to_act.steps.step1.checkpoint import create_checkpoint as create_step1_checkpoint
 from excel_to_act.steps.step2.checkpoint import create_checkpoint as create_step2_checkpoint
@@ -583,6 +584,18 @@ def step3_report(
 ) -> None:
     """Create a reviewable source-bound analysis/design report; performs no formula calculation."""
     result = create_design_report(analysis, design, workflow)
+    _emit_json(result)
+    if result.get("status") != "pass":
+        raise typer.Exit(code=1)
+
+
+@step3_app.command("interface")
+def step3_interface(
+    workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False,
+                                  help="Workflow with the currently approved Step 3 design and confirmed input boundary"),
+) -> None:
+    """Export a versioned tool interface from the current approved Step 3 evidence."""
+    result = export_tool_interface(workflow)
     _emit_json(result)
     if result.get("status") != "pass":
         raise typer.Exit(code=1)

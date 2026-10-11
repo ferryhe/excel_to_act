@@ -115,6 +115,14 @@ Read the resulting `analysis_design.json/.md`, record Agent review, and wait for
 
 The design may include an optional `tool_execution_ledger` with text-only `tool`, `command`, `purpose`, `outputs`, and `status` fields. The report displays those records; it never executes listed commands. An optional `external_value_capture_plan` can describe the later phase, ranges, method, binding, and validation. It must say current values are unavailable and formula caches are prohibited. Step 3 records the prerequisite without capturing or including numeric values.
 
+After the final design and input boundary have current approval, export the versioned interface:
+
+```powershell
+excel-to-act step3 interface --workflow WORKFLOW_DIR
+```
+
+Optional per-input declarations belong in the accepted design's `tool_interface.objects`, keyed by boundary `variable_id`. State `mutability` as `mutable`, `immutable`, or `unknown`; supply `value_type`, `required`, `default_policy`, `allowed_range`, `units`, and `unit_basis` only when supported by reviewed evidence. Default policy may be `unknown` or `none`; literal numeric defaults need later approved value capture. Missing facts are emitted as unknown and block runtime readiness. Boundary objects determine membership; explicitly mutable objects are included regardless of their business label. Parameter keys use the boundary `logical_name`; source addresses appear only in `source_provenance`. Export creates a manifest-listed derived artifact and Markdown report without adding a Step 3 revision or approval. CLI and workflow status say “interface generated” only while the registered artifact is current; they do not claim parameterized computation, Excel equivalence, or production readiness. The input boundary still requires Agent and actual human approval of its exact JSON/Markdown pair.
+
 ## 4. Generate standalone Python
 
 For each workflow, use its current confirmed input boundary and accepted semantic design. Earlier or rejected bundles remain historical evidence; their approval cannot release a replacement design. Read source-specific parameters and manual checks from the current workflow's bound evidence, not from reusable defaults.
