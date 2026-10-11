@@ -264,6 +264,7 @@ def _resolved_source_cells(
     owner_variable_id: str,
     semantic_plan: dict[str, Any],
     source_index: dict[tuple[str, int, int], list[SourceCell]],
+    source_literals: set[str] | None = None,
 ) -> list[list[SourceCell]]:
     declared_variables = semantic_plan.get("variables", [])
     variables = declared_variables if isinstance(declared_variables, dict) else {
@@ -274,10 +275,11 @@ def _resolved_source_cells(
         raise CalculationBlocked(f"formula output variable is not declared: {owner_variable_id}")
     dependencies = {item.get("variable_id") for item in owner.get("dependencies", [])}
     dependencies.add(owner_variable_id)
-    source_literals = {
-        _address_key(address) for address in semantic_plan.get("adapter_source_literals", [])
-        if isinstance(address, str)
-    }
+    if source_literals is None:
+        source_literals = {
+            _address_key(address) for address in semantic_plan.get("adapter_source_literals", [])
+            if isinstance(address, str)
+        }
     rows: list[list[SourceCell]] = []
     for row in range(reference.min_row, reference.max_row + 1):
         cells: list[SourceCell] = []
@@ -414,6 +416,7 @@ def _infer_group_axis_alignments(
     semantic_plan: dict[str, Any],
     formula_by_address: dict[str, str],
     source_index: dict[tuple[str, int, int], list[SourceCell]],
+    source_literals: set[str] | None = None,
 ) -> dict[tuple[str, int, int, int, str, int], int]:
     """Infer index coupling only when translated formulas demonstrate a constant offset."""
     mappings = semantic_plan.get("source_mappings", [])
@@ -453,7 +456,8 @@ def _infer_group_axis_alignments(
             parsed = _Parser(member["formula"], target.sheet).parse()
             for occurrence, reference in enumerate(_reference_nodes(parsed)):
                 try:
-                    referenced_rows = _resolved_source_cells(reference, variable_id, semantic_plan, source_index)
+                    referenced_rows = _resolved_source_cells(reference, variable_id, semantic_plan,
+                                                             source_index, source_literals)
                 except CalculationBlocked:
                     # An unmapped address can be a lazy branch boundary. It has no
                     # effect on index alignment observed from other family members.
@@ -490,9 +494,10 @@ def lower_mapped_reference(
     source_index: dict[tuple[str, int, int], list[SourceCell]],
     reference_occurrence: int | None = None,
     axis_alignments: dict[tuple[str, int, int, int, str, int], int] | None = None,
+    source_literals: set[str] | None = None,
 ) -> str:
     """Lower a concrete source reference to declared named variables and logical indices."""
-    rows = _resolved_source_cells(reference, owner_variable_id, semantic_plan, source_index)
+    rows = _resolved_source_cells(reference, owner_variable_id, semantic_plan, source_index, source_literals)
 
     variable_ids = {cell.variable_id for row in rows for cell in row}
     def explicit_alignment(row_index: int, col_index: int, cell: SourceCell) -> dict[int, int]:
@@ -579,7 +584,10 @@ def compile_mapped_families(
         if isinstance(item, dict) and item.get("role") == "calculated_formula"
         and isinstance(item.get("formula"), str)
     }
-    axis_alignments = _infer_group_axis_alignments(semantic_plan, formula_by_address, source_index)
+    source_literals = {_address_key(address) for address in semantic_plan.get("adapter_source_literals", [])
+                       if isinstance(address, str)}
+    axis_alignments = _infer_group_axis_alignments(semantic_plan, formula_by_address, source_index,
+                                                   source_literals)
     body_to_function: dict[tuple[str, str, str], str] = {}
     functions: dict[str, str] = {}
     mapping_to_function: dict[str, str] = {}
@@ -637,6 +645,7 @@ def compile_mapped_families(
                         reference, owner_variable_id=variable_id, owner_indices=output.indices,
                         owner_axes=output.axes, semantic_plan=semantic_plan, source_index=source_index,
                         reference_occurrence=occurrence, axis_alignments=axis_alignments,
+                        source_literals=source_literals,
                     )
                 except CalculationBlocked as exc:
                     unsupported_references.append({"source_family_id": family_id,

@@ -12,7 +12,9 @@ from openpyxl import load_workbook
 from openpyxl.utils.cell import get_column_letter, range_boundaries
 
 from excel_to_act.steps.conversion_workflow import hash_file
-from excel_to_act.steps.step3.calculation import CalculationBlocked, _parse_reference
+from excel_to_act.steps.step3.calculation import (
+    CalculationBlocked, FormulaEvaluator, _excel_compare, _parse_reference,
+)
 from excel_to_act.steps.step4.modular_compiler import (
     SourceCell,
     build_source_cell_index,
@@ -286,14 +288,241 @@ def _canonical_hash(value: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _verified_case_layout(cases: Any, mutable: dict[str, Any],
+                          external_bindings: list[dict[str, Any]], source_path: Path,
+                          plan: dict[str, Any], profile: dict[str, Any], base_trace: dict[str, Any],
+                          target_names: list[str], names: dict[str, Any],
+                          source_values: dict[str, Any], variant_sources: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Replay exact requests from source formulas before admitting finite bundle variants."""
+    if not isinstance(cases, list) or not cases:
+        raise CalculationBlocked("exact-case support needs at least one bound request")
+    source_hash = hash_file(source_path)
+    def resolve_name(name: str, _sheet: str, _owner: str) -> str:
+        if name.casefold() not in names:
+            raise CalculationBlocked(f"named reference is not mapped: {name}")
+        return f"runtime.lookup_name(values, {name.casefold()!r})"
+    base_driver = render_grouped_driver(plan, compile_mapped_families(plan, base_trace, resolve_name))
+    base_driver_sha = hashlib.sha256(base_driver.encode("utf-8")).hexdigest()
+    target_refs = {item.get("name"): item.get("source_ref")
+                   for item in plan.get("reference_resolution", {}).get("named_references", [])}
+    proofs: list[dict[str, str]] = []
+    for case in cases:
+        required = {"trace", "raw_request", "public_request", "producer"}
+        if not isinstance(case, dict) or set(case) not in (required, required | {"plan", "profile"}):
+            raise CalculationBlocked("exact-case artifact references are incomplete")
+        artifacts = {}
+        for label in case:
+            ref = case[label]
+            if (not isinstance(ref, dict) or set(ref) != {"path", "sha256"}
+                    or not isinstance(ref["path"], str)
+                    or not isinstance(ref["sha256"], str)):
+                raise CalculationBlocked(f"exact-case {label} reference is malformed")
+            path = Path(ref["path"])
+            if not path.is_file() or hash_file(path) != ref["sha256"]:
+                raise CalculationBlocked(f"exact-case {label} artifact is missing or stale")
+            artifacts[label] = json.loads(path.read_text(encoding="utf-8"))
+        trace, raw_request = artifacts["trace"], artifacts["raw_request"]
+        public, producer = artifacts["public_request"], artifacts["producer"]
+        raw_records = raw_request.get("input_overrides") if isinstance(raw_request, dict) else None
+        if not isinstance(raw_records, list):
+            raise CalculationBlocked("exact-case raw request has no input records")
+        raw = {_address_key(item["qualified_address"]): item["value"] for item in raw_records}
+        if len(raw) != len(raw_records):
+            raise CalculationBlocked("exact-case raw request duplicates a source address")
+        raw_digest = hashlib.sha256(json.dumps(raw_records, sort_keys=True, ensure_ascii=False,
+                                               separators=(",", ":")).encode("utf-8")).hexdigest()
+        if (trace.get("source_sha256") != source_hash or trace.get("input_sha256") != raw_digest
+                or trace.get("request_sha256") != case["raw_request"]["sha256"]
+                or trace.get("producer_sha256") != case["producer"]["sha256"]
+                or producer.get("source_sha256") != source_hash
+                or producer.get("input_sha256") != raw_digest):
+            raise CalculationBlocked("exact-case trace, producer, and raw request bindings differ")
+        if (not isinstance(public, dict) or set(public) != {"inputs", "external_data"}
+                or not isinstance(public["inputs"], dict)
+                or set(public["inputs"]) != set(mutable)
+                or not isinstance(public["external_data"], dict)):
+            raise CalculationBlocked("exact-case public request is incomplete")
+        input_digest = _canonical_hash(public["inputs"])
+        mapped: dict[str, Any] = {}
+        for name, spec in mutable.items():
+            record = public["inputs"][name]
+            if (not isinstance(record, dict) or set(record) != {"axes", "values"}
+                    or _canonical_hash(record["axes"]) != _canonical_hash(spec["axes"])):
+                raise CalculationBlocked(f"exact-case input axes differ: {name}")
+            cells = spec.get("mutable_cells")
+            if cells is not None:
+                values = record["values"]
+                if (not isinstance(values, list) or len(values) != len(cells)
+                        or any(not isinstance(value, dict) or set(value) != {"indices", "value"}
+                               or value["indices"] != cell["indices"]
+                               for value, cell in zip(values, cells))):
+                    raise CalculationBlocked(f"exact-case mutable cells differ: {name}")
+                leaves = {tuple(value["indices"]): value["value"] for value in values}
+            elif not spec["shape"]:
+                leaves = {(): record["values"]}
+            else:
+                def flatten(value: Any, shape: list[int], indices: tuple[int, ...] = ()) -> dict[tuple[int, ...], Any]:
+                    if not shape:
+                        return {indices: value}
+                    if not isinstance(value, list) or len(value) != shape[0]:
+                        raise CalculationBlocked(f"exact-case input shape differs: {name}")
+                    return {key: leaf for position, item in enumerate(value)
+                            for key, leaf in flatten(item, shape[1:], (*indices, position)).items()}
+                leaves = flatten(record["values"], spec["shape"])
+            for binding in spec["bindings"]:
+                mapped[binding["address"]] = leaves[tuple(binding["indices"])]
+        if set(mapped) != set(raw) or any(_canonical_hash(raw[key]) != _canonical_hash(value)
+                                              for key, value in mapped.items()):
+            raise CalculationBlocked("exact-case public and source raw inputs differ")
+        external_data = public["external_data"]
+        if set(external_data) != {item["variable_id"] for item in external_bindings}:
+            raise CalculationBlocked("exact-case external producer set differs")
+        overrides = {}
+        cuts = producer.get("cuts")
+        if not isinstance(cuts, dict):
+            raise CalculationBlocked("exact-case producer has no formula cuts")
+        evaluator = FormulaEvaluator(source_path)
+        try:
+            for address, value in raw.items():
+                ref = _parse_reference(address, "Main")
+                sheet = evaluator.sheet_names[ref.sheet.casefold()]
+                cell = evaluator.workbook[sheet].cell(ref.min_row, ref.min_col)
+                if cell.data_type == "f":
+                    raise CalculationBlocked(f"exact-case raw input is a formula: {address}")
+                cell.value = value
+                if type(cell.value) is not type(value) or cell.value != value:
+                    raise CalculationBlocked(f"exact-case raw input readback differs: {address}")
+            for binding in external_bindings:
+                variable_id, source_range = binding["variable_id"], binding["source_range"]
+                data = external_data[variable_id]
+                cut = cuts.get(source_range)
+                if (not isinstance(data, dict)
+                        or set(data) != {"values", "axes", "source_sha256", "version", "input_sha256"}
+                        or data["source_sha256"] != source_hash
+                        or data["input_sha256"] != input_digest
+                        or not isinstance(cut, dict)
+                        or _canonical_hash(data["values"]) != _canonical_hash(cut.get("values"))
+                        or len(data["values"]) != len(binding["addresses"])):
+                    raise CalculationBlocked(f"exact-case external producer differs: {variable_id}")
+                for address, value in zip(binding["addresses"], data["values"]):
+                    ref = _parse_reference(address, "Main")
+                    sheet = evaluator.sheet_names[ref.sheet.casefold()]
+                    cell = evaluator.workbook[sheet].cell(ref.min_row, ref.min_col)
+                    if cell.data_type != "f":
+                        raise CalculationBlocked(f"exact-case external cut is not a formula: {address}")
+                    formula = cell.value
+                    overrides[address] = {"boundary_variable_id": source_range, "value": value,
+                                          "source_formula": formula,
+                                          "source_formula_sha256": hashlib.sha256(formula.encode()).hexdigest(),
+                                          "capture_artifact_sha256": case["producer"]["sha256"]}
+            evaluator.external_overrides = {
+                evaluator._key(evaluator.sheet_names[_parse_reference(address, "Main").sheet.casefold()],
+                               _parse_reference(address, "Main").min_row,
+                               _parse_reference(address, "Main").min_col): value
+                for address, value in overrides.items()}
+            for name in target_names:
+                ref = _parse_reference(target_refs.get(name, ""), "Main")
+                if ref is None or not ref.single or not ref.sheet:
+                    raise CalculationBlocked(f"exact-case target has no source cell: {name}")
+                evaluator.evaluate_cell(ref.sheet, ref.min_row, ref.min_col, dependency=False)
+            replay = {"cells": list(evaluator.cells.values()), "edges": list(evaluator.edges.values()),
+                      "names": list(evaluator.names.values()), "lookups": evaluator.lookups,
+                      "branches": evaluator.branches, "dynamic_ranges": evaluator.dynamic_ranges}
+            for kind, actual in replay.items():
+                expected = trace.get(kind)
+                if (not isinstance(expected, list)
+                        or _canonical_hash(sorted(actual, key=_canonical_hash))
+                        != _canonical_hash(sorted(expected, key=_canonical_hash))):
+                    raise CalculationBlocked(f"exact-case source {kind} closure differs from trace")
+        finally:
+            evaluator.close()
+        case_plan, case_profile = artifacts.get("plan", plan), artifacts.get("profile", profile)
+        case_names = names
+        case_index = None
+        if "plan" in artifacts:
+            case_index, case_variables = _source_index(case_plan)
+            base_index, base_variables = _source_index(plan)
+            extra_variables = {key: value for key, value in case_variables.items()
+                               if key not in base_variables}
+            if (case_plan.get("source", {}).get("source_sha256") != source_hash
+                    or case_profile.get("source_sha256") != source_hash
+                    or any(case_variables.get(key, {}).get("shape") != value.get("shape")
+                           for key, value in base_variables.items())
+                    or any(value.get("role") != "derived" or value.get("initial_condition") is not None
+                           for value in extra_variables.values())
+                    or _target_bindings(target_names, case_plan) != _target_bindings(target_names, plan)
+                    or case_plan.get("adapter_metadata_groups") != plan.get("adapter_metadata_groups")
+                    or case_plan.get("adapter_metadata_cells") != plan.get("adapter_metadata_cells")):
+                raise CalculationBlocked("exact-case logical shapes, metadata, or source differ from bundle")
+            if _raw_bindings(case_plan, case_index, case_variables) != _raw_bindings(
+                    plan, base_index, base_variables):
+                raise CalculationBlocked("exact-case raw or fixed source bindings differ from bundle")
+            case_values = _augment_literal_sources(source_path, source_hash, case_plan, trace,
+                                                   source_values.copy())
+            case_literals = {_address_key(address): case_values[_address_key(address)]
+                             for address in case_plan.get("adapter_source_literals", [])
+                             if _address_key(address) not in source_values}
+            case_names = _named_bindings(case_plan, case_index,
+                                         set(source_values) | set(case_literals))
+            if not {item["name"].casefold() for item in trace.get("names", [])} <= set(case_names):
+                raise CalculationBlocked("exact-case named source reference is unmapped")
+        validate_family_coverage(case_plan, case_profile, trace)
+        if "plan" not in artifacts:
+            base_formulas = {cell["address"].casefold(): cell["formula"]
+                             for cell in base_trace.get("cells", [])
+                             if cell.get("role") == "calculated_formula"}
+            case_formulas = {cell["address"].casefold(): cell["formula"]
+                             for cell in trace["cells"] if cell.get("role") == "calculated_formula"}
+            if base_formulas != case_formulas:
+                raise CalculationBlocked("exact-case formula members differ from bundled source")
+        def case_resolve_name(name: str, _sheet: str, _owner: str) -> str:
+            if name.casefold() not in case_names:
+                raise CalculationBlocked(f"named reference is not mapped: {name}")
+            return f"runtime.lookup_name(values, {name.casefold()!r})"
+        compiled = compile_mapped_families(case_plan, trace, case_resolve_name)
+        driver = render_grouped_driver(case_plan, compiled)
+        driver_sha = hashlib.sha256(driver.encode("utf-8")).hexdigest()
+        if "plan" not in artifacts and driver_sha != base_driver_sha:
+            raise CalculationBlocked("exact-case execution order differs from bundled driver")
+        proof = {"input_sha256": input_digest,
+                 "dependency_sha256": _canonical_hash(external_data),
+                 "trace_sha256": case["trace"]["sha256"],
+                 "raw_input_sha256": raw_digest,
+                 "producer_sha256": case["producer"]["sha256"]}
+        if "plan" in artifacts:
+            variant_id = f"v{len(variant_sources) + 1:04d}"
+            metadata = {"source_sha256": source_hash, "driver_sha256": driver_sha,
+                        "trace_sha256": case["trace"]["sha256"],
+                        "plan_sha256": case["plan"]["sha256"],
+                        "profile_sha256": case["profile"]["sha256"],
+                        "named_bindings": case_names,
+                        "extra_variable_shapes": {key: value["shape"] for key, value in extra_variables.items()},
+                        "source_literals": case_literals,
+                        "formula_cells": _formula_cell_bindings(case_plan, trace, case_index)}
+            proof.update({"variant_id": variant_id, "variant_metadata_sha256": _canonical_hash(metadata),
+                          "driver_sha256": driver_sha})
+            variant_sources.append({"variant_id": variant_id, "metadata": metadata,
+                                    "driver": driver, "compiled": compiled})
+        proofs.append(proof)
+    if (len({(item["input_sha256"], item["dependency_sha256"]) for item in proofs}) != len(proofs)
+            or hash_file(source_path) != source_hash):
+        raise CalculationBlocked("exact-case proofs duplicate a request or source changed")
+    return proofs
+
+
 def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dict[str, Any]],
                               external_bindings: list[dict[str, Any]],
                               trace_sha256: str, trace: dict[str, Any],
-                              source_values: dict[str, Any]) -> dict[str, Any]:
+                              source_values: dict[str, Any], *, source_path: Path | None = None,
+                              semantic_plan: dict[str, Any] | None = None,
+                              source_profile: dict[str, Any] | None = None,
+                              target_names: list[str] | None = None,
+                              names: dict[str, Any] | None = None,
+                              variant_sources: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     domain = definition.get("support_domain")
     if (definition.get("schema_version") != "step3.tool_interface.v1"
             or definition.get("contract_readiness", {}).get("status") != "defined"
-            or not isinstance(domain, dict) or domain.get("status") != "fixed_trace"
+            or not isinstance(domain, dict) or domain.get("status") not in {"fixed_trace", "exact_cases"}
             or domain.get("active_trace_sha256") != trace_sha256):
         raise CalculationBlocked("variable-input interface or fixed-trace support domain is incomplete or stale")
     objects = {item["variable_id"]: item for item in definition["objects"]}
@@ -344,6 +573,16 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
             mutable[name]["mutable_cells"] = cells
     if not mutable:
         raise CalculationBlocked("approved interface has no mutable raw business input")
+    verified_cases = None
+    if domain["status"] == "exact_cases":
+        if (source_path is None or semantic_plan is None or source_profile is None
+                or target_names is None or names is None):
+            raise CalculationBlocked("exact-case closure needs source, semantic, and target evidence")
+        verified_cases = _verified_case_layout(
+            domain.get("cases"), mutable, external_bindings, source_path,
+            semantic_plan, source_profile, trace, target_names, names, source_values,
+            variant_sources if variant_sources is not None else [],
+        )
     selection_cells = {_address_key(item["formula_cell"])
                        for kind in ("lookups", "branches", "dynamic_ranges")
                        for item in trace.get(kind, []) if isinstance(item, dict)
@@ -356,6 +595,8 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
     for lookup in trace.get("lookups", []):
         if isinstance(lookup, dict) and isinstance(lookup.get("formula_cell"), str):
             lookups_by_owner.setdefault(_address_key(lookup["formula_cell"]), []).append(lookup)
+    trace_cells = {_address_key(cell["address"]): cell for cell in trace.get("cells", [])
+                   if isinstance(cell, dict) and isinstance(cell.get("address"), str)}
     prerequisites: dict[str, list[dict[str, Any]]] = {}
     for edge in trace.get("edges", []):
         if isinstance(edge, dict) and isinstance(edge.get("consumer"), str):
@@ -363,7 +604,9 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
     mutable_addresses = {binding["address"] for spec in mutable.values() for binding in spec["bindings"]}
     external_addresses = {address for binding in external_bindings for address in binding["addresses"]}
     fixed_trace_values: dict[str, Any] = {}
-    pending, seen = [(address, address) for address in selection_cells], set()
+    pending, seen = ([(address, address) for address in selection_cells]
+                     if verified_cases is None else []), set()
+    verified_match_ranges: dict[str, set[str]] = {}
     for owner, lookups in lookups_by_owner.items():
         for lookup in lookups:
             if lookup.get("function") != "VLOOKUP":
@@ -381,7 +624,8 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
             continue
         seen.add((owner, address))
         if address in external_addresses:
-            raise CalculationBlocked("variable-input selection depends on an unverified external producer")
+            raise CalculationBlocked(
+                f"variable-input selection depends on an unverified external producer: {address} for {owner}")
         if address in mutable_addresses:
             if address not in source_values:
                 raise CalculationBlocked(f"fixed-trace selector has no saved raw value: {address}")
@@ -389,6 +633,34 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
         if address in lookups_by_owner and (address != owner or owner in control_cells
                                             or len(lookups_by_owner[address]) > 1):
             for lookup in lookups_by_owner[address]:
+                if lookup.get("function") == "MATCH":
+                    reference = _parse_reference(lookup.get("lookup_range", ""), "Main")
+                    formula = trace_cells.get(address, {})
+                    if (trace.get("source_sha256") != definition["bindings"]["source"]["workbook_sha256"]
+                            or formula.get("role") != "calculated_formula"
+                            or not isinstance(formula.get("formula"), str)
+                            or "MATCH(" not in formula["formula"].upper()
+                            or lookup.get("match_type") != 0 or reference is None or not reference.sheet
+                            or (reference.min_row != reference.max_row
+                                and reference.min_col != reference.max_col)
+                            or (reference.max_row - reference.min_row + 1)
+                            * (reference.max_col - reference.min_col + 1) > 10_000):
+                        raise CalculationBlocked(f"variable-input MATCH has no verified finite exact range: {address}")
+                    keys = [_address_key(cell) for cell in _addresses(reference.address)]
+                    if any(trace_cells.get(key, {}).get("role") != "source_value"
+                           or type(trace_cells[key].get("value")) not in (str, int, float, bool, type(None))
+                           for key in keys):
+                        raise CalculationBlocked(f"variable-input MATCH keys are not source-bound: {address}")
+                    matches = [index for index, key in enumerate(keys, 1)
+                               if _excel_compare(trace_cells[key]["value"], lookup.get("lookup_value")) == 0]
+                    vlookups = [item for item in lookups_by_owner[address]
+                                if item.get("function") == "VLOOKUP"]
+                    if (not matches or len(vlookups) != 1
+                            or vlookups[0].get("return_column") != matches[0]):
+                        raise CalculationBlocked(f"variable-input MATCH selection is unverified: {address}")
+                    verified_match_ranges.setdefault(address, set()).add(reference.address.casefold())
+                    pending.extend((key, owner) for key in keys)
+                    continue
                 if lookup.get("function") != "VLOOKUP":
                     raise CalculationBlocked("variable-input selection depends on an unverified lookup result")
                 table = _parse_reference(lookup.get("table_range", ""), "Main")
@@ -401,6 +673,11 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
         for edge in prerequisites.get(address, []):
             if edge.get("relationship") == "lookup_table":
                 continue  # The saved lookup footprint is handled through its key and selected return cells.
+            if (edge.get("relationship") == "range_read"
+                    and isinstance(edge.get("prerequisite"), str)
+                    and edge["prerequisite"].replace("$", "").casefold()
+                    in verified_match_ranges.get(address, set())):
+                continue  # Every key in this exact MATCH range was checked above.
             if edge.get("relationship") not in {"cell_reference", "array_formula_anchor"}:
                 raise CalculationBlocked(f"variable-input selection has an unsupported dependency: {address}")
             reference = _parse_reference(edge.get("prerequisite", ""), address.split("!", 1)[0])
@@ -412,6 +689,7 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
             "design": definition["bindings"]["design"], "input_boundary": definition["bindings"]["input_boundary"],
             "support_domain": domain, "mutable": mutable,
             "fixed_trace_source_values": fixed_trace_values,
+            **({"verified_cases": verified_cases} if verified_cases is not None else {}),
             "external_specs": {item["variable_id"]: {"shape": item["shape"], "axes": item["axes"],
                                 "value_type": item["value_type"], "allowed_range": item["allowed_range"],
                                 "allow_blank": item.get("allow_blank", False)}
@@ -518,6 +796,9 @@ def _augment_literal_sources(source_path: Path, source_hash: str, plan: dict[str
                 required_literals.add(_address_key(address))
     for binding in _raw_bindings(plan, source_index, variables):
         address = binding["address"]
+        requested.add(address)
+        required_literals.add(_address_key(address))
+    for address in plan.get("adapter_source_literals", []):
         requested.add(address)
         required_literals.add(_address_key(address))
     for record in plan.get("reference_resolution", {}).get("named_references", []):
@@ -974,11 +1255,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import math
 from pathlib import Path
 import modular_runtime as runtime
-from input_adapter import build_values, _canonical_hash
+from input_adapter import build_values, _allocate, _canonical_hash
 from pricing import run_pricing
 from formula_families import FAMILY_FUNCTIONS
 
@@ -1137,7 +1419,17 @@ def _variable_inputs(layout, inputs, external_data):
         _checked_axes(record["axes"], spec, variable_id)
         _checked_values(record["values"], spec, variable_id, allow_excel_error=True)
         external_values[variable_id] = record["values"]
-    return overrides, external_values, input_digest, _canonical_hash(external_data), contract
+    dependency_digest = _canonical_hash(external_data)
+    cases = contract.get("verified_cases")
+    if cases is not None:
+        selected = next((case for case in cases
+                         if case["input_sha256"] == input_digest
+                         and case["dependency_sha256"] == dependency_digest), None)
+        if selected is None:
+            raise runtime.CalculationBlocked("request has no verified formula, lookup, and dependency closure")
+        if "variant_id" in selected:
+            contract = {**contract, "selected_variant": selected}
+    return overrides, external_values, input_digest, dependency_digest, contract
 
 def run_model(inputs=None, external_data=None):
     base = Path(__file__).resolve().parent
@@ -1152,7 +1444,31 @@ def run_model(inputs=None, external_data=None):
     values = build_values(scenario_guard_sha256=SCENARIO_GUARD_SHA256, scenario_ids=SCENARIO_IDS,
                           metadata_seed_bindings_sha256=METADATA_SEED_BINDINGS_SHA256,
                           raw_overrides=overrides, external_overrides=external_values)
-    values = run_pricing(values, FAMILY_FUNCTIONS)
+    selected = contract.get("selected_variant") if contract is not None else None
+    if selected is None:
+        values = run_pricing(values, FAMILY_FUNCTIONS)
+    else:
+        variant_id = selected["variant_id"]
+        metadata = json.loads((base / f"variant_{variant_id}.json").read_text(encoding="utf-8"))
+        if (_canonical_hash(metadata) != selected["variant_metadata_sha256"]
+                or metadata["source_sha256"] != layout["source_sha256"]
+                or metadata["driver_sha256"] != selected["driver_sha256"]
+                or metadata["trace_sha256"] != selected["trace_sha256"]):
+            raise runtime.CalculationBlocked("selected formula variant metadata is stale")
+        if set(metadata["source_literals"]) & set(values["__source_values__"]):
+            raise runtime.CalculationBlocked("selected formula variant source literals overlap existing inputs")
+        values["__source_values__"].update(metadata["source_literals"])
+        for variable_id, shape in metadata["extra_variable_shapes"].items():
+            if variable_id in values:
+                raise runtime.CalculationBlocked("selected formula variant overwrites a logical variable")
+            values[variable_id] = _allocate(shape, f"uninitialized logical value: {variable_id}")
+        values["__names__"] = metadata["named_bindings"]
+        # The manifest hashes every variant; import only the selected driver for this request.
+        variant_families = importlib.import_module(f"formula_families_{variant_id}")
+        variant_pricing = importlib.import_module(f"pricing_{variant_id}")
+        values = variant_pricing.run_pricing(values, variant_families.FAMILY_FUNCTIONS)
+        layout = {**layout, "formula_cells": metadata["formula_cells"],
+                  "variable_shapes": {**layout["variable_shapes"], **metadata["extra_variable_shapes"]}}
     targets = {name: _json_value(runtime.at(values, variable_id, []))
                for name, variable_id in layout["target_bindings"].items()}
     calculated_variables = {}
@@ -1302,8 +1618,12 @@ def build_modular_bundle_files(
     names = _named_bindings(semantic_plan, index, raw_addresses)
     external_bindings = _external_bindings(semantic_plan, external_capture,
                                            external_capture_artifact_sha256, index)
+    variant_sources: list[dict[str, Any]] = []
     variable_contract = (_variable_contract_layout(variable_interface, raw_bindings,
-                                                    external_bindings, trace_sha256, trace, source_values)
+                                                    external_bindings, trace_sha256, trace, source_values,
+                                                    source_path=source_path, semantic_plan=semantic_plan,
+                                                    source_profile=source_profile, target_names=target_names,
+                                                    names=names, variant_sources=variant_sources)
                          if variable_interface is not None else None)
     if variable_contract is not None and variable_contract["source_sha256"] != source_sha256:
         raise CalculationBlocked("variable-input interface is bound to another source workbook")
@@ -1435,6 +1755,19 @@ def build_modular_bundle_files(
     pricing_source = ("from formula_families import FAMILY_FUNCTIONS\n\n" + driver +
                       "\ndef run(values):\n    return run_pricing(values, FAMILY_FUNCTIONS)\n")
     (bundle / "pricing.py").write_text(pricing_source, encoding="utf-8")
+    for variant in variant_sources:
+        variant_id = variant["variant_id"]
+        functions = variant["compiled"]["functions"]
+        variant_family_source = "import modular_runtime as runtime\n\n" + "\n\n".join(
+            functions[name] for name in sorted(functions))
+        variant_family_source += "\n\nFAMILY_FUNCTIONS = {\n" + "\n".join(
+            f"    {name!r}: {name}," for name in sorted(functions)) + "\n}\n"
+        (bundle / f"formula_families_{variant_id}.py").write_text(
+            variant_family_source, encoding="utf-8")
+        (bundle / f"pricing_{variant_id}.py").write_text(variant["driver"], encoding="utf-8")
+        (bundle / f"variant_{variant_id}.json").write_text(
+            json.dumps(variant["metadata"], indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+            encoding="utf-8")
     metadata_seed_bindings_sha256 = _canonical_hash(metadata_seed_bindings)
     (bundle / "model.py").write_text(
         _model_source(scenario_ids, _canonical_hash(scenario_guard),
@@ -1467,6 +1800,7 @@ def build_modular_bundle_files(
         "source_family_count": compiled["source_family_count"],
         "semantic_equation_group_count": family_manifest["semantic_equation_group_count"],
         "compiled_variant_count": compiled["function_count"],
+        "verified_request_variant_count": len(variant_sources),
         "business_input_count": raw_business_input_count + external_business_input_count,
         "raw_business_input_count": raw_business_input_count,
         "external_input_count": sum(len(binding["addresses"]) for binding in external_bindings),
@@ -1495,7 +1829,8 @@ def build_modular_bundle_files(
         "files": files, "runtime_dependencies": ["Python standard library only"],
         "source_workbook_at_runtime": False, "project_package_at_runtime": False,
         "formula_cache_inputs": False,
-        "scope": ("approved saved scenario plus guarded fixed-trace variable inputs"
+        "scope": ("saved scenario plus exact verified request variants"
+                  if variant_sources else "approved saved scenario plus guarded fixed-trace variable inputs"
                   if variable_contract is not None else "approved saved scenario and source-bound logical plan"),
         "variable_input_contract_sha256": (_canonical_hash(variable_contract)
                                            if variable_contract is not None else None),

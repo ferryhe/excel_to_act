@@ -466,12 +466,31 @@ def _support_domain(value: Any) -> dict[str, Any] | None:
     if value is None or value.get("support_domain") is None:
         return None
     domain = value["support_domain"]
-    _reject_fields(domain, {"status", "active_trace_sha256", "external_policy", "tolerances"},
+    _reject_fields(domain, {"status", "active_trace_sha256", "external_policy", "tolerances", "cases"},
                    "design.tool_interface.support_domain")
-    if (domain.get("status") != "fixed_trace" or not isinstance(domain.get("active_trace_sha256"), str)
+    if (domain.get("status") not in {"fixed_trace", "exact_cases"}
+            or not isinstance(domain.get("active_trace_sha256"), str)
             or len(domain["active_trace_sha256"]) != 64 or not all(
                 char in "0123456789abcdef" for char in domain["active_trace_sha256"])):
-        raise ValueError("variable support domain needs an approved fixed active-trace SHA-256")
+        raise ValueError("variable support domain needs an approved active-trace SHA-256")
+    if domain["status"] == "exact_cases":
+        cases = domain.get("cases")
+        if not isinstance(cases, list) or not cases:
+            raise ValueError("exact-case support needs bound trace and request artifacts")
+        for case in cases:
+            if not isinstance(case, dict) or set(case) not in ({
+                    "trace", "raw_request", "public_request", "producer"}, {
+                    "trace", "raw_request", "public_request", "producer", "plan", "profile"}):
+                raise ValueError("exact-case artifact references are incomplete")
+            for reference in case.values():
+                if (not isinstance(reference, dict) or set(reference) != {"path", "sha256"}
+                        or not isinstance(reference["path"], str) or not reference["path"]
+                        or not isinstance(reference["sha256"], str)
+                        or len(reference["sha256"]) != 64 or not all(
+                            char in "0123456789abcdef" for char in reference["sha256"])):
+                    raise ValueError("exact-case artifact path or SHA-256 is malformed")
+    elif "cases" in domain:
+        raise ValueError("fixed-trace support cannot declare exact-case artifacts")
     policies = domain.get("external_policy", {})
     tolerances = domain.get("tolerances")
     if (not isinstance(tolerances, dict) or set(tolerances) != {"absolute", "relative"}

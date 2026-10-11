@@ -32,7 +32,8 @@ from excel_to_act.steps.step4.external_inputs import validate_same_request_exter
 
 _PRIMARY_ADDRESSES = {"C3", "C4", "C6", "C7", "C8", "J48", "O26"}
 _STDLIB = {"__future__", "argparse", "collections", "copy", "dataclasses", "datetime", "functools",
-           "hashlib", "itertools", "json", "math", "operator", "pathlib", "re", "statistics", "sys", "typing"}
+           "hashlib", "importlib", "itertools", "json", "math", "operator", "pathlib", "re",
+           "statistics", "sys", "typing"}
 
 
 def _inside(path: Path, parent: Path) -> bool:

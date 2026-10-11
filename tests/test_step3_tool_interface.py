@@ -188,6 +188,23 @@ def test_variable_domain_declarations_need_exact_trace_producer_and_tolerances()
             "allowed_range": {"status": "enum", "values": [65, 65]}}]})
 
 
+def test_exact_case_domain_requires_complete_hashed_evidence() -> None:
+    reference = {"path": "case.json", "sha256": "b" * 64}
+    domain = {"status": "exact_cases", "active_trace_sha256": "a" * 64,
+              "cases": [{name: reference for name in
+                         ("trace", "raw_request", "public_request", "producer")}],
+              "external_policy": {}, "tolerances": {"absolute": 1e-12, "relative": 1e-12}}
+    validate_tool_interface_declarations({"objects": [_declaration("Count")],
+                                          "support_domain": domain})
+    with pytest.raises(ValueError, match="incomplete"):
+        validate_tool_interface_declarations({"objects": [_declaration("Count")],
+            "support_domain": {**domain, "cases": [{"trace": reference}]}})
+    with pytest.raises(ValueError, match="malformed"):
+        validate_tool_interface_declarations({"objects": [_declaration("Count")],
+            "support_domain": {**domain, "cases": [{**domain["cases"][0],
+                "producer": {"path": "case.json", "sha256": "bad"}}]}})
+
+
 def test_dependent_enum_and_per_cell_policies_are_explicit() -> None:
     count = {**_declaration("Count"), "value_type": "integer",
              "allowed_range": {"status": "declared", "minimum": 2, "maximum": 7}}

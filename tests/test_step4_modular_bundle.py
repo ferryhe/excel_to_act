@@ -18,6 +18,7 @@ from excel_to_act.steps.step3.calculation import CalculationBlocked
 from excel_to_act.steps.step4.generator import _smoke_bundle
 from excel_to_act.steps.step4.modular_bundle import (
     _augment_literal_sources,
+    _canonical_hash,
     _named_bindings,
     _raw_bindings,
     _variable_contract_layout,
@@ -25,7 +26,7 @@ from excel_to_act.steps.step4.modular_bundle import (
     add_adapter_metadata,
     build_modular_bundle_files,
 )
-from excel_to_act.steps.step4.modular_compiler import build_source_cell_index
+from excel_to_act.steps.step4.modular_compiler import build_source_cell_index, compile_formula_function
 from excel_to_act.steps.step4.modular_runtime import binary
 from excel_to_act.steps.step4 import modular_runtime as runtime
 
@@ -127,6 +128,37 @@ def test_fixed_trace_guard_includes_lookup_return_used_by_a_branch() -> None:
     assert contract["fixed_trace_source_values"] == {"main!B2": 12, "main!F1": 2}
 
 
+def test_fixed_trace_guard_verifies_finite_match_selected_vlookup_column() -> None:
+    definition = _variable_interface("a" * 64)
+    bindings = [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
+                for row in range(1, 4)]
+    bindings.append({"address": "main!F1", "variable_id": "raw.config", "indices": []})
+    trace = {"source_sha256": "a" * 64, "lookups": [
+        {"formula_cell": "Main!D1", "function": "MATCH", "lookup_range": "Main!H1:J1",
+         "lookup_value": "Blue", "match_type": 0},
+        {"formula_cell": "Main!D1", "function": "VLOOKUP", "table_range": "Main!A1:E3",
+         "lookup_column": 1, "return_column": 2, "matched_row": 2}],
+        "cells": [{"address": "Main!D1", "role": "calculated_formula",
+                   "formula": "=VLOOKUP(A1,A1:E3,MATCH(F1,H1:J1,0),FALSE)"},
+                  *[{"address": f"Main!{column}1", "role": "source_value", "value": value}
+                    for column, value in (("H", "Red"), ("I", "Blue"), ("J", "Green"))]],
+        "branches": [{"formula_cell": "Main!D1", "function": "IF", "selected_argument": 1}],
+        "edges": [{"consumer": "Main!D1", "prerequisite": "Main!F1",
+                   "relationship": "cell_reference"},
+                  {"consumer": "Main!D1", "prerequisite": "Main!H1:J1",
+                   "relationship": "range_read"}]}
+    saved = {"main!B1": 11, "main!B2": 12, "main!B3": 13, "main!F1": 2}
+    contract = _variable_contract_layout(definition, bindings, [], "t" * 64, trace, saved)
+    assert contract["fixed_trace_source_values"] == {"main!B2": 12, "main!F1": 2}
+    trace["cells"][2]["value"] = "Other"
+    with pytest.raises(CalculationBlocked, match="MATCH key|MATCH selection"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, trace, saved)
+    trace["cells"][2]["value"] = "Blue"
+    trace["lookups"][1]["return_column"] = 3
+    with pytest.raises(CalculationBlocked, match="MATCH selection"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, trace, saved)
+
+
 def test_partial_raw_table_contract_selects_only_declared_cells() -> None:
     definition = _variable_interface("a" * 64)
     value = next(item for item in definition["objects"] if item["variable_id"] == "raw.value")
@@ -148,6 +180,7 @@ def test_generated_value_checks_keep_partial_indices_and_dependent_enum_typed(
 ) -> None:
     adapter = types.ModuleType("input_adapter")
     adapter.build_values = lambda **_kwargs: None
+    adapter._allocate = lambda shape, missing: missing if not shape else [missing] * shape[0]
     adapter._canonical_hash = lambda value: hashlib.sha256(json.dumps(
         value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     pricing = types.ModuleType("pricing")
@@ -211,6 +244,123 @@ def test_generated_value_checks_keep_partial_indices_and_dependent_enum_typed(
     assert overrides == {"main!B1": "B", "main!C1": 7, "main!D1": 7}
     with pytest.raises(runtime.CalculationBlocked, match="approved values"):
         namespace["_variable_inputs"](layout, {**inputs, "Period": {"axes": [], "values": 8}}, {})
+    contract["verified_cases"] = [{"input_sha256": adapter._canonical_hash(inputs),
+                                    "dependency_sha256": adapter._canonical_hash({})}]
+    namespace["VARIABLE_CONTRACT_SHA256"] = adapter._canonical_hash(contract)
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": "a" * 64, "files": files,
+        "variable_input_contract_sha256": namespace["VARIABLE_CONTRACT_SHA256"]}), encoding="utf-8")
+    assert namespace["_variable_inputs"](layout, inputs, {})[2] == adapter._canonical_hash(inputs)
+    changed = {**inputs, "Table": {"axes": axes,
+                                   "values": [{"indices": [0, 1], "value": "A"}]}}
+    with pytest.raises(runtime.CalculationBlocked, match="no verified formula"):
+        namespace["_variable_inputs"](layout, changed, {})
+    assert namespace["_variable_inputs"](layout, inputs, {})[0] == overrides
+    contract["verified_cases"][0]["dependency_sha256"] = "b" * 64
+    namespace["VARIABLE_CONTRACT_SHA256"] = adapter._canonical_hash(contract)
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": "a" * 64, "files": files,
+        "variable_input_contract_sha256": namespace["VARIABLE_CONTRACT_SHA256"]}), encoding="utf-8")
+    with pytest.raises(runtime.CalculationBlocked, match="no verified formula"):
+        namespace["_variable_inputs"](layout, inputs, {})
+
+
+def test_generated_model_selects_only_exact_distinct_formula_variants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    source_hash = "a" * 64
+    input_records = {value: {"Choice": {"axes": [], "values": value}} for value in (1, 2, 3)}
+    dependency_hash = _canonical_hash({})
+    monkeypatch.setitem(sys.modules, "modular_runtime", runtime)
+    metadata = {}
+    for variant_id, address, increment in (("v0001", "main!B1", 10),
+                                           ("v0002", "main!C1", 100)):
+        family = types.ModuleType(f"formula_families_{variant_id}")
+        source = compile_formula_function(
+            "calculate", "=A1+10" if increment == 10 else "=A1+D1", "Main", address,
+            lambda reference, _sheet, _owner: ("values['raw.choice']" if reference.min_col == 1
+                                                else "runtime.source_literal(values, 'main!D1')"),
+            lambda _name, _sheet, _owner: "",
+        )
+        exec("import modular_runtime as runtime\n" + source, family.__dict__)
+        family.FAMILY_FUNCTIONS = {"calculate": family.calculate}
+        driver = types.ModuleType(f"pricing_{variant_id}")
+        driver.run_pricing = lambda values, functions: {
+            **values, "model.answer": functions["calculate"](values),
+        }
+        monkeypatch.setitem(sys.modules, family.__name__, family)
+        monkeypatch.setitem(sys.modules, driver.__name__, driver)
+        metadata[variant_id] = {
+            "source_sha256": source_hash, "driver_sha256": hashlib.sha256(source.encode()).hexdigest(),
+            "trace_sha256": increment.__str__().zfill(64), "plan_sha256": "b" * 64,
+            "profile_sha256": "c" * 64, "named_bindings": {},
+            "source_literals": {} if increment == 10 else {"main!D1": 100},
+            "extra_variable_shapes": {} if increment == 10 else {"extra.helper": []},
+            "formula_cells": [{"address": address, "variable_id": "model.answer", "indices": []}],
+        }
+    contract = {
+        "source_sha256": source_hash, "interface_sha256": "i" * 64,
+        "fixed_trace_source_values": {}, "support_domain": {"external_policy": {}},
+        "external_specs": {}, "outputs": {"properties": {}}, "output_provenance": {},
+        "mutable": {"Choice": {"variable_id": "raw.choice", "shape": [], "axes": [],
+                              "value_type": "integer", "allow_blank": False, "required": True,
+                              "default_policy": {"status": "none"},
+                              "allowed_range": {"status": "enum", "values": [1, 2, 3]},
+                              "bindings": [{"address": "main!A1", "indices": []}]}},
+        "verified_cases": [
+            {"input_sha256": _canonical_hash(input_records[value]),
+             "dependency_sha256": dependency_hash, "variant_id": variant_id,
+             "variant_metadata_sha256": _canonical_hash(metadata[variant_id]),
+             "driver_sha256": metadata[variant_id]["driver_sha256"],
+             "trace_sha256": metadata[variant_id]["trace_sha256"]}
+            for value, variant_id in ((1, "v0001"), (2, "v0002"))
+        ],
+    }
+    adapter = types.ModuleType("input_adapter")
+    adapter._canonical_hash = _canonical_hash
+    adapter._allocate = lambda shape, missing: missing if not shape else [missing] * shape[0]
+    adapter.build_values = lambda **kwargs: {
+        "raw.choice": kwargs["raw_overrides"]["main!A1"], "model.answer": 0,
+        "__source_values__": {"main!A1": kwargs["raw_overrides"]["main!A1"]},
+    }
+    pricing = types.ModuleType("pricing")
+    pricing.run_pricing = lambda _values, _functions: pytest.fail("stale base driver ran")
+    families = types.ModuleType("formula_families")
+    families.FAMILY_FUNCTIONS = {}
+    for name, module in (("modular_runtime", runtime), ("input_adapter", adapter),
+                         ("pricing", pricing), ("formula_families", families)):
+        monkeypatch.setitem(sys.modules, name, module)
+    layout = {"source_sha256": source_hash, "variable_contract": contract,
+              "target_bindings": {"Answer": "model.answer"},
+              "variable_shapes": {"model.answer": []}, "formula_cells": []}
+    files = {}
+    for filename, payload in {
+        "model.py": _model_source([], "s" * 64, "m" * 64, _canonical_hash(contract)),
+        "input_layout.json": json.dumps(layout), "source_values.json": "{}",
+        "pricing.py": "", "formula_families.py": "",
+        **{f"variant_{key}.json": json.dumps(value) for key, value in metadata.items()},
+        **{f"pricing_{key}.py": "" for key in metadata},
+        **{f"formula_families_{key}.py": "" for key in metadata},
+    }.items():
+        path = tmp_path / filename
+        path.write_text(payload, encoding="utf-8")
+        files[filename] = hashlib.sha256(path.read_bytes()).hexdigest()
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": source_hash, "files": files,
+        "variable_input_contract_sha256": _canonical_hash(contract),
+    }), encoding="utf-8")
+    namespace = {"__file__": str(tmp_path / "model.py")}
+    exec((tmp_path / "model.py").read_text(encoding="utf-8"), namespace)
+    assert namespace["run_model"](input_records[1], {})["targets"]["Answer"] == 11
+    assert namespace["run_model"](input_records[2], {})["targets"]["Answer"] == 102
+    assert namespace["run_model"](input_records[1], {})["cells"] == {"main!B1": 11}
+    with pytest.raises(runtime.CalculationBlocked, match="no verified formula"):
+        namespace["run_model"](input_records[3], {})
+    with pytest.raises(runtime.CalculationBlocked, match="external producer inputs"):
+        namespace["run_model"](input_records[1], {"stale": {}})
+    (tmp_path / "variant_v0001.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(runtime.CalculationBlocked, match="bundle asset changed"):
+        namespace["run_model"](input_records[1], {})
 
 
 def test_modular_bundle_runs_named_table_and_grouped_family_driver_in_isolation(tmp_path: Path) -> None:
@@ -758,6 +908,18 @@ def test_raw_binding_that_is_now_a_formula_is_rejected(tmp_path: Path) -> None:
          "source_extents": [{"ref": "Main!C1", "role": "raw_input",
                               "coordinate_mapping": {"kind": "scalar", "fixed_axes": []}}]},
     ]}
+    with pytest.raises(CalculationBlocked, match="declared raw source boundary is a formula cell"):
+        _augment_literal_sources(source_path, source_hash, plan, {"cells": []}, {})
+
+
+def test_declared_source_literal_is_read_and_formula_is_rejected(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.xlsx"
+    source_hash = _workbook(source_path)
+    plan = {"variables": [], "adapter_source_literals": ["Main!B2"]}
+    assert _augment_literal_sources(source_path, source_hash, plan, {"cells": []}, {}) == {
+        "main!B2": 12,
+    }
+    plan["adapter_source_literals"] = ["Main!C2"]
     with pytest.raises(CalculationBlocked, match="declared raw source boundary is a formula cell"):
         _augment_literal_sources(source_path, source_hash, plan, {"cells": []}, {})
 
