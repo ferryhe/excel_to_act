@@ -13,7 +13,8 @@ function Get-CellRecord($cell) {
     $formula = [string]$cell.Formula
     $value = $cell.Value2
     $errorCode = $null
-    if ($value -is [System.Runtime.InteropServices.ErrorWrapper]) {
+    if ($value -is [System.Runtime.InteropServices.ErrorWrapper] -or
+        ($value -is [int] -and $text -match '^#(NULL!|DIV/0!|VALUE!|REF!|NAME\?|NUM!|N/A|SPILL!|CALC!)$')) {
         $errorCode = $text
         $value = $null
     }
@@ -154,7 +155,8 @@ try {
         if ($cell.HasFormula) {
             throw "Oracle input is a formula: $($item.qualified_address)"
         }
-        $cell.Value2 = $item.value
+        $cell.GetType().InvokeMember('Value2', [System.Reflection.BindingFlags]::SetProperty,
+            $null, $cell, @($item.value)) | Out-Null
         $applied[[string]$item.qualified_address] = Get-CellRecord $cell
     }
 

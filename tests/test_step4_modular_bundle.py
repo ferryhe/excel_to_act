@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import types
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -20,6 +21,7 @@ from excel_to_act.steps.step4.modular_bundle import (
     _named_bindings,
     _raw_bindings,
     _variable_contract_layout,
+    _model_source,
     add_adapter_metadata,
     build_modular_bundle_files,
 )
@@ -123,6 +125,92 @@ def test_fixed_trace_guard_includes_lookup_return_used_by_a_branch() -> None:
                                          trace, {"main!B1": 11, "main!B2": 12, "main!B3": 13,
                                                  "main!F1": 2})
     assert contract["fixed_trace_source_values"] == {"main!B2": 12, "main!F1": 2}
+
+
+def test_partial_raw_table_contract_selects_only_declared_cells() -> None:
+    definition = _variable_interface("a" * 64)
+    value = next(item for item in definition["objects"] if item["variable_id"] == "raw.value")
+    value["mutable_cells"] = [{"indices": [1], "value_type": "number", "allow_blank": False,
+                               "allowed_range": {"status": "enum", "values": [12, 18]}}]
+    bindings = [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
+                for row in range(1, 4)]
+    bindings.append({"address": "main!F1", "variable_id": "raw.config", "indices": []})
+    contract = _variable_contract_layout(definition, bindings, [], "t" * 64, {},
+                                         {f"main!B{row}": row + 10 for row in range(1, 4)})
+    assert contract["mutable"]["Value"]["bindings"] == [bindings[1]]
+    value["mutable_cells"] = [{**value["mutable_cells"][0], "indices": [9]}]
+    with pytest.raises(CalculationBlocked, match="missing or duplicate per-cell"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, {}, {})
+
+
+def test_generated_value_checks_keep_partial_indices_and_dependent_enum_typed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    adapter = types.ModuleType("input_adapter")
+    adapter.build_values = lambda **_kwargs: None
+    adapter._canonical_hash = lambda value: hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    pricing = types.ModuleType("pricing")
+    pricing.run_pricing = lambda values, _functions: values
+    families = types.ModuleType("formula_families")
+    families.FAMILY_FUNCTIONS = {}
+    for name, module in (("modular_runtime", runtime), ("input_adapter", adapter),
+                         ("pricing", pricing), ("formula_families", families)):
+        monkeypatch.setitem(sys.modules, name, module)
+    namespace = {"__file__": "model.py"}
+    exec(_model_source([], "s" * 64, "m" * 64), namespace)
+    check = namespace["_checked_values"]
+    table = {"shape": [2, 2], "mutable_cells": [
+        {"indices": [0, 1], "value_type": "string", "allow_blank": False,
+         "allowed_range": {"status": "enum", "values": ["A", "B"]}}]}
+    assert check([{"indices": [0, 1], "value": "B"}], table, "Table") == {(0, 1): "B"}
+    with pytest.raises(runtime.CalculationBlocked, match="indices differ"):
+        check([{"indices": [1, 0], "value": "B"}], table, "Table")
+    with pytest.raises(runtime.CalculationBlocked, match="approved values"):
+        check([{"indices": [0, 1], "value": "C"}], table, "Table")
+    period = {"shape": [], "value_type": "integer", "allow_blank": False,
+              "allowed_range": {"status": "dependent_enum", "values": [1, 2],
+                                "variable_id": "term"}}
+    assert check(7, period, "Period", dependent_value=7) == {(): 7}
+    with pytest.raises(runtime.CalculationBlocked, match="approved values"):
+        check(8, period, "Period", dependent_value=7)
+    with pytest.raises(runtime.CalculationBlocked, match="invalid integer"):
+        check(True, period, "Period", dependent_value=True)
+    axes = [{"name": "row", "keys": ["first", "second"]},
+            {"name": "column", "keys": ["fixed", "choice"]}]
+    contract = {"source_sha256": "a" * 64, "fixed_trace_source_values": {},
+                "support_domain": {"external_policy": {}}, "external_specs": {},
+                "mutable": {
+                    "Table": {**table, "variable_id": "table", "axes": axes, "required": True,
+                              "allowed_range": {"status": "unbounded"},
+                              "default_policy": {"status": "none"},
+                              "bindings": [{"address": "main!B1", "indices": [0, 1]}]},
+                    "Term": {"shape": [], "variable_id": "term", "axes": [], "value_type": "integer",
+                             "allowed_range": {"status": "declared", "minimum": 2, "maximum": 7},
+                             "required": True, "default_policy": {"status": "none"},
+                             "bindings": [{"address": "main!C1", "indices": []}]},
+                    "Period": {**period, "variable_id": "period", "axes": [], "required": True,
+                               "default_policy": {"status": "none"},
+                               "bindings": [{"address": "main!D1", "indices": []}]}}}
+    namespace["VARIABLE_CONTRACT_SHA256"] = adapter._canonical_hash(contract)
+    namespace["__file__"] = str(tmp_path / "model.py")
+    files = {}
+    for filename in ("model.py", "input_layout.json", "source_values.json",
+                     "pricing.py", "formula_families.py"):
+        path = tmp_path / filename
+        path.write_text("{}", encoding="utf-8")
+        files[filename] = hashlib.sha256(path.read_bytes()).hexdigest()
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": "a" * 64, "files": files,
+        "variable_input_contract_sha256": namespace["VARIABLE_CONTRACT_SHA256"]}), encoding="utf-8")
+    layout = {"source_sha256": "a" * 64, "variable_contract": contract}
+    inputs = {"Table": {"axes": axes, "values": [{"indices": [0, 1], "value": "B"}]},
+              "Term": {"axes": [], "values": 7}, "Period": {"axes": [], "values": 7}}
+    overrides, _external, _digest, _dependency, _contract = namespace["_variable_inputs"](
+        layout, inputs, {})
+    assert overrides == {"main!B1": "B", "main!C1": 7, "main!D1": 7}
+    with pytest.raises(runtime.CalculationBlocked, match="approved values"):
+        namespace["_variable_inputs"](layout, {**inputs, "Period": {"axes": [], "values": 8}}, {})
 
 
 def test_modular_bundle_runs_named_table_and_grouped_family_driver_in_isolation(tmp_path: Path) -> None:
@@ -239,6 +327,39 @@ def test_modular_bundle_runs_named_table_and_grouped_family_driver_in_isolation(
     baseline_result = json.loads((isolated / "second-result.json").read_text(encoding="utf-8"))
     assert varied_result["targets"]["Answer"] == 25
     assert baseline_result["targets"]["Answer"] == 20
+    partial_interface = _variable_interface(source_hash)
+    next(item for item in partial_interface["objects"] if item["variable_id"] == "raw.value")[
+        "mutable_cells"] = [{"indices": [1], "value_type": "number", "allow_blank": False,
+                            "allowed_range": {"status": "enum", "values": [12, 25]}}]
+    partial = build_modular_bundle_files(
+        semantic_plan=plan, source_profile=profile, trace=trace, raw_source_values=raw_values,
+        source_path=source_path, semantic_plan_path=tmp_path / "semantic_plan.json",
+        source_profile_path=tmp_path / "source_profile.json", semantic_map_path=tmp_path / "semantic_map.json",
+        revision_dir=tmp_path / "partial-revision", target_names=["Answer"],
+        path_coverage={"implemented_path_ids": []}, source_sha256=source_hash,
+        design_sha256="d" * 64, semantic_plan_sha256="p" * 64, source_profile_sha256="f" * 64,
+        trace_sha256="t" * 64, trace_path=tmp_path / "trace.json", trace_source="synthetic_fixture",
+        scenario_ids=["synthetic"], variable_interface=partial_interface)
+    partial_bundle = Path(partial["bundle"])
+    partial_request = tmp_path / "partial-request.json"
+    partial_request.write_text(json.dumps({"inputs": {"Value": {"axes": [{"name": "year", "keys": [1, 2, 3]}],
+        "values": [{"indices": [1], "value": 25}]}}, "external_data": {}}), encoding="utf-8")
+    partial_run = subprocess.run([sys.executable, "model.py", "--inputs", str(partial_request),
+                                  "--out", str(tmp_path / "partial-result.json")],
+                                 cwd=partial_bundle, capture_output=True, text=True, check=False)
+    assert partial_run.returncode == 0, partial_run.stderr
+    partial_result = json.loads((tmp_path / "partial-result.json").read_text(encoding="utf-8"))
+    assert partial_result["targets"]["Answer"] == 25
+    assert partial_result["raw_inputs"]["main!B2"] == 25
+    assert json.loads((partial_bundle / "source_values.json").read_text(encoding="utf-8"))[
+        "main!B1"] == 11
+    assert json.loads((partial_bundle / "source_values.json").read_text(encoding="utf-8"))[
+        "main!B3"] == 13
+    partial_request.write_text(json.dumps({"inputs": {"Value": {"axes": [{"name": "year", "keys": [1, 2, 3]}],
+        "values": [{"indices": [0], "value": 25}]}}, "external_data": {}}), encoding="utf-8")
+    rejected_fixed = subprocess.run([sys.executable, "model.py", "--inputs", str(partial_request)],
+                                    cwd=partial_bundle, capture_output=True, text=True, check=False)
+    assert rejected_fixed.returncode != 0 and "indices differ" in rejected_fixed.stderr
     assert "main!e2" not in {address.casefold() for address in built["manifest"]["formula_addresses"]}
     assert varied_result["raw_inputs"]["main!F1"] == 2
     assert json.loads((bundle / "input_layout.json").read_text(encoding="utf-8"))[

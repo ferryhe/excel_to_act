@@ -9,7 +9,9 @@ from typer.testing import CliRunner
 from excel_to_act.interfaces.cli import app
 from excel_to_act.steps import conversion_workflow as workflow
 from excel_to_act.steps.step3.input_boundary import confirmed_boundary_reference
-from excel_to_act.steps.step3.tools.interface import export_tool_interface, validate_tool_interface_declarations
+from excel_to_act.steps.step3.tools.interface import (
+    _build_contract, export_tool_interface, validate_tool_interface_declarations,
+)
 
 
 def _approved_workflow(tmp_path: Path, *, declarations: list[dict] | None = None,
@@ -184,6 +186,31 @@ def test_variable_domain_declarations_need_exact_trace_producer_and_tolerances()
     with pytest.raises(ValueError, match="distinct finite scalar values"):
         validate_tool_interface_declarations({"objects": [{**declaration,
             "allowed_range": {"status": "enum", "values": [65, 65]}}]})
+
+
+def test_dependent_enum_and_per_cell_policies_are_explicit() -> None:
+    count = {**_declaration("Count"), "value_type": "integer",
+             "allowed_range": {"status": "declared", "minimum": 2, "maximum": 7}}
+    period = {**_declaration("Period"), "value_type": "integer",
+              "allowed_range": {"status": "dependent_enum", "values": [1, 2],
+                                "variable_id": "count"}}
+    table = {**_declaration("Grid"), "mutable_cells": [
+        {"indices": [0, 1], "value_type": "string", "allow_blank": False,
+         "allowed_range": {"status": "enum", "values": ["A", "B"]}}]}
+    validate_tool_interface_declarations({"objects": [count, period, table]})
+    with pytest.raises(ValueError, match="nonnegative indices"):
+        validate_tool_interface_declarations({"objects": [{**table, "mutable_cells": [
+            {**table["mutable_cells"][0], "indices": [True, 1]}]}]})
+    with pytest.raises(ValueError, match="dependent enum needs a variable_id"):
+        validate_tool_interface_declarations({"objects": [{**period,
+            "allowed_range": {"status": "dependent_enum", "values": [1]}}]})
+    self_referencing = {**period, "variable_id": "period",
+                        "allowed_range": {"status": "dependent_enum", "values": [1],
+                                          "variable_id": "period"}}
+    boundary = {"variables": [{"variable_id": "period", "logical_name": "Period",
+                               "kind": "scalar", "shape": [], "axes": []}]}
+    with pytest.raises(ValueError, match="dependent enum needs a mutable scalar"):
+        _build_contract({"design": {"tool_interface": {"objects": [self_referencing]}}}, boundary)
 
 
 def test_cli_reports_generation_without_execution_claim(tmp_path: Path) -> None:

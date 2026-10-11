@@ -216,11 +216,22 @@ def _build_contract(design: dict[str, Any], boundary: dict[str, Any],
                 or len(axes) != len(shape)
                 or any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in shape)):
             raise ValueError(f"boundary variable {variable_id} has inconsistent kind, shape, or axes")
+        cells = declaration.get("mutable_cells")
+        if cells is not None:
+            if mutability != "mutable" or not shape or requiredness is not True or default_policy.get("status") != "none":
+                raise ValueError(f"{logical_name}: per-cell inputs must be required mutable arrays without a default")
+            indices = [tuple(cell["indices"]) for cell in cells]
+            if (len(set(indices)) != len(indices) or any(len(index) != len(shape) or any(
+                    coordinate >= shape[axis] for axis, coordinate in enumerate(index))
+                    for index in indices)):
+                raise ValueError(f"{logical_name}: mutable cell indices are duplicate or outside the shape")
         item = {"variable_id": variable_id, "logical_name": logical_name, "kind": kind,
                 "shape": shape, "axes": axes, "mutability": mutability,
                 "value_type": value_type, "required": requiredness, "default_policy": default_policy,
                 "allowed_range": allowed_range, "units": units, "unit_basis": unit_basis,
                 "allow_blank": declaration.get("allow_blank", False)}
+        if cells is not None:
+            item["mutable_cells"] = cells
         objects.append(item)
         source_map.setdefault("inputs", {})[variable_id] = {
             key: variable[key] for key in ("logical_name", "group_id", "role", "logical_role",
@@ -253,6 +264,16 @@ def _build_contract(design: dict[str, Any], boundary: dict[str, Any],
     if declarations:
         raise ValueError("tool_interface declares boundary variables that are not in the current input boundary: "
                          + ", ".join(sorted(declarations)))
+    by_id = {item["variable_id"]: item for item in objects}
+    for item in objects:
+        policy = item["allowed_range"]
+        if policy["status"] == "dependent_enum":
+            dependency = by_id.get(policy["variable_id"])
+            if (item["shape"] or dependency is None or dependency is item
+                    or dependency["mutability"] != "mutable" or dependency["shape"]
+                    or dependency["value_type"] != item["value_type"]
+                    or dependency["allowed_range"]["status"] in {"unknown", "dependent_enum"}):
+                raise ValueError(f"{item['logical_name']}: dependent enum needs a mutable scalar of the same type")
     objects.sort(key=lambda item: (item["logical_name"].casefold(), item["variable_id"]))
     source_map["inputs"] = {key: source_map.get("inputs", {})[key]
                              for key in sorted(source_map.get("inputs", {}))}
@@ -312,7 +333,7 @@ def _design_object_declarations(value: Any) -> dict[str, dict[str, Any]]:
         raise ValueError("design.tool_interface.objects must be a list")
     result: dict[str, dict[str, Any]] = {}
     allowed = {"variable_id", "mutability", "value_type", "required", "default_policy",
-               "allowed_range", "units", "unit_basis", "allow_blank"}
+               "allowed_range", "units", "unit_basis", "allow_blank", "mutable_cells"}
     for index, declaration in enumerate(objects):
         _reject_fields(declaration, allowed, f"design.tool_interface.objects[{index}]")
         variable_id = declaration.get("variable_id")
@@ -334,6 +355,24 @@ def _design_object_declarations(value: Any) -> dict[str, dict[str, Any]]:
         _validate_default_policy(default_policy, variable_id)
         allowed_range = declaration.get("allowed_range", {"status": "unknown"})
         _validate_allowed_range(allowed_range, value_type, variable_id)
+        if "mutable_cells" in declaration:
+            cells = declaration["mutable_cells"]
+            if not isinstance(cells, list) or not cells:
+                raise ValueError(f"tool_interface {variable_id} mutable_cells must be nonempty")
+            for cell in cells:
+                _reject_fields(cell, {"indices", "value_type", "allowed_range", "allow_blank"},
+                               f"tool_interface {variable_id} mutable cell")
+                indices = cell.get("indices")
+                if not isinstance(indices, list) or not indices or any(
+                        type(index) is not int or index < 0 for index in indices):
+                    raise ValueError(f"tool_interface {variable_id} mutable cell needs nonnegative indices")
+                if cell.get("value_type") not in _TYPES or not isinstance(cell.get("allow_blank"), bool):
+                    raise ValueError(f"tool_interface {variable_id} mutable cell needs type and blank policy")
+                _validate_allowed_range(cell.get("allowed_range"), cell["value_type"], variable_id)
+                if cell["allowed_range"]["status"] == "unknown":
+                    raise ValueError(f"tool_interface {variable_id} mutable cell needs an approved range policy")
+                if cell["allowed_range"]["status"] == "dependent_enum":
+                    raise ValueError(f"tool_interface {variable_id} dependent enum is scalar-only")
         result[variable_id] = {**declaration, "value_type": value_type,
                                "default_policy": default_policy, "allowed_range": allowed_range}
     return result
@@ -347,13 +386,17 @@ def _validate_default_policy(value: Any, variable_id: str) -> None:
 
 
 def _validate_allowed_range(value: Any, value_type: str, variable_id: str) -> None:
-    if not isinstance(value, dict) or value.get("status") not in {"unknown", "unbounded", "declared", "enum"}:
+    if not isinstance(value, dict) or value.get("status") not in {"unknown", "unbounded", "declared", "enum", "dependent_enum"}:
         raise ValueError(f"tool_interface {variable_id} allowed_range needs an explicit status")
     status = value["status"]
     allowed = ({"status", "minimum", "maximum"} if status == "declared" else
+               {"status", "values", "variable_id"} if status == "dependent_enum" else
                {"status", "values"} if status == "enum" else {"status"})
     _reject_fields(value, allowed, f"tool_interface {variable_id} allowed_range")
-    if status == "enum":
+    if status in {"enum", "dependent_enum"}:
+        if status == "dependent_enum" and (not isinstance(value.get("variable_id"), str)
+                                            or not value["variable_id"]):
+            raise ValueError(f"tool_interface {variable_id} dependent enum needs a variable_id")
         values = value.get("values")
         if (not isinstance(values, list) or not values
                 or any(item is not None and type(item) not in {bool, int, float, str} for item in values)
@@ -384,7 +427,12 @@ def _parameter_schema(variable: dict[str, Any], declaration: dict[str, Any]) -> 
     kind, shape = variable["kind"], variable["shape"]
     value_type = declaration.get("value_type", "unknown")
     allowed_range = declaration.get("allowed_range", {"status": "unknown"})
-    schema = _shape_schema(shape, value_type, allowed_range)
+    cells = declaration.get("mutable_cells")
+    schema = ({"type": "array", "minItems": len(cells), "maxItems": len(cells),
+               "items": {"type": "object", "properties": {"indices": {"type": "array"},
+                                                      "value": {}},
+                         "required": ["indices", "value"], "additionalProperties": False}}
+              if cells is not None else _shape_schema(shape, value_type, allowed_range))
     schema.update({"x-kind": kind, "x-shape": shape, "x-axes": variable["axes"],
                    "x-mutability": declaration["mutability"],
                    "x-required-policy": declaration.get("required", "unknown"),
@@ -393,6 +441,8 @@ def _parameter_schema(variable: dict[str, Any], declaration: dict[str, Any]) -> 
                    "x-units": declaration.get("units", "unknown"),
                    "x-unit-basis": declaration.get("unit_basis", "unknown"),
                    "x-allow-blank": declaration.get("allow_blank", False)})
+    if cells is not None:
+        schema["x-mutable-cells"] = cells
     return schema
 
 

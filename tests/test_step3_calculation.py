@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -311,6 +313,36 @@ def test_oracle_requires_a_bounded_request_and_packaged_script(tmp_path: Path) -
     result = calculation.capture_excel_oracle(Path(__file__), tmp_path / "oracle", targets=[], ranges=[])
     assert result["status"] == "blocked"
     assert "at least one" in result["reason"]
+
+
+@pytest.mark.skipif(os.name != "nt" or not shutil.which("powershell.exe"),
+                    reason="requires Windows Excel automation")
+def test_native_oracle_writes_mixed_literal_types(tmp_path: Path) -> None:
+    source = tmp_path / "mixed.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Inputs"
+    sheet["A1"], sheet["A2"], sheet["A3"] = 0, "A", 0.125
+    sheet["A4"], sheet["A5"] = "filled", False
+    sheet["B1"] = "=A1+A3"
+    workbook.defined_names.add(DefinedName("Answer", attr_text="Inputs!$B$1"))
+    workbook.save(source)
+    workbook.close()
+
+    result = calculation.capture_excel_oracle(
+        source, tmp_path.parent / f"{tmp_path.name}-oracle", targets=["Answer"],
+        ranges=["Inputs!A1:A5"], input_overrides=[
+            {"address": "Inputs!A1", "value": 2},
+            {"address": "Inputs!A2", "value": "B"},
+            {"address": "Inputs!A3", "value": 0.123456},
+            {"address": "Inputs!A4", "value": None},
+            {"address": "Inputs!A5", "value": True},
+        ], input_sha256="a" * 64, scenario_id="mixed-literals")
+    assert result["status"] == "pass", result
+    captured = json.loads(Path(result["artifacts"][0]).read_text(encoding="utf-8"))
+    assert [captured["applied_inputs"][f"Inputs!A{row}"]["value"]
+            for row in range(1, 6)] == [2, "B", 0.123456, None, True]
+    assert captured["named_targets"]["Answer"]["value"] == pytest.approx(2.123456)
 
 
 def test_native_oracle_resolves_requested_sheet_names_case_insensitively(

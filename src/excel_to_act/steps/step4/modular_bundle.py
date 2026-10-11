@@ -325,15 +325,23 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
             raise CalculationBlocked(f"mutable input shares a raw source cell: {name}")
         shape = item["shape"]
         indices = [tuple(binding["indices"]) for binding in bindings]
-        if (len(indices) != (math.prod(shape) if shape else 1) or len(set(indices)) != len(indices)
+        cells = item.get("mutable_cells")
+        selected = ({tuple(cell["indices"]) for cell in cells} if cells is not None else set(indices))
+        if (len(indices) != (math.prod(shape) if shape else 1) and cells is None
+                or len(set(indices)) != len(indices)
                 or any(len(index) != len(shape) or any(
                     coordinate < 0 or coordinate >= shape[axis]
                     for axis, coordinate in enumerate(index)) for index in indices)):
             raise CalculationBlocked(f"mutable input has incomplete or duplicate source-axis bindings: {name}")
+        if cells is not None and (len(selected) != len(cells) or not selected <= set(indices)):
+            raise CalculationBlocked(f"mutable input has missing or duplicate per-cell source bindings: {name}")
+        bindings = [binding for binding in bindings if tuple(binding["indices"]) in selected]
         mutable[name] = {"variable_id": variable_id, "shape": shape, "axes": item["axes"],
                          "value_type": item["value_type"], "required": item["required"],
                          "default_policy": item["default_policy"], "allowed_range": item["allowed_range"],
                          "allow_blank": item.get("allow_blank", False), "bindings": bindings}
+        if cells is not None:
+            mutable[name]["mutable_cells"] = cells
     if not mutable:
         raise CalculationBlocked("approved interface has no mutable raw business input")
     selection_cells = {_address_key(item["formula_cell"])
@@ -1003,15 +1011,27 @@ def _leaves(value, shape, label):
             for position, item in enumerate(value)
             for indices, leaf in _leaves(item, shape[1:], label)]
 
-def _checked_values(value, spec, label, allow_excel_error=False):
-    leaves = _leaves(value, spec["shape"], label)
-    policy = spec["allowed_range"]
-    for _indices, leaf in leaves:
+def _checked_values(value, spec, label, allow_excel_error=False, dependent_value=None):
+    cells = spec.get("mutable_cells")
+    if cells is None:
+        leaves = _leaves(value, spec["shape"], label)
+        policies = [(indices, leaf, spec) for indices, leaf in leaves]
+    else:
+        if not isinstance(value, list) or len(value) != len(cells):
+            raise runtime.CalculationBlocked(f"{label} needs exactly its declared mutable cells")
+        policies = []
+        for record, cell in zip(value, cells):
+            if (not isinstance(record, dict) or set(record) != {"indices", "value"}
+                    or _canonical_hash(record["indices"]) != _canonical_hash(cell["indices"])):
+                raise runtime.CalculationBlocked(f"{label} mutable cell indices differ from the approved contract")
+            policies.append((tuple(cell["indices"]), record["value"], cell))
+    for _indices, leaf, leaf_spec in policies:
+        policy = leaf_spec["allowed_range"]
         if (allow_excel_error and isinstance(leaf, dict) and set(leaf) == {"excel_error"}
                 and isinstance(leaf["excel_error"], str) and leaf["excel_error"].startswith("#")):
             continue
-        value_type = spec["value_type"]
-        valid = (leaf is None and spec.get("allow_blank") is True
+        value_type = leaf_spec["value_type"]
+        valid = (leaf is None and leaf_spec.get("allow_blank") is True
                  or value_type == "boolean" and type(leaf) is bool
                  or value_type == "integer" and type(leaf) is int
                  or value_type == "number" and type(leaf) is int and abs(leaf) < 10**308
@@ -1023,12 +1043,15 @@ def _checked_values(value, spec, label, allow_excel_error=False):
                 "minimum" in policy and leaf < policy["minimum"] or
                 "maximum" in policy and leaf > policy["maximum"]):
             raise runtime.CalculationBlocked(f"{label} is outside its approved range")
-        if policy["status"] == "enum" and leaf is not None and not any(
-                type(leaf) is type(choice) and leaf == choice for choice in policy["values"]):
+        choices = policy.get("values", [])
+        if policy["status"] == "dependent_enum":
+            choices = [*choices, dependent_value]
+        if policy["status"] in ("enum", "dependent_enum") and leaf is not None and not any(
+                type(leaf) is type(choice) and leaf == choice for choice in choices):
             raise runtime.CalculationBlocked(f"{label} is outside its approved values")
-        if policy["status"] not in ("declared", "enum", "unbounded"):
+        if policy["status"] not in ("declared", "enum", "dependent_enum", "unbounded"):
             raise runtime.CalculationBlocked(f"{label} has no approved range policy")
-    return dict(leaves)
+    return {indices: leaf for indices, leaf, _spec in policies}
 
 def _checked_axes(actual, spec, label):
     if not isinstance(actual, list) or len(actual) != len(spec["shape"]):
@@ -1082,8 +1105,18 @@ def _variable_inputs(layout, inputs, external_data):
         if not isinstance(record, dict) or set(record) != {"values", "axes"}:
             raise runtime.CalculationBlocked(f"{name} must have values and axes")
         _checked_axes(record["axes"], spec, name)
-        leaves = _checked_values(record["values"], spec, name)
         effective[name] = record
+    by_id = {spec["variable_id"]: name for name, spec in specs.items()}
+    for name, spec in specs.items():
+        policy = spec["allowed_range"]
+        dependent_value = None
+        if policy["status"] == "dependent_enum":
+            dependency = by_id.get(policy["variable_id"])
+            if dependency is None or specs[dependency]["shape"]:
+                raise runtime.CalculationBlocked(f"{name} has an unsupported dependent enum contract")
+            dependent_value = effective[dependency]["values"]
+        leaves = _checked_values(effective[name]["values"], spec, name,
+                                 dependent_value=dependent_value)
         for binding in spec["bindings"]:
             overrides[binding["address"]] = leaves[tuple(binding["indices"])]
     input_digest = _canonical_hash(effective)
