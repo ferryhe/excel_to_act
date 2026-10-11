@@ -23,6 +23,10 @@ from excel_to_act.steps.conversion_workflow import (
 from excel_to_act.steps.step3.workflow import _load_context, _read_stage
 from excel_to_act.steps.step3.input_boundary import confirmed_boundary_reference, _require_bound_workflow
 from excel_to_act.steps.step3.calculation import _parse_reference
+from excel_to_act.steps.step3.tools.interface import (
+    validate_output_interface_declarations,
+    validate_tool_interface_declarations,
+)
 
 
 _STATIC_ARTIFACTS = {
@@ -178,9 +182,11 @@ def create_design_report(analysis_dir: Path, design_path: Path, workflow_dir: Pa
 
 
 def _validate_design_content(design: dict[str, Any]) -> None:
+    validate_tool_interface_declarations(design.get("tool_interface"))
     targets = design.get("targets")
     if not isinstance(targets, list) or not targets:
         raise ValueError("design must declare at least one target")
+    validate_output_interface_declarations(targets)
     target_ids: set[str] = set()
     orders: list[int] = []
     for target in targets:
@@ -374,11 +380,26 @@ def _design_evidence_markdown(value: dict[str, Any]) -> str:
     for target in sorted(design["targets"], key=lambda item: item["result_order"]):
         lines.append(
             f"- **{target['target_id']}** · `{target['selector']}` · order {target['result_order']} · "
-            f"shape {display_report_value(target.get('shape'))} · units {display_report_value(target.get('units'))} · "
+            f"shape {display_report_value(target.get('shape'))} · value type {display_report_value(target.get('value_type'), 'unknown')} · "
+            f"units {display_report_value(target.get('units'))} · "
             f"axes {display_report_axes(target)}"
         )
         if target.get("location"):
             lines.append(f"  - Source location: `{target['location']}`")
+    tool_interface = design.get("tool_interface")
+    lines.extend(["", "## Tool-interface declarations", ""])
+    if isinstance(tool_interface, dict) and tool_interface.get("objects"):
+        lines.append("These declarations are per logical input-boundary object. Unspecified facts remain unknown in the derived interface.")
+        for item in tool_interface["objects"]:
+            lines.append(
+                f"- **{item['variable_id']}** · mutability `{item['mutability']}` · "
+                f"value type `{item.get('value_type', 'unknown')}` · "
+                f"required `{item.get('required', 'unknown')}` · "
+                f"default `{json.dumps(item.get('default_policy', {'status': 'unknown'}), ensure_ascii=False, sort_keys=True)}` · "
+                f"allowed range `{json.dumps(item.get('allowed_range', {'status': 'unknown'}), ensure_ascii=False, sort_keys=True)}`"
+            )
+    else:
+        lines.append("No per-object tool-interface declarations were supplied; the derived contract will mark those facts unknown and block runtime readiness.")
     coverage = design.get("coverage", {})
     known_ids = coverage.get("known_path_ids")
     known_count = len(known_ids) if isinstance(known_ids, list) else None

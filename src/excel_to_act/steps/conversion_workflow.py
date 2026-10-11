@@ -1148,7 +1148,47 @@ def workflow_status(root: Path) -> dict[str, Any]:
     return {"schema_version": "conversion.workflow_status.v1", "workflow": str(root),
             "source": manifest.get("source"), "mode": manifest.get("mode", "production"),
             "stages": stages, "input_boundary": input_boundary_status(root, manifest),
+            "tool_interface": _tool_interface_status(root, manifest, stages[2]),
             "next_permitted_stage": next_stage}
+
+
+def _tool_interface_status(root: Path, manifest: dict[str, Any], design_state: dict[str, Any]) -> dict[str, Any]:
+    entries = manifest.get("tool_interfaces", [])
+    if not entries:
+        return {"status": "pending"}
+    if not isinstance(entries, list) or not isinstance(entries[-1], dict):
+        return {"status": "stale"}
+    entry = entries[-1]
+    revision = current_revision(manifest, 3)
+    pointer = manifest.get("input_boundary", {})
+    boundary_state = input_boundary_status(root, manifest)
+    bindings = entry.get("bindings", {})
+    current = revision is not None and design_state.get("status") == "approved" and (
+        boundary_state.get("status") == "input_boundary_confirmed")
+    if current:
+        source = {key: manifest["source"].get(key) for key in
+                  ("source_id", "run_id", "workbook_sha256")}
+        def approvals(state: dict[str, Any]) -> dict[str, Any]:
+            return {key: state.get(key) for key in
+                    ("reviewer_pair", "agent", "human", "typesafe")}
+        current = (bindings.get("source") == source
+                   and bindings.get("design") == {"revision": revision["revision"],
+                       "artifact": revision["artifact"], "review_receipts": approvals(design_state)}
+                   and bindings.get("input_boundary") == {"revision": pointer.get("revision"),
+                       "boundary_sha256": pointer.get("boundary_sha256"),
+                       "artifact": pointer.get("artifact"),
+                       "review_receipts": approvals(boundary_state)})
+    if current:
+        for kind in ("json", "md"):
+            artifact = entry.get("artifact", {})
+            path = (root / artifact.get(kind, "")).resolve()
+            if (not path.is_relative_to(root) or not path.is_file()
+                    or hash_file(path) != artifact.get(f"{kind}_sha256")):
+                current = False
+                break
+    return ({"status": "interface_generated", "message": "interface generated",
+             "schema_id": entry.get("schema_id"), "definition_sha256": entry.get("definition_sha256")}
+            if current else {"status": "stale"})
 
 
 def _now() -> str:
