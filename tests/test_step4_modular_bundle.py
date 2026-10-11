@@ -128,6 +128,33 @@ def test_fixed_trace_guard_includes_lookup_return_used_by_a_branch() -> None:
     assert contract["fixed_trace_source_values"] == {"main!B2": 12, "main!F1": 2}
 
 
+def test_derived_seed_alias_must_match_an_approved_fixed_source_cell() -> None:
+    definition = _variable_interface("a" * 64)
+    bindings = ([{"address": f"main!A{row}", "variable_id": "raw.key", "indices": [row - 1]}
+                 for row in range(1, 4)]
+                + [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
+                   for row in range(1, 4)]
+                + [{"address": "main!F1", "variable_id": "raw.config", "indices": []},
+                   {"address": "main!A1", "variable_id": "state", "indices": [0]}])
+    plan = {"variables": [{"variable_id": "state", "role": "derived", "initial_condition": {
+        "input_variable_id": "raw.key", "input_index": [0], "logical_index": 0,
+        "seed_ref": "Main!A1"}}]}
+    saved = {**{f"main!A{row}": row for row in range(1, 4)},
+             **{f"main!B{row}": row + 10 for row in range(1, 4)}, "main!F1": 2}
+    contract = _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                         semantic_plan=plan)
+    assert "state" not in contract["mutable"]
+    plan["variables"][0]["initial_condition"]["seed_ref"] = "Main!A2"
+    with pytest.raises(CalculationBlocked, match="approved fixed seed"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                  semantic_plan=plan)
+    plan["variables"][0]["initial_condition"].update({
+        "seed_ref": "Main!A1", "input_variable_id": "raw.value"})
+    with pytest.raises(CalculationBlocked, match="approved fixed seed"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                  semantic_plan=plan)
+
+
 def test_fixed_trace_guard_verifies_finite_match_selected_vlookup_column() -> None:
     definition = _variable_interface("a" * 64)
     bindings = [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}

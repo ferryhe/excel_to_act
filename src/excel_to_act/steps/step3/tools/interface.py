@@ -12,7 +12,7 @@ from excel_to_act.steps.step3.input_boundary import confirmed_boundary_reference
 
 
 _SCHEMA_ID = "step3.tool_interface.v1"
-_EXPORTER_VERSION = "2"
+_EXPORTER_VERSION = "3"
 _TYPES = {"boolean", "integer", "number", "string"}
 
 
@@ -45,6 +45,7 @@ def export_tool_interface(workflow_dir: Path) -> dict[str, Any]:
         outputs, output_provenance, output_blockers = _build_outputs(design)
         source_map["outputs"] = output_provenance
         blockers = sorted(set([*blockers, *output_blockers]))
+        unknown_facts = _descriptive_unknowns(objects, outputs)
         definition = {
             "schema_version": _SCHEMA_ID,
             "schema_id": _SCHEMA_ID,
@@ -69,7 +70,7 @@ def export_tool_interface(workflow_dir: Path) -> dict[str, Any]:
                                    "review_receipts": boundary_reference["review_receipts"]},
             },
             "contract_readiness": {"status": "blocked" if blockers else "defined",
-                                    "blockers": blockers},
+                                    "blockers": blockers, "unknown_facts": unknown_facts},
             "runtime_readiness": {
                 "status": "blocked",
                 "blockers": [*blockers,
@@ -255,6 +256,16 @@ def _build_contract(design: dict[str, Any], boundary: dict[str, Any],
                     coordinate >= shape[axis] for axis, coordinate in enumerate(index))
                     for index in indices)):
                 raise ValueError(f"{logical_name}: mutable cell indices are duplicate or outside the shape")
+            mapped = variable.get("coordinate_map")
+            selected = [entry for entry in mapped or [] if isinstance(entry, dict)
+                        and isinstance(entry.get("logical_index"), list)
+                        and tuple(entry["logical_index"]) in indices]
+            if (not isinstance(mapped, list) or len(selected) != len(cells)
+                    or len({tuple(entry["logical_index"]) for entry in selected}) != len(cells)
+                    or any(not isinstance(entry.get("source_cell"), str)
+                           or "!" not in entry["source_cell"] for entry in selected)
+                    or len({entry["source_cell"] for entry in selected}) != len(cells)):
+                raise ValueError(f"{logical_name}: mutable cells need exact source coordinate mappings")
         item = {"variable_id": variable_id, "logical_name": logical_name, "kind": kind,
                 "shape": shape, "axes": axes, "mutability": mutability,
                 "value_type": value_type, "required": requiredness, "default_policy": default_policy,
@@ -276,18 +287,14 @@ def _build_contract(design: dict[str, Any], boundary: dict[str, Any],
                 blockers.append(f"{logical_name}: optional mutable input needs an approved saved default")
         if mutability == "unknown":
             blockers.append(f"{logical_name}: mutability is unknown")
-        if value_type == "unknown":
+        if value_type == "unknown" and mutability == "mutable" and cells is None:
             blockers.append(f"{logical_name}: value type is unknown")
         if requiredness == "unknown":
             blockers.append(f"{logical_name}: required policy is unknown")
         if default_policy.get("status") == "unknown":
             blockers.append(f"{logical_name}: default policy is unknown")
-        if allowed_range.get("status") == "unknown":
+        if allowed_range.get("status") == "unknown" and mutability == "mutable" and cells is None:
             blockers.append(f"{logical_name}: allowed range is unknown")
-        if units == "unknown":
-            blockers.append(f"{logical_name}: units are unknown")
-        if unit_basis == "unknown":
-            blockers.append(f"{logical_name}: unit basis is unknown")
         if (variable.get("value_source_policy", {}).get("available_now") is False
                 and variable_id not in (support_domain or {}).get("external_policy", {})):
             blockers.append(f"{logical_name}: approved current external value is unavailable")
@@ -342,16 +349,33 @@ def _build_outputs(design: dict[str, Any]) -> tuple[dict[str, Any], dict[str, An
             blockers.append(f"output {name}: value type is unknown")
         if axes == "unknown":
             blockers.append(f"output {name}: axes are unknown")
-        if units == "unknown":
-            blockers.append(f"output {name}: units are unknown")
-        if unit_basis == "unknown":
-            blockers.append(f"output {name}: unit basis is unknown")
-        if allowed_range.get("status") == "unknown":
-            blockers.append(f"output {name}: allowed range is unknown")
         provenance[name] = {key: target[key] for key in ("selector", "location", "units",
                                                        "diagnostic_intermediates") if key in target}
     return ({"type": "object", "properties": properties,
              "required": sorted(properties), "additionalProperties": False}, provenance, blockers)
+
+
+def _descriptive_unknowns(objects: list[dict[str, Any]], outputs: dict[str, Any]) -> list[str]:
+    facts = []
+    for item in objects:
+        name = item["logical_name"]
+        for field, label in (("units", "units"), ("unit_basis", "unit basis")):
+            if item[field] == "unknown":
+                facts.append(f"{name}: {label} are unknown" if field == "units"
+                             else f"{name}: {label} is unknown")
+        if item["mutability"] == "immutable" or "mutable_cells" in item:
+            if item["value_type"] == "unknown":
+                facts.append(f"{name}: value type is unknown")
+            if item["allowed_range"]["status"] == "unknown":
+                facts.append(f"{name}: allowed range is unknown")
+    for name, schema in outputs["properties"].items():
+        if schema["x-units"] == "unknown":
+            facts.append(f"output {name}: units are unknown")
+        if schema["x-unit-basis"] == "unknown":
+            facts.append(f"output {name}: unit basis is unknown")
+        if schema["x-allowed-range"]["status"] == "unknown":
+            facts.append(f"output {name}: allowed range is unknown")
+    return sorted(set(facts))
 
 
 def _design_object_declarations(value: Any) -> dict[str, dict[str, Any]]:
@@ -587,6 +611,7 @@ def _reject_fields(value: Any, allowed: set[str], label: str) -> None:
 def _interface_markdown(definition: dict[str, Any], digest: str) -> str:
     parameters = definition["parameters"]["properties"]
     blockers = definition["contract_readiness"]["blockers"]
+    unknown_facts = definition["contract_readiness"]["unknown_facts"]
     lines = ["# Step 3 Tool Interface", "", "Status: **Interface generated**", "",
              f"Schema ID: `{definition['schema_id']}`",
              f"Definition SHA-256: `{digest}`",
@@ -594,6 +619,7 @@ def _interface_markdown(definition: dict[str, Any], digest: str) -> str:
              f"Logical objects: {len(definition['objects'])}",
              f"Contract readiness: **{definition['contract_readiness']['status']}**",
              "Runtime readiness: **blocked**", "",
+             "Defined means the execution contract is complete; it does not settle descriptive business facts.",
              "This artifact defines logical-name parameters only. It does not perform parameterized computation, "
              "establish Excel equivalence, or establish production readiness.", "",
              "## Logical objects", "",
@@ -606,7 +632,9 @@ def _interface_markdown(definition: dict[str, Any], digest: str) -> str:
                  json.dumps(item["allowed_range"], ensure_ascii=False, sort_keys=True)]
         lines.append("| " + " | ".join(cell.replace("|", "\\|") for cell in cells) + " |")
     if blockers:
-        lines.extend(["", "## Unknown contract facts", "", *[f"- {item}" for item in blockers]])
+        lines.extend(["", "## Execution blockers", "", *[f"- {item}" for item in blockers]])
+    if unknown_facts:
+        lines.extend(["", "## Unknown descriptive facts", "", *[f"- {item}" for item in unknown_facts]])
     return "\n".join(lines) + "\n"
 
 

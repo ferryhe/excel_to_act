@@ -15,6 +15,7 @@ from excel_to_act.steps.step3.tools.interface import (
 
 
 def _approved_workflow(tmp_path: Path, *, declarations: list[dict] | None = None,
+                       support_domain: dict | None = None, target: dict | None = None,
                        wrong_source: bool = False) -> Path:
     root, _ = workflow.create_workflow(tmp_path / "workflow", {
         "source_id": "pricing", "run_id": "run-1", "workbook_sha256": "a" * 64})
@@ -58,11 +59,13 @@ def _approved_workflow(tmp_path: Path, *, declarations: list[dict] | None = None
     design = {"schema_version": "step3.analysis_design.v1", "status": "ready_for_review",
               "source": design_source, "binding_sha256": "b" * 64,
               "input_boundary_reference": boundary_reference,
-              "design": {"targets": [{"target_id": "GP", "selector": "GP", "result_order": 0,
+              "design": {"targets": [target or {"target_id": "GP", "selector": "GP", "result_order": 0,
                                       "shape": [], "units": "Currency and basis under review"}],
                          "scenarios": [{"scenario_id": "saved", "primary_inputs": {
                              "IssueAge": "saved-value-must-not-become-default"}}],
-                         **({"tool_interface": {"objects": declarations}}
+                         **({"tool_interface": {"objects": declarations,
+                                                **({"support_domain": support_domain}
+                                                   if support_domain is not None else {})}}
                             if declarations is not None else {})}}
     workflow.append_stage_artifact(root, 3, "analysis_design.json", design, "Design",
                                    input_files={"boundary_json": boundary_json,
@@ -102,8 +105,7 @@ def test_export_is_deterministic_and_preserves_logical_objects(tmp_path: Path) -
     assert definition["contract_readiness"]["status"] == "blocked"
     assert any("external value is unavailable" in item for item in
                definition["contract_readiness"]["blockers"])
-    assert any("output GP: units are unknown" == item for item in
-               definition["contract_readiness"]["blockers"])
+    assert "output GP: units are unknown" in definition["contract_readiness"]["unknown_facts"]
     assert definition["runtime_readiness"]["status"] == "blocked"
     assert "saved-value-must-not-become-default" not in first_bytes.decode()
     assert "Main!A1" not in json.dumps(definition["parameters"])
@@ -123,6 +125,91 @@ def test_missing_business_declarations_remain_unknown(tmp_path: Path) -> None:
     assert {item["mutability"] for item in definition["objects"]} == {"unknown"}
     assert len([item for item in definition["contract_readiness"]["blockers"]
                 if item.endswith("mutability is unknown")]) == 3
+
+
+def test_descriptive_unknowns_do_not_block_typed_sample_contract(tmp_path: Path) -> None:
+    fixed = {"variable_id": "switchtable", "mutability": "immutable", "value_type": "unknown",
+             "required": False, "default_policy": {"status": "none"},
+             "allowed_range": {"status": "unknown"}}
+    external = {**_declaration("RateCurve"), "allowed_range": {"status": "unbounded"}}
+    domain = {"status": "fixed_trace", "active_trace_sha256": "a" * 64,
+              "external_policy": {"ratecurve": {"mode": "same_request",
+                                                "source_sha256": "a" * 64, "version": "v1"}},
+              "tolerances": {"absolute": 1e-12, "relative": 1e-12}}
+    target = {"target_id": "Result", "selector": "Result", "result_order": 0,
+              "shape": [], "axes": [], "value_type": "number", "units": None,
+              "unit_basis": None, "allowed_range": {"status": "unknown"}}
+    root = _approved_workflow(tmp_path, declarations=[_declaration("IssueAge"), external, fixed],
+                              support_domain=domain, target=target)
+    result = export_tool_interface(root)
+    assert result["status"] == "pass"
+    definition = workflow.read_json(root / result["artifact"]["json"])
+    readiness = definition["contract_readiness"]
+    assert readiness["status"] == "defined" and readiness["blockers"] == []
+    assert "SwitchTable: value type is unknown" in readiness["unknown_facts"]
+    assert "SwitchTable: allowed range is unknown" in readiness["unknown_facts"]
+    assert "output Result: units are unknown" in readiness["unknown_facts"]
+    assert "output Result: unit basis is unknown" in readiness["unknown_facts"]
+    assert "output Result: allowed range is unknown" in readiness["unknown_facts"]
+    assert definition["outputs"]["properties"]["Result"]["type"] == "number"
+    assert definition["outputs"]["properties"]["Result"]["x-allowed-range"] == {"status": "unknown"}
+    assert "output Result: allowed range is unknown" in (root / result["artifact"]["md"]).read_text()
+
+
+@pytest.mark.parametrize(("change", "expected"), [
+    ({"value_type": "unknown", "allowed_range": {"status": "unbounded"}}, "value type is unknown"),
+    ({"allowed_range": {"status": "unknown"}}, "allowed range is unknown"),
+    ({"default_policy": {"status": "unknown"}}, "default policy is unknown"),
+    ({"required": "omit"}, "required policy is unknown"),
+])
+def test_mutable_scalar_unknown_execution_policy_blocks(change: dict, expected: str) -> None:
+    declaration = {**_declaration("Count"), **change}
+    if declaration.get("required") == "omit":
+        declaration.pop("required")
+    boundary = {"variables": [{"variable_id": "count", "logical_name": "Count",
+                               "kind": "scalar", "shape": [], "axes": []}]}
+    _, _, _, blockers = _build_contract(
+        {"design": {"tool_interface": {"objects": [declaration]}}}, boundary)
+    assert f"Count: {expected}" in blockers
+
+
+def test_unknown_table_container_needs_source_mapped_typed_cells() -> None:
+    declaration = {"variable_id": "grid", "mutability": "mutable", "value_type": "unknown",
+                   "required": True, "default_policy": {"status": "none"},
+                   "allowed_range": {"status": "unknown"}, "mutable_cells": [
+                       {"indices": [1, 1], "value_type": "string", "allow_blank": False,
+                        "allowed_range": {"status": "enum", "values": ["A"]}}]}
+    boundary = {"variables": [{"variable_id": "grid", "logical_name": "Grid", "kind": "table",
+                               "shape": [2, 2], "axes": [{"name": "row"}, {"name": "column"}],
+                               "coordinate_map": [{"logical_index": [1, 1],
+                                                   "source_cell": "Sheet!B2"}]}]}
+    design = {"design": {"tool_interface": {"objects": [declaration]}}}
+    _, parameters, _, blockers = _build_contract(design, boundary)
+    assert blockers == []
+    assert parameters["properties"]["Grid"]["x-mutable-cells"] == declaration["mutable_cells"]
+    boundary["variables"][0]["coordinate_map"][0]["logical_index"] = [0, 0]
+    with pytest.raises(ValueError, match="source coordinate"):
+        _build_contract(design, boundary)
+    boundary["variables"][0]["coordinate_map"][0]["logical_index"] = [1, 1]
+    declaration["mutable_cells"][0].pop("allow_blank")
+    with pytest.raises(ValueError, match="blank policy"):
+        _build_contract(design, boundary)
+
+
+def test_external_unknown_leaf_type_or_missing_same_request_policy_blocks() -> None:
+    declaration = {**_declaration("Cut"), "value_type": "unknown",
+                   "allowed_range": {"status": "unbounded"}}
+    boundary = {"variables": [{"variable_id": "cut", "logical_name": "Cut", "kind": "vector",
+                               "shape": [2], "axes": [{"name": "age", "keys": [0, 1]}],
+                               "value_source_policy": {"available_now": False}}]}
+    design = {"design": {"tool_interface": {"objects": [declaration]}}}
+    _, _, _, blockers = _build_contract(design, boundary)
+    assert "Cut: value type is unknown" in blockers
+    assert "Cut: approved current external value is unavailable" in blockers
+    _, _, _, blockers = _build_contract(design, boundary, {"external_policy": {
+        "cut": {"mode": "same_request", "source_sha256": "a" * 64, "version": "v1"}}})
+    assert "Cut: value type is unknown" in blockers
+    assert not any("external value is unavailable" in item for item in blockers)
 
 
 @pytest.mark.parametrize("mutation", ["no_human", "typesafe_only", "cross_revision",

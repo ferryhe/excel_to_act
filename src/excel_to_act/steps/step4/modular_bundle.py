@@ -527,8 +527,34 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
         raise CalculationBlocked("variable-input interface or fixed-trace support domain is incomplete or stale")
     objects = {item["variable_id"]: item for item in definition["objects"]}
     raw_ids = {item["variable_id"] for item in raw_bindings}
-    if not raw_ids <= objects.keys() or any(objects[item]["mutability"] == "unknown" for item in raw_ids):
+    if any(objects[item]["mutability"] == "unknown" for item in raw_ids & objects.keys()):
         raise CalculationBlocked("raw source bindings lack complete approved mutability policy")
+    unlisted = raw_ids - objects.keys()
+    if unlisted:
+        records = (semantic_plan or {}).get("variables", {})
+        variables = (records if isinstance(records, dict) else
+                     {item.get("variable_id"): item for item in records if isinstance(item, dict)}
+                     if isinstance(records, list) else {})
+        approved_fixed = {(_address_key(binding["address"]), binding["variable_id"],
+                           tuple(binding["indices"])) for binding in raw_bindings
+                          if binding["variable_id"] in objects
+                          and objects[binding["variable_id"]]["mutability"] == "immutable"}
+        for binding in (item for item in raw_bindings if item["variable_id"] in unlisted):
+            variable = variables.get(binding["variable_id"], {})
+            initial = variable.get("initial_condition")
+            if not isinstance(initial, dict):
+                raise CalculationBlocked("raw source bindings lack an approved fixed seed alias")
+            source_id = initial.get("input_variable_id")
+            source_index = initial.get("input_index", [])
+            seed_ref = initial.get("seed_ref")
+            if (variable.get("role") != "derived" or not isinstance(seed_ref, str)
+                    or not isinstance(source_index, list)
+                    or binding["indices"] != [initial.get("logical_index")]
+                    or source_id not in objects or objects[source_id]["mutability"] != "immutable"
+                    or (_address_key(binding["address"]), source_id, tuple(source_index)) not in approved_fixed
+                    or _address_key(seed_ref) != _address_key(binding["address"])
+                    or _address_key(binding["address"]) not in source_values):
+                raise CalculationBlocked("raw source bindings lack an approved fixed seed alias")
     external_ids = {item["variable_id"] for item in external_bindings}
     if set(domain.get("external_policy", {})) != external_ids:
         raise CalculationBlocked("each formula-derived external producer needs a same-request policy")
