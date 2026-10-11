@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -11,7 +12,7 @@ from typing import Any
 from openpyxl import load_workbook
 from openpyxl.utils.cell import get_column_letter, range_boundaries
 
-from excel_to_act.steps.conversion_workflow import hash_file
+from excel_to_act.steps.conversion_workflow import hash_bytes, hash_file, json_bytes
 from excel_to_act.steps.step3.calculation import (
     CalculationBlocked, FormulaEvaluator, _excel_compare, _parse_reference,
 )
@@ -518,13 +519,32 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
                               source_profile: dict[str, Any] | None = None,
                               target_names: list[str] | None = None,
                               names: dict[str, Any] | None = None,
-                              variant_sources: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                              variant_sources: list[dict[str, Any]] | None = None,
+                              capture_artifact_sha256: str | None = None) -> dict[str, Any]:
     domain = definition.get("support_domain")
     if (definition.get("schema_version") != "step3.tool_interface.v1"
             or definition.get("contract_readiness", {}).get("status") != "defined"
             or not isinstance(domain, dict) or domain.get("status") not in {"fixed_trace", "exact_cases"}
             or domain.get("active_trace_sha256") != trace_sha256):
         raise CalculationBlocked("variable-input interface or fixed-trace support domain is incomplete or stale")
+    certificate = definition.get("support_certificate")
+    if domain.get("trace_binding") == "post_discovery":
+        approved = copy.deepcopy(definition)
+        approved.pop("support_certificate", None)
+        approved["support_domain"].pop("active_trace_sha256", None)
+        if (not isinstance(certificate, dict)
+                or certificate.get("schema_version") != "step4.support_certificate.v1"
+                or certificate.get("approved_interface_sha256") != hash_bytes(json_bytes(approved))
+                or certificate.get("design_sha256") != definition.get("bindings", {}).get(
+                    "design", {}).get("artifact", {}).get("json_sha256")
+                or certificate.get("source_sha256") != definition.get("bindings", {}).get(
+                    "source", {}).get("workbook_sha256")
+                or certificate.get("capture_artifact_sha256") != capture_artifact_sha256
+                or certificate.get("active_trace_sha256") != trace_sha256
+                or certificate.get("case_refs_sha256") != hash_bytes(json_bytes(domain.get("cases")))):
+            raise CalculationBlocked("post-discovery support certificate is missing or stale")
+    elif certificate is not None:
+        raise CalculationBlocked("fixed-trace interface cannot carry a post-discovery certificate")
     objects = {item["variable_id"]: item for item in definition["objects"]}
     raw_ids = {item["variable_id"] for item in raw_bindings}
     if any(objects[item]["mutability"] == "unknown" for item in raw_ids & objects.keys()):
@@ -609,6 +629,8 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
             semantic_plan, source_profile, trace, target_names, names, source_values,
             variant_sources if variant_sources is not None else [],
         )
+        if certificate is not None:
+            certificate = {**certificate, "verified_cases_sha256": _canonical_hash(verified_cases)}
     selection_cells = {_address_key(item["formula_cell"])
                        for kind in ("lookups", "branches", "dynamic_ranges")
                        for item in trace.get(kind, []) if isinstance(item, dict)
@@ -716,6 +738,7 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
             "support_domain": domain, "mutable": mutable,
             "fixed_trace_source_values": fixed_trace_values,
             **({"verified_cases": verified_cases} if verified_cases is not None else {}),
+            **({"support_certificate": certificate} if certificate is not None else {}),
             "external_specs": {item["variable_id"]: {"shape": item["shape"], "axes": item["axes"],
                                 "value_type": item["value_type"], "allowed_range": item["allowed_range"],
                                 "allow_blank": item.get("allow_blank", False)}
@@ -1395,6 +1418,12 @@ def _variable_inputs(layout, inputs, external_data):
             raise runtime.CalculationBlocked(f"variable-input bundle asset changed: {filename}")
     if manifest.get("variable_input_contract_sha256") != VARIABLE_CONTRACT_SHA256:
         raise runtime.CalculationBlocked("variable-input manifest is stale")
+    certificate = contract.get("support_certificate")
+    if certificate is not None and (manifest.get("support_certificate_sha256") != _canonical_hash(certificate)
+            or certificate.get("verified_cases_sha256") != _canonical_hash(contract.get("verified_cases"))
+            or certificate.get("active_trace_sha256") != manifest.get("trace_sha256")
+            or certificate.get("capture_artifact_sha256") != manifest.get("external_capture_artifact_sha256")):
+        raise runtime.CalculationBlocked("post-discovery support certificate is stale")
     source_values = json.loads((base / "source_values.json").read_text(encoding="utf-8"))
     effective = {}
     overrides = {}
@@ -1649,7 +1678,8 @@ def build_modular_bundle_files(
                                                     external_bindings, trace_sha256, trace, source_values,
                                                     source_path=source_path, semantic_plan=semantic_plan,
                                                     source_profile=source_profile, target_names=target_names,
-                                                    names=names, variant_sources=variant_sources)
+                                                    names=names, variant_sources=variant_sources,
+                                                    capture_artifact_sha256=external_capture_artifact_sha256)
                          if variable_interface is not None else None)
     if variable_contract is not None and variable_contract["source_sha256"] != source_sha256:
         raise CalculationBlocked("variable-input interface is bound to another source workbook")
@@ -1860,6 +1890,9 @@ def build_modular_bundle_files(
                   if variable_contract is not None else "approved saved scenario and source-bound logical plan"),
         "variable_input_contract_sha256": (_canonical_hash(variable_contract)
                                            if variable_contract is not None else None),
+        "support_certificate_sha256": (_canonical_hash(variable_contract["support_certificate"])
+                                       if variable_contract is not None
+                                       and "support_certificate" in variable_contract else None),
     }
     (bundle / "model_manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")

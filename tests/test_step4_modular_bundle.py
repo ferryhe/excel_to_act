@@ -15,7 +15,7 @@ from openpyxl.styles import PatternFill
 from openpyxl.worksheet.formula import ArrayFormula
 
 from excel_to_act.steps.step3.calculation import CalculationBlocked
-from excel_to_act.steps.step4.generator import _smoke_bundle
+from excel_to_act.steps.step4.generator import _bind_current_support_domain, _bundle_files, _smoke_bundle
 from excel_to_act.steps.step4.modular_bundle import (
     _augment_literal_sources,
     _canonical_hash,
@@ -110,6 +110,202 @@ def _variable_interface(source_hash: str) -> dict:
                               "outputs": {"Answer": {"selector": "Answer"}}},
         "outputs": {"properties": {"Answer": {"x-axes": []}}},
     }
+
+
+def test_post_discovery_support_binds_current_artifacts_and_rejects_stale_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from excel_to_act.steps.conversion_workflow import json_bytes
+
+    source_hash, design_hash = "a" * 64, "d" * 64
+    definition = _variable_interface(source_hash)
+    definition["bindings"]["design"] = {
+        "artifact": {"json_sha256": design_hash},
+        "review_receipts": {name: {"decision": "approve", "artifact_sha256": design_hash}
+                            for name in ("agent", "human")}}
+    definition["support_domain"] = {
+        "status": "exact_cases", "trace_binding": "post_discovery",
+        "cases": [{name: {"path": "case.json", "sha256": "c" * 64} for name in
+                   ("trace", "raw_request", "public_request", "producer")}],
+        "external_policy": {}, "tolerances": {"absolute": 0, "relative": 0}}
+    interface_path = tmp_path / "interface.json"
+    interface_path.write_bytes(json_bytes(definition))
+    capture_path = tmp_path / "external_inputs.json"
+    capture_path.write_bytes(json_bytes({"schema_version": "step4.external_inputs.v1",
+        "status": "pass", "source_sha256": source_hash,
+        "stage3": {"artifact_json_sha256": design_hash}}))
+    capture_hash = hashlib.sha256(capture_path.read_bytes()).hexdigest()
+    trace_path = tmp_path / "active_trace.json"
+    trace_path.write_bytes(json_bytes({"source_sha256": source_hash,
+        "design_sha256": design_hash, "external_capture_sha256": capture_hash, "cells": []}))
+    trace_hash = hashlib.sha256(trace_path.read_bytes()).hexdigest()
+    discovery_path = tmp_path / "discovery.json"
+    discovery_path.write_bytes(json_bytes({"schema_version": "step4.discovery.v1",
+        "status": "pass", "source_sha256": source_hash,
+        "stage3_artifact_sha256": design_hash, "active_trace_sha256": trace_hash,
+        "active_trace_path": str(trace_path)}))
+    kwargs = {"interface_path": interface_path, "design_sha256": design_hash,
+              "source_sha256": source_hash, "capture_path": capture_path,
+              "capture_sha256": capture_hash, "discovery_path": discovery_path,
+              "trace_path": trace_path}
+    bound = _bind_current_support_domain(definition, **kwargs)
+    assert bound["support_domain"]["active_trace_sha256"] == trace_hash
+    assert bound["support_certificate"]["capture_artifact_sha256"] == capture_hash
+    assert bound["support_certificate"]["approved_interface_sha256"] == hashlib.sha256(
+        interface_path.read_bytes()).hexdigest()
+    assert "active_trace_sha256" not in definition["support_domain"]
+    capture_path.write_bytes(json_bytes({"schema_version": "step4.external_inputs.v1",
+        "status": "pass", "source_sha256": source_hash,
+        "stage3": {"artifact_json_sha256": design_hash}, "dependency_version": "new"}))
+    refreshed_hash = hashlib.sha256(capture_path.read_bytes()).hexdigest()
+    with pytest.raises(CalculationBlocked, match="capture.*trace"):
+        _bind_current_support_domain(definition, **{**kwargs, "capture_sha256": refreshed_hash})
+    capture_path.write_bytes(json_bytes({"schema_version": "step4.external_inputs.v1",
+        "status": "pass", "source_sha256": source_hash,
+        "stage3": {"artifact_json_sha256": design_hash}}))
+    blocked = json.loads(json.dumps(definition))
+    blocked["contract_readiness"]["status"] = "blocked"
+    with pytest.raises(CalculationBlocked, match="contract is blocked"):
+        _bind_current_support_domain(blocked, **kwargs)
+    source_path = tmp_path / "source.xlsx"
+    source_path.write_bytes(b"synthetic source")
+    bindings = [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
+                for row in range(1, 4)]
+    bindings.append({"address": "main!F1", "variable_id": "raw.config", "indices": []})
+    saved = {f"main!B{row}": row + 10 for row in range(1, 4)} | {"main!F1": 2}
+    proofs = [{"input_sha256": "i" * 64, "dependency_sha256": "e" * 64}]
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle._verified_case_layout",
+                        lambda *_args: proofs)
+    contract = _variable_contract_layout(bound, bindings, [], trace_hash, {}, saved,
+        source_path=source_path, semantic_plan={}, source_profile={}, target_names=["Answer"],
+        names={}, capture_artifact_sha256=capture_hash)
+    assert contract["support_certificate"]["verified_cases_sha256"] == _canonical_hash(proofs)
+    with pytest.raises(CalculationBlocked, match="certificate"):
+        _variable_contract_layout(bound, bindings, [], trace_hash, {}, saved,
+            source_path=source_path, semantic_plan={}, source_profile={}, target_names=["Answer"],
+            names={}, capture_artifact_sha256="0" * 64)
+    stale_case = json.loads(json.dumps(bound))
+    stale_case["support_domain"]["cases"][0]["producer"]["sha256"] = "0" * 64
+    with pytest.raises(CalculationBlocked, match="certificate"):
+        _variable_contract_layout(stale_case, bindings, [], trace_hash, {}, saved,
+            source_path=source_path, semantic_plan={}, source_profile={}, target_names=["Answer"],
+            names={}, capture_artifact_sha256=capture_hash)
+    def missing_closure(*_args: object) -> list[dict[str, str]]:
+        raise CalculationBlocked("exact-case source cells closure differs from trace")
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle._verified_case_layout", missing_closure)
+    with pytest.raises(CalculationBlocked, match="closure differs"):
+        _variable_contract_layout(bound, bindings, [], trace_hash, {}, saved,
+            source_path=source_path, semantic_plan={}, source_profile={}, target_names=["Answer"],
+            names={}, capture_artifact_sha256=capture_hash)
+    for changed in ("design_sha256", "source_sha256", "capture_sha256"):
+        with pytest.raises(CalculationBlocked, match="stale|current"):
+            _bind_current_support_domain(definition, **{**kwargs, changed: "0" * 64})
+    discovery_path.write_text("{}", encoding="utf-8")
+    with pytest.raises(CalculationBlocked, match="discovery|current"):
+        _bind_current_support_domain(definition, **kwargs)
+    discovery_path.write_bytes(json_bytes({"schema_version": "step4.discovery.v1",
+        "status": "pass", "source_sha256": source_hash,
+        "stage3_artifact_sha256": design_hash, "active_trace_sha256": trace_hash,
+        "active_trace_path": str(trace_path)}))
+    trace_path.write_text("changed", encoding="utf-8")
+    with pytest.raises(CalculationBlocked, match="discovery|trace"):
+        _bind_current_support_domain(definition, **kwargs)
+
+
+@pytest.mark.parametrize("exact_cases", [False, True])
+def test_empty_interface_registry_never_silently_drops_exact_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exact_cases: bool,
+) -> None:
+    from excel_to_act.steps.conversion_workflow import json_bytes
+
+    def evidence(name: str, payload: dict) -> tuple[Path, str]:
+        path = tmp_path / name
+        path.write_bytes(json_bytes(payload))
+        return path, hashlib.sha256(path.read_bytes()).hexdigest()
+
+    source_path = tmp_path / "source.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "Main"
+    workbook.active["A1"] = 3
+    workbook.save(source_path)
+    workbook.close()
+    source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    design_hash = "d" * 64
+    trace_path, trace_hash = evidence("active_trace.json", {
+        "source_sha256": source_hash, "design_sha256": design_hash,
+        "cells": [{"address": "Main!A1", "sheet": "Main", "role": "source_value"}],
+        "names": [{"scope": "workbook", "name": "Result"}],
+    })
+    evidence("discovery.json", {"schema_version": "step4.discovery.v1", "status": "pass",
+        "source_sha256": source_hash, "stage3_artifact_sha256": design_hash,
+        "active_trace_path": str(trace_path), "active_trace_sha256": trace_hash})
+    map_path, map_hash = evidence("map.json", {})
+    profile_path, profile_hash = evidence("profile.json", {})
+    plan_path, plan_hash = evidence("plan.json", {"status": "pass",
+        "source": {"source_sha256": source_hash},
+        "semantic_map_input": {"path": str(map_path), "sha256": map_hash},
+        "evidence": {"source_family_profile": {"path": str(profile_path), "sha256": profile_hash}}})
+    check_path, check_hash = evidence("check.json", {"status": "pass",
+        "semantic_plan_sha256": plan_hash, "semantic_map_input_sha256": map_hash,
+        "source_family_profile_sha256": profile_hash})
+    capture_path, capture_hash = evidence("capture.json", {})
+    implementation_path, implementation_hash = evidence("implementation.json", {})
+    implementation_input_path, _ = evidence("implementation-input.json", {})
+    stage3 = {"source": {"workbook_path": str(source_path), "workbook_sha256": source_hash},
+        "_artifact_sha256": design_hash,
+        "analysis": {"artifacts": {"semantic_plan": {"path": str(plan_path), "sha256": plan_hash},
+                                   "semantic_check": {"path": str(check_path), "sha256": check_hash}}},
+        "design": {"targets": [{"selector": "Result"}], "validation_plan": [],
+                   "historical_evidence": [], "tool_interface": {"support_domain": {
+                       "status": "exact_cases" if exact_cases else "fixed_trace"}}}}
+    monkeypatch.setattr("excel_to_act.steps.step4.generator._require_modular_design", lambda *_: None)
+    monkeypatch.setattr("excel_to_act.steps.step4.generator.load_current_implementation_plan",
+                        lambda *_: ({"implementation_input": {"path": str(implementation_input_path)}},
+                                   implementation_path, implementation_hash,
+                                   {"trace_path": trace_path, "projected_plan": {},
+                                    "projected_profile": {}, "capture": {}, "capture_path": capture_path,
+                                    "capture_file_sha256": capture_hash}))
+    monkeypatch.setattr("excel_to_act.steps.step4.generator._saved_scenario_guard",
+                        lambda *_: (["saved"], {}))
+    monkeypatch.setattr("excel_to_act.steps.step4.generator._path_implementation_evidence",
+                        lambda *_: {})
+    monkeypatch.setattr("excel_to_act.steps.step4.generator.load_workflow",
+                        lambda *_: (tmp_path, {"tool_interfaces": []}))
+    calls: list[str] = []
+    def export(_root: Path) -> dict:
+        calls.append("export")
+        return {"status": "blocked"}
+    def build(**_kwargs: object) -> dict:
+        calls.append("build")
+        return {"manifest": {}}
+    monkeypatch.setattr("excel_to_act.steps.step4.generator.export_tool_interface", export)
+    monkeypatch.setattr("excel_to_act.steps.step4.generator.build_modular_bundle_files", build)
+    monkeypatch.setattr("excel_to_act.steps.step4.generator._modular_oracle_ranges", lambda *_: [])
+
+    if exact_cases:
+        with pytest.raises(CalculationBlocked, match="exact-case interface cannot be exported"):
+            _bundle_files(stage3, trace_path, tmp_path / "bundle", tmp_path)
+        assert calls == ["export"]
+    else:
+        assert _bundle_files(stage3, trace_path, tmp_path / "bundle", tmp_path)["manifest"] == {}
+        assert calls == ["build"]
+
+
+def test_exact_case_replay_rejects_stale_case_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from excel_to_act.steps.step4.modular_bundle import _verified_case_layout
+
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle.compile_mapped_families",
+                        lambda *_args: {})
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle.render_grouped_driver",
+                        lambda *_args: "driver")
+    source = tmp_path / "source.xlsx"
+    source.write_bytes(b"synthetic source")
+    cases = [{name: {"path": str(tmp_path / "absent.json"), "sha256": "a" * 64}
+              for name in ("trace", "raw_request", "public_request", "producer")}]
+    with pytest.raises(CalculationBlocked, match="exact-case trace artifact is missing or stale"):
+        _verified_case_layout(cases, {}, [], source, {}, {}, {}, [], {}, {}, [])
 
 
 def test_fixed_trace_guard_includes_lookup_return_used_by_a_branch() -> None:
@@ -343,6 +539,11 @@ def test_generated_model_selects_only_exact_distinct_formula_variants(
             for value, variant_id in ((1, "v0001"), (2, "v0002"))
         ],
     }
+    contract["support_certificate"] = {
+        "verified_cases_sha256": _canonical_hash(contract["verified_cases"]),
+        "active_trace_sha256": "t" * 64,
+        "capture_artifact_sha256": "c" * 64,
+    }
     adapter = types.ModuleType("input_adapter")
     adapter._canonical_hash = _canonical_hash
     adapter._allocate = lambda shape, missing: missing if not shape else [missing] * shape[0]
@@ -375,12 +576,28 @@ def test_generated_model_selects_only_exact_distinct_formula_variants(
     (tmp_path / "model_manifest.json").write_text(json.dumps({
         "source_sha256": source_hash, "files": files,
         "variable_input_contract_sha256": _canonical_hash(contract),
+        "support_certificate_sha256": _canonical_hash(contract["support_certificate"]),
+        "trace_sha256": "t" * 64, "external_capture_artifact_sha256": "c" * 64,
     }), encoding="utf-8")
     namespace = {"__file__": str(tmp_path / "model.py")}
     exec((tmp_path / "model.py").read_text(encoding="utf-8"), namespace)
     assert namespace["run_model"](input_records[1], {})["targets"]["Answer"] == 11
     assert namespace["run_model"](input_records[2], {})["targets"]["Answer"] == 102
     assert namespace["run_model"](input_records[1], {})["cells"] == {"main!B1": 11}
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": source_hash, "files": files,
+        "variable_input_contract_sha256": _canonical_hash(contract),
+        "support_certificate_sha256": "0" * 64,
+        "trace_sha256": "t" * 64, "external_capture_artifact_sha256": "c" * 64,
+    }), encoding="utf-8")
+    with pytest.raises(runtime.CalculationBlocked, match="support certificate is stale"):
+        namespace["run_model"](input_records[1], {})
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": source_hash, "files": files,
+        "variable_input_contract_sha256": _canonical_hash(contract),
+        "support_certificate_sha256": _canonical_hash(contract["support_certificate"]),
+        "trace_sha256": "t" * 64, "external_capture_artifact_sha256": "c" * 64,
+    }), encoding="utf-8")
     with pytest.raises(runtime.CalculationBlocked, match="no verified formula"):
         namespace["run_model"](input_records[3], {})
     with pytest.raises(runtime.CalculationBlocked, match="external producer inputs"):

@@ -12,7 +12,7 @@ from excel_to_act.steps.step3.input_boundary import confirmed_boundary_reference
 
 
 _SCHEMA_ID = "step3.tool_interface.v1"
-_EXPORTER_VERSION = "3"
+_EXPORTER_VERSION = "4"
 _TYPES = {"boolean", "integer", "number", "string"}
 
 
@@ -535,12 +535,18 @@ def _support_domain(value: Any) -> dict[str, Any] | None:
     if value is None or value.get("support_domain") is None:
         return None
     domain = value["support_domain"]
-    _reject_fields(domain, {"status", "active_trace_sha256", "external_policy", "tolerances", "cases"},
+    _reject_fields(domain, {"status", "active_trace_sha256", "trace_binding", "external_policy",
+                            "tolerances", "cases"},
                    "design.tool_interface.support_domain")
-    if (domain.get("status") not in {"fixed_trace", "exact_cases"}
-            or not isinstance(domain.get("active_trace_sha256"), str)
-            or len(domain["active_trace_sha256"]) != 64 or not all(
-                char in "0123456789abcdef" for char in domain["active_trace_sha256"])):
+    if domain.get("status") not in {"fixed_trace", "exact_cases"}:
+        raise ValueError("variable support domain needs an approved active-trace SHA-256")
+    if "trace_binding" in domain:
+        if (domain["trace_binding"] != "post_discovery" or domain["status"] != "exact_cases"
+                or "active_trace_sha256" in domain):
+            raise ValueError("post-discovery exact cases cannot declare an active-trace SHA-256")
+    elif (not isinstance(domain.get("active_trace_sha256"), str)
+          or len(domain["active_trace_sha256"]) != 64 or not all(
+              char in "0123456789abcdef" for char in domain["active_trace_sha256"])):
         raise ValueError("variable support domain needs an approved active-trace SHA-256")
     if domain["status"] == "exact_cases":
         cases = domain.get("cases")

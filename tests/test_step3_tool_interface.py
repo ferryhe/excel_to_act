@@ -292,6 +292,22 @@ def test_exact_case_domain_requires_complete_hashed_evidence() -> None:
                 "producer": {"path": "case.json", "sha256": "bad"}}]}})
 
 
+def test_exact_cases_can_defer_trace_binding_until_current_discovery() -> None:
+    reference = {"path": "case.json", "sha256": "b" * 64}
+    domain = {"status": "exact_cases", "trace_binding": "post_discovery",
+              "cases": [{name: reference for name in
+                         ("trace", "raw_request", "public_request", "producer")}],
+              "external_policy": {}, "tolerances": {"absolute": 0, "relative": 0}}
+    validate_tool_interface_declarations({"objects": [_declaration("Count")],
+                                          "support_domain": domain})
+    with pytest.raises(ValueError, match="post-discovery|active-trace"):
+        validate_tool_interface_declarations({"objects": [_declaration("Count")],
+            "support_domain": {**domain, "active_trace_sha256": "a" * 64}})
+    with pytest.raises(ValueError, match="post-discovery|active-trace"):
+        validate_tool_interface_declarations({"objects": [_declaration("Count")],
+            "support_domain": {**domain, "status": "fixed_trace"}})
+
+
 def test_dependent_enum_and_per_cell_policies_are_explicit() -> None:
     count = {**_declaration("Count"), "value_type": "integer",
              "allowed_range": {"status": "declared", "minimum": 2, "maximum": 7}}
