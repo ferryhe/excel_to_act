@@ -186,6 +186,9 @@ def _build_contract(design: dict[str, Any], boundary: dict[str, Any],
     declarations = _design_object_declarations(design.get("design", {}).get("tool_interface"))
     logical_names: set[str] = set()
     boundary_ids: set[str] = set()
+    axis_lengths = {axis["axis_id"]: axis["shape"][0]
+                    for axis in boundary.get("axis_metadata", [])}
+    shared_axis_keys: dict[str, tuple[int, bool, tuple[tuple[type, Any], ...]]] = {}
     objects: list[dict[str, Any]] = []
     properties: dict[str, Any] = {}
     required: list[str] = []
@@ -216,6 +219,33 @@ def _build_contract(design: dict[str, Any], boundary: dict[str, Any],
                 or len(axes) != len(shape)
                 or any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in shape)):
             raise ValueError(f"boundary variable {variable_id} has inconsistent kind, shape, or axes")
+        if "axes" in declaration:
+            declared_axes = declaration["axes"]
+            if len(declared_axes) != len(axes):
+                raise ValueError(f"{logical_name}: declared axis rank differs from the boundary")
+            for dimension, (declared_axis, boundary_axis) in enumerate(zip(declared_axes, axes)):
+                if ({key: value for key, value in declared_axis.items() if key != "keys"}
+                        != {key: value for key, value in boundary_axis.items() if key != "keys"}
+                        or ("keys" in boundary_axis and json.dumps(declared_axis.get("keys"))
+                            != json.dumps(boundary_axis["keys"]))):
+                    raise ValueError(f"{logical_name}: declared axis differs from boundary identity")
+                if "keys" in declared_axis and len(declared_axis["keys"]) != shape[dimension]:
+                    raise ValueError(f"{logical_name}: declared axis key count differs from shape")
+            axes = declared_axes
+            variable = {**variable, "axes": axes}
+        for dimension, axis in enumerate(axes):
+            axis_id = axis.get("axis_id")
+            if axis_id is not None:
+                length = shape[dimension]
+                if axis_id in axis_lengths and axis_lengths[axis_id] != length:
+                    raise ValueError(f"{logical_name}: axis metadata {axis_id} has conflicting length")
+                signature = (length, "keys" in axis,
+                             tuple((type(key), key) for key in axis.get("keys", [])))
+                previous = shared_axis_keys.get(axis_id)
+                if previous is not None and previous != signature:
+                    conflict = "length" if previous[0] != length else "keys"
+                    raise ValueError(f"{logical_name}: shared axis {axis_id} has conflicting {conflict}")
+                shared_axis_keys[axis_id] = signature
         cells = declaration.get("mutable_cells")
         if cells is not None:
             if mutability != "mutable" or not shape or requiredness is not True or default_policy.get("status") != "none":
@@ -333,7 +363,7 @@ def _design_object_declarations(value: Any) -> dict[str, dict[str, Any]]:
         raise ValueError("design.tool_interface.objects must be a list")
     result: dict[str, dict[str, Any]] = {}
     allowed = {"variable_id", "mutability", "value_type", "required", "default_policy",
-               "allowed_range", "units", "unit_basis", "allow_blank", "mutable_cells"}
+               "allowed_range", "units", "unit_basis", "allow_blank", "mutable_cells", "axes"}
     for index, declaration in enumerate(objects):
         _reject_fields(declaration, allowed, f"design.tool_interface.objects[{index}]")
         variable_id = declaration.get("variable_id")
@@ -348,6 +378,21 @@ def _design_object_declarations(value: Any) -> dict[str, dict[str, Any]]:
             raise ValueError(f"tool_interface {variable_id} required must be boolean")
         if "allow_blank" in declaration and not isinstance(declaration["allow_blank"], bool):
             raise ValueError(f"tool_interface {variable_id} allow_blank must be boolean")
+        if "axes" in declaration:
+            axes = declaration["axes"]
+            if not isinstance(axes, list):
+                raise ValueError(f"tool_interface {variable_id} axes must be a list")
+            for axis in axes:
+                _reject_fields(axis, {"name", "role", "axis_id", "keys"},
+                               f"tool_interface {variable_id} axis")
+                if "keys" in axis:
+                    keys = axis["keys"]
+                    if (not isinstance(keys, list) or any(
+                            key is not None and type(key) not in {bool, int, float, str}
+                            or type(key) is float and not math.isfinite(key) for key in keys)):
+                        raise ValueError(f"tool_interface {variable_id} axis keys must be finite JSON scalars")
+                    if len({(type(key), key) for key in keys}) != len(keys):
+                        raise ValueError(f"tool_interface {variable_id} axis keys contain duplicates")
         for key in ("units", "unit_basis"):
             if key in declaration and (not isinstance(declaration[key], str) or not declaration[key].strip()):
                 raise ValueError(f"tool_interface {variable_id} {key} must be non-empty text")

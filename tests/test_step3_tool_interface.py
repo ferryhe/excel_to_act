@@ -230,6 +230,134 @@ def test_dependent_enum_and_per_cell_policies_are_explicit() -> None:
         _build_contract({"design": {"tool_interface": {"objects": [self_referencing]}}}, boundary)
 
 
+def test_design_axis_keys_extend_boundary_identity_and_export_to_parameters() -> None:
+    boundary = {"variables": [{"variable_id": "grid", "logical_name": "Grid", "kind": "table",
+                              "shape": [2, 2], "axes": [{"name": "row", "role": "record"},
+                                                       {"name": "column", "role": "category",
+                                                        "axis_id": "source-column"}]}]}
+    declaration = {**_declaration("Grid"), "axes": [
+        {"name": "row", "role": "record", "keys": [0, False]},
+        {"name": "column", "role": "category", "axis_id": "source-column",
+         "keys": ["A", "B"]}]}
+    objects, parameters, *_ = _build_contract(
+        {"design": {"tool_interface": {"objects": [declaration]}}}, boundary)
+    assert objects[0]["axes"] == declaration["axes"]
+    assert parameters["properties"]["Grid"]["x-axes"] == declaration["axes"]
+    numeric_types = {**declaration, "axes": [
+        {**declaration["axes"][0], "keys": [0, 0.0]}, declaration["axes"][1]]}
+    typed_objects, *_ = _build_contract(
+        {"design": {"tool_interface": {"objects": [numeric_types]}}}, boundary)
+    assert typed_objects[0]["axes"][0]["keys"] == [0, 0.0]
+    omitted, legacy_parameters, *_ = _build_contract(
+        {"design": {"tool_interface": {"objects": [{key: value for key, value in declaration.items()
+                                                    if key != "axes"}]}}}, boundary)
+    assert omitted[0]["axes"] == boundary["variables"][0]["axes"]
+    assert legacy_parameters["properties"]["Grid"]["x-axes"] == boundary["variables"][0]["axes"]
+
+
+@pytest.mark.parametrize(("first_keys", "second_keys"), [
+    ([1, 2], [2, 1]),
+    ([1, 2], None),
+    ([0, False], [False, 0]),
+    ([0, 1], [0.0, 1]),
+])
+def test_shared_axis_id_rejects_conflicting_keys(first_keys: list, second_keys: list | None) -> None:
+    boundary = {"variables": [
+        {"variable_id": name.lower(), "logical_name": name, "kind": "vector",
+         "shape": [2], "axes": [{"name": "position", "role": "key", "axis_id": "position"}]}
+        for name in ("Rate", "Factor")]}
+    first = {**_declaration("Rate"), "axes": [
+        {**boundary["variables"][0]["axes"][0], "keys": first_keys}]}
+    second_axis = {**boundary["variables"][1]["axes"][0]}
+    if second_keys is not None:
+        second_axis["keys"] = second_keys
+    second = {**_declaration("Factor"), "axes": [second_axis]}
+    with pytest.raises(ValueError, match="shared axis"):
+        _build_contract({"design": {"tool_interface": {"objects": [first, second]}}}, boundary)
+
+
+def test_shared_axis_id_exports_compatible_typed_keys() -> None:
+    boundary = {"variables": [
+        {"variable_id": name.lower(), "logical_name": name, "kind": "vector",
+         "shape": [2], "axes": [{"name": "position", "role": "key", "axis_id": "position"}]}
+        for name in ("Rate", "Factor")]}
+    declarations = [{**_declaration(name), "axes": [
+        {**boundary["variables"][0]["axes"][0], "keys": [0, False]}]}
+        for name in ("Rate", "Factor")]
+    objects, parameters, *_ = _build_contract(
+        {"design": {"tool_interface": {"objects": declarations}}}, boundary)
+    assert [item["axes"][0]["keys"] for item in objects] == [[0, False], [0, False]]
+    assert parameters["properties"]["Rate"]["x-axes"][0]["keys"] == [0, False]
+    assert parameters["properties"]["Factor"]["x-axes"][0]["keys"] == [0, False]
+    unkeyed, *_ = _build_contract({"design": {"tool_interface": {"objects": [
+        _declaration("Rate"), _declaration("Factor")]}}}, boundary)
+    assert all("keys" not in item["axes"][0] for item in unkeyed)
+    other_boundary = {"variables": [boundary["variables"][0],
+                                    {**boundary["variables"][1], "axes": [
+                                        {**boundary["variables"][1]["axes"][0],
+                                         "axis_id": "other-position"}]}]}
+    other_declarations = [declarations[0], {**declarations[1], "axes": [
+        {**other_boundary["variables"][1]["axes"][0], "keys": [False, 0]}]}]
+    separate, *_ = _build_contract(
+        {"design": {"tool_interface": {"objects": other_declarations}}}, other_boundary)
+    by_id = {item["variable_id"]: item["axes"][0] for item in separate}
+    assert by_id["rate"]["keys"] == [0, False]
+    assert [type(key) for key in by_id["factor"]["keys"]] == [bool, int]
+
+
+def test_shared_axis_id_rejects_inconsistent_lengths() -> None:
+    boundary = {"variables": [
+        {"variable_id": name.lower(), "logical_name": name, "kind": "vector",
+         "shape": [size], "axes": [{"name": "period", "role": "key", "axis_id": "period"}]}
+        for name, size in (("Rate", 2), ("Factor", 3))]}
+    design = {"design": {"tool_interface": {"objects": [
+        _declaration("Rate"), _declaration("Factor")]}}}
+    with pytest.raises(ValueError, match="shared axis period.*length"):
+        _build_contract(design, boundary)
+    boundary["axis_metadata"] = [{"axis_id": "period", "shape": [2]}]
+    with pytest.raises(ValueError, match="axis metadata period.*length"):
+        _build_contract(design, boundary)
+    boundary["variables"][1]["axes"][0]["axis_id"] = "other-period"
+    boundary["axis_metadata"].append({"axis_id": "other-period", "shape": [3]})
+    objects, parameters, *_ = _build_contract(design, boundary)
+    assert [item["shape"] for item in objects] == [[3], [2]]
+    assert parameters["properties"]["Factor"]["x-axes"][0]["axis_id"] == "other-period"
+
+
+@pytest.mark.parametrize(("axes", "message"), [
+    ([{"name": "row", "role": "record", "keys": [1]},
+      {"name": "column", "role": "category", "axis_id": "source-column", "keys": ["A", "B"]}],
+     "key count"),
+    ([{"name": "row", "role": "record", "keys": [1, 1]},
+      {"name": "column", "role": "category", "axis_id": "source-column", "keys": ["A", "B"]}],
+     "duplicate"),
+    ([{"name": "row", "role": "record", "keys": [-0.0, 0.0]},
+      {"name": "column", "role": "category", "axis_id": "source-column", "keys": ["A", "B"]}],
+     "duplicate"),
+    ([{"name": "row", "role": "record", "keys": [1, [2]]},
+      {"name": "column", "role": "category", "axis_id": "source-column", "keys": ["A", "B"]}],
+     "finite JSON scalars"),
+    ([{"name": "row", "role": "record", "keys": [1, float("nan")]},
+      {"name": "column", "role": "category", "axis_id": "source-column", "keys": ["A", "B"]}],
+     "finite JSON scalars"),
+    ([{"name": "row", "role": "record", "keys": [1, 2]}], "axis rank"),
+    ([{"name": "other", "role": "record", "keys": [1, 2]},
+      {"name": "column", "role": "category", "axis_id": "source-column", "keys": ["A", "B"]}],
+     "boundary identity"),
+    ([{"name": "row", "role": "record", "keys": [1, 2]},
+      {"name": "column", "role": "category", "keys": ["A", "B"]}],
+     "boundary identity"),
+])
+def test_design_axis_keys_reject_invalid_or_changed_boundary_axes(axes: list[dict], message: str) -> None:
+    boundary = {"variables": [{"variable_id": "grid", "logical_name": "Grid", "kind": "table",
+                              "shape": [2, 2], "axes": [{"name": "row", "role": "record"},
+                                                       {"name": "column", "role": "category",
+                                                        "axis_id": "source-column"}]}]}
+    declaration = {**_declaration("Grid"), "axes": axes}
+    with pytest.raises(ValueError, match=message):
+        _build_contract({"design": {"tool_interface": {"objects": [declaration]}}}, boundary)
+
+
 def test_cli_reports_generation_without_execution_claim(tmp_path: Path) -> None:
     root = _approved_workflow(tmp_path)
     result = CliRunner().invoke(app, ["step3", "interface", "--workflow", str(root)])
