@@ -24,6 +24,7 @@ from excel_to_act.steps.conversion_workflow import (
     require_stage_approved,
 )
 from excel_to_act.steps.step3.calculation import _parse_reference
+from excel_to_act.steps.step3.tools.interface import export_tool_interface
 from excel_to_act.steps.step4.implementation import load_current_implementation_plan
 from excel_to_act.steps.step4.modular_bundle import build_modular_bundle_files
 
@@ -343,6 +344,20 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
             or implementation_record is None or implementation_path is None
             or external_capture is None or external_capture_path is None):
         raise ValueError("current modular generation inputs were not loaded")
+    variable_interface = None
+    variable_interface_path = None
+    if load_workflow(workflow_root)[1].get("tool_interfaces"):
+        exported = export_tool_interface(workflow_root)
+        if exported.get("status") == "pass":
+            candidate_path = workflow_root / exported["artifact"]["json"]
+            candidate = read_json(candidate_path)
+            if (candidate.get("contract_readiness", {}).get("status") == "defined"
+                    and isinstance(candidate.get("support_domain"), dict)
+                    and candidate["support_domain"].get("active_trace_sha256") == trace_hash
+                    and candidate.get("bindings", {}).get("design", {}).get("artifact", {}).get("json_sha256")
+                    == stage3_payload["_artifact_sha256"]):
+                variable_interface = candidate
+                variable_interface_path = candidate_path
     built = build_modular_bundle_files(
         semantic_plan=semantic_plan, source_profile=source_profile, trace=trace,
         raw_source_values=raw_values, source_path=source_path,
@@ -359,6 +374,7 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
         implementation_plan_record=implementation_record,
         implementation_plan_path=implementation_path,
         implementation_plan_sha256=implementation_sha256,
+        variable_interface=variable_interface,
     )
     built.update({"discovery_path": discovery_path if discovery is not None else None,
                   "input_files": {"semantic_plan": semantic_plan_path,
@@ -367,6 +383,8 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
                                   "implementation_plan": implementation_path,
                                   "implementation_input": Path(implementation_record["implementation_input"]["path"]),
                                   "external_capture": external_capture_path}})
+    if variable_interface_path is not None:
+        built["input_files"]["tool_interface"] = variable_interface_path
     built["oracle_ranges"] = _modular_oracle_ranges(built["manifest"])
     return built
 
@@ -422,6 +440,7 @@ def generate_model(workflow_dir: Path, trace_path: Path | None = None) -> dict[s
                    "status": "ready_for_review", "workflow": str(root),
                    "source_sha256": built["source_hash"], "design_sha256": stage3_revision["artifact"]["json_sha256"],
                    "scenario_ids": built["manifest"]["scenario_ids"],
+                   "variable_input_contract_sha256": built["manifest"].get("variable_input_contract_sha256"),
                    "trace_sha256": built["trace_hash"],
                    "active_trace": {"path": str(built["trace_path"]), "sha256": hash_file(built["trace_path"]),
                                     "source": built["trace_source"]},
@@ -703,6 +722,9 @@ def _generation_markdown(
         f"- Generated entry point: [model.py](<{Path(entry_point).as_posix()}>); manifest: [model_manifest.json](<{Path(bundle_manifest).as_posix()}>).",
         "- Supported run command from the generated bundle directory: `python model.py --out RESULT.json`.",
     ])
+    if payload.get("variable_input_contract_sha256"):
+        lines.append("- Approved fixed-trace input route: `python model.py --inputs REQUEST.json --out RESULT.json`; "
+                     "the request contains `inputs` and `external_data` objects.")
     if design_link:
         lines.append(f"- Bound Step 3 design: [analysis_design.json](<{Path(design_link).as_posix()}>).")
     lines.extend([

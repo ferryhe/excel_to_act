@@ -13,7 +13,7 @@ function Get-CellRecord($cell) {
     $formula = [string]$cell.Formula
     $value = $cell.Value2
     $errorCode = $null
-    if ($text -match '^#(?:NULL!|DIV/0!|VALUE!|REF!|NAME\?|NUM!|N/A|GETTING_DATA|SPILL!|CALC!)$') {
+    if ($value -is [System.Runtime.InteropServices.ErrorWrapper]) {
         $errorCode = $text
         $value = $null
     }
@@ -139,12 +139,23 @@ try {
     $excel.EnableEvents = $false
     $excel.AskToUpdateLinks = $false
     $excel.AutomationSecurity = 3
-    $book = $excel.Workbooks.Open([string]$request.copy_path, 0, $true)
+    $book = $excel.Workbooks.Open([string]$request.copy_path, 0, $false)
 
     $primary = @{}
-    $main = $book.Worksheets.Item('Main')
-    foreach ($address in $request.primary_input_addresses) {
-        $primary[[string]$address] = Get-CellRecord $main.Range([string]$address)
+    if ($request.primary_input_addresses.Count -gt 0) {
+        $main = $book.Worksheets.Item('Main')
+        foreach ($address in $request.primary_input_addresses) {
+            $primary[[string]$address] = Get-CellRecord $main.Range([string]$address)
+        }
+    }
+    $applied = @{}
+    foreach ($item in $request.input_overrides) {
+        $cell = $book.Worksheets.Item([string]$item.sheet).Range([string]$item.address)
+        if ($cell.HasFormula) {
+            throw "Oracle input is a formula: $($item.qualified_address)"
+        }
+        $cell.Value2 = $item.value
+        $applied[[string]$item.qualified_address] = Get-CellRecord $cell
     }
 
     $beforeTargets = @{}
@@ -212,7 +223,10 @@ try {
         full_rebuild_seconds = $timer.Elapsed.TotalSeconds
         calculation_state = [int]$excel.CalculationState
         macros_executed = $false
-        input_overrides = @()
+        input_overrides = @($request.input_overrides)
+        input_sha256 = [string]$request.input_sha256
+        scenario_id = [string]$request.scenario_id
+        applied_inputs = $applied
         primary_inputs = $primary
         before_explicit_rebuild = $beforeTargets
         after_full_rebuild = $afterCells

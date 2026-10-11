@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
 from openpyxl import Workbook
 from openpyxl.utils.cell import get_column_letter, range_boundaries
 from typer.testing import CliRunner
@@ -17,6 +18,19 @@ from excel_to_act.steps.step4.generator import generate_model
 from excel_to_act.steps.step5 import validate_generated
 
 
+def test_same_request_external_data_requires_exact_source_version_and_input() -> None:
+    contract = {"support_domain": {"external_policy": {
+        "rate": {"mode": "same_request", "source_sha256": "a" * 64, "version": "v1"}}},
+        "external_specs": {"rate": {"shape": [2], "axes": [{"name": "age", "keys": [65, 66]}]}}}
+    record = {"rate": {"values": [0.1, 0.2], "axes": [{"name": "age", "keys": [65, 66]}],
+                       "source_sha256": "a" * 64, "version": "v1", "input_sha256": "b" * 64}}
+    assert external_inputs.validate_same_request_external_data(record, contract, "b" * 64) == {
+        "rate": [0.1, 0.2]}
+    with pytest.raises(ValueError, match="stale or mismatched"):
+        external_inputs.validate_same_request_external_data(record, contract, "c" * 64)
+    with pytest.raises(ValueError, match="stale or mismatched"):
+        external_inputs.validate_same_request_external_data({"rate": {**record["rate"], "version": "v2"}},
+                                                            contract, "b" * 64)
 _EXTENTS = {
     "external.ci_rate_by_age": "Qtable!W5:W110",
     "external.multiple_ci_rate_by_age": "Qtable!Y5:Y110",

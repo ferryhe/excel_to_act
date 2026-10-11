@@ -27,6 +27,7 @@ from excel_to_act.steps.conversion_workflow import (
     require_stage_approved,
 )
 from excel_to_act.steps.step3.calculation import _formula_signature, _parse_reference, capture_excel_oracle
+from excel_to_act.steps.step4.external_inputs import validate_same_request_external_data
 
 
 _PRIMARY_ADDRESSES = {"C3", "C4", "C6", "C7", "C8", "J48", "O26"}
@@ -40,6 +41,18 @@ def _inside(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _reserve_evidence_dir(parent: Path, prefix: str) -> Path:
+    parent.mkdir(parents=True, exist_ok=True)
+    attempt = 1
+    while True:
+        path = parent / f"{prefix}{attempt:04d}"
+        try:
+            path.mkdir()
+            return path
+        except FileExistsError:
+            attempt += 1
 
 
 def _bundle_file_paths(bundle: Path, expected_files: Any) -> list[tuple[str, Path]]:
@@ -127,11 +140,44 @@ def _target_shapes(design: dict[str, Any]) -> dict[str, list[int]]:
 
 
 def capture_oracle(workflow_dir: Path, targets: list[str] | None = None,
-                   ranges: list[str] | None = None) -> dict[str, Any]:
+                   ranges: list[str] | None = None,
+                   validation_path: Path | None = None) -> dict[str, Any]:
     """Capture new native Excel evidence without advancing the Stage 5 checkpoint."""
     try:
         root, _ = load_workflow(workflow_dir)
-        workflow, stage4_revision, report, _bundle = _stage4(root)
+        workflow, stage4_revision, report, bundle = _stage4(root)
+        overrides = None
+        input_sha256 = None
+        if validation_path is not None:
+            validation_path = validation_path.resolve()
+            if not _inside(validation_path, root / "stage5"):
+                raise ValueError("variable validation must be inside this workflow's Stage 5 directory")
+            validation = read_json(validation_path)
+            if (validation.get("status") != "pass" or validation.get("execution_mode") != "variable_input"
+                    or validation.get("stage4_artifact_sha256") != stage4_revision["artifact"]["json_sha256"]):
+                raise ValueError("variable validation is stale or is not an input-taking execution")
+            result_path = Path(validation["result_path"]).resolve()
+            if (not _inside(result_path, root / "stage5") or hash_file(result_path) != validation.get("result_sha256")):
+                raise ValueError("variable validation result is missing or changed")
+            model_result = read_json(result_path)
+            input_sha256 = model_result.get("input_sha256")
+            raw = model_result.get("raw_inputs")
+            contract = read_json(bundle / "input_layout.json").get("variable_contract")
+            expected = {binding["address"] for spec in contract["mutable"].values()
+                        for binding in spec["bindings"]} if isinstance(contract, dict) else set()
+            if (not isinstance(input_sha256, str) or len(input_sha256) != 64
+                    or not isinstance(raw, dict) or set(raw) != expected or not expected
+                    or validation.get("input_sha256") != input_sha256):
+                raise ValueError("variable validation input digest or raw source mapping is incomplete")
+            request_path = validation_path.parent / "input_request.json"
+            if not request_path.is_file() or hash_file(request_path) != validation.get("request_sha256"):
+                raise ValueError("same-request external data is missing or changed")
+            request = read_json(request_path)
+            external_values = validate_same_request_external_data(request.get("external_data"),
+                                                                   contract, input_sha256)
+            if external_values != model_result.get("external_inputs"):
+                raise ValueError("same-request external data differs from standalone execution")
+            overrides = [{"address": address, "value": value} for address, value in sorted(raw.items())]
         source = Path(workflow["source"]["workbook_path"]).resolve()
         requested_targets = list(dict.fromkeys(targets if targets is not None else report.get("target_names", [])))
         if ranges is not None:
@@ -142,17 +188,15 @@ def capture_oracle(workflow_dir: Path, targets: list[str] | None = None,
         requested_ranges = list(dict.fromkeys(planned_ranges))
         if not requested_targets and not requested_ranges:
             raise ValueError("request a target name or a finite range")
-        stage5_root = root / "stage5"
-        stage5_root.mkdir(parents=True, exist_ok=True)
-        attempt = 1
-        while (stage5_root / f"oracle-attempt-{attempt:04d}").exists():
-            attempt += 1
-        output_dir = stage5_root / f"oracle-attempt-{attempt:04d}"
+        output_dir = _reserve_evidence_dir(root / "stage5", "oracle-attempt-")
         design = _bound_stage3_design(root, workflow, stage4_revision)
         declared_shapes = _target_shapes(design)
+        oracle_options = ({"input_overrides": overrides, "input_sha256": input_sha256,
+                           "scenario_id": input_sha256} if overrides is not None else {})
         result = capture_excel_oracle(
             source, output_dir, targets=requested_targets, ranges=requested_ranges,
             target_shapes={name: declared_shapes[name] for name in requested_targets if name in declared_shapes},
+            **oracle_options,
         )
         if result.get("status") != "pass":
             return {**result, "tool": "step5.oracle", "status": "blocked"}
@@ -161,6 +205,8 @@ def capture_oracle(workflow_dir: Path, targets: list[str] | None = None,
         oracle["tool"] = "step5.oracle"
         oracle["stage4_artifact_sha256"] = stage4_revision["artifact"]["json_sha256"]
         oracle["scenario_ids"] = report.get("scenario_ids", [])
+        if validation_path is not None:
+            oracle["validation_sha256"] = hash_file(validation_path)
         oracle_path.write_text(json.dumps(oracle, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
         result["tool"] = "step5.oracle"
         result["artifact_sha256"] = hash_file(oracle_path)
@@ -312,7 +358,7 @@ def _verify_python(bundle: Path, manifest: dict[str, Any]) -> list[str]:
     return failures
 
 
-def validate_generated(workflow_dir: Path) -> dict[str, Any]:
+def validate_generated(workflow_dir: Path, request_path: Path | None = None) -> dict[str, Any]:
     """Compile and run the generated bundle in an isolated directory with no workbook."""
     try:
         root, workflow = load_workflow(workflow_dir)
@@ -321,13 +367,10 @@ def validate_generated(workflow_dir: Path) -> dict[str, Any]:
         failures = _verify_python(bundle, manifest)
         if failures:
             raise ValueError("generated-code checks failed: " + "; ".join(failures[:12]))
-        stage5_root = root / "stage5" / "execution"
-        stage5_root.mkdir(parents=True, exist_ok=True)
-        attempt = 1
-        while (stage5_root / f"attempt-{attempt:04d}").exists():
-            attempt += 1
-        attempt_dir = stage5_root / f"attempt-{attempt:04d}"
-        attempt_dir.mkdir()
+        attempt_dir = _reserve_evidence_dir(root / "stage5" / "execution", "attempt-")
+        request_bytes = request_path.read_bytes() if request_path is not None else None
+        if request_bytes is not None:
+            (attempt_dir / "input_request.json").write_bytes(request_bytes)
         with tempfile.TemporaryDirectory(prefix="step5-standalone-") as temp_name:
             isolated = Path(temp_name)
             copied_files = _copy_bundle_files(bundle, report["bundle"].get("files", {}), isolated)
@@ -336,16 +379,23 @@ def validate_generated(workflow_dir: Path) -> dict[str, Any]:
             if (isolated / Path(workflow["source"]["workbook_path"]).name).exists():
                 raise ValueError("source workbook was copied into the standalone validation directory")
             result_path = isolated / "model_result.json"
+            if request_bytes is not None:
+                (isolated / "input_request.json").write_bytes(request_bytes)
             runner = ("import runpy,sys; model_dir=sys.argv[1]; output=sys.argv[2]; "
-                      "sys.path.insert(0,model_dir); sys.argv=[model_dir+'/model.py','--out',output]; "
+                      "sys.path.insert(0,model_dir); sys.argv=[model_dir+'/model.py','--out',output]"
+                      "+(['--inputs',model_dir+'/input_request.json'] if sys.argv[3]=='1' else []); "
                       "runpy.run_path(sys.argv[0],run_name='__main__')")
-            completed = subprocess.run([sys.executable, "-I", "-c", runner, str(isolated), str(result_path)],
+            completed = subprocess.run([sys.executable, "-I", "-c", runner, str(isolated), str(result_path),
+                                        "1" if request_bytes is not None else "0"],
                                        cwd=isolated, capture_output=True, text=True, timeout=600, check=False)
             if completed.returncode != 0 or not result_path.is_file():
                 detail = (completed.stderr or completed.stdout).strip()[-3000:]
                 raise ValueError(f"generated standalone run failed with exit {completed.returncode}: {detail}")
             result_bytes = result_path.read_bytes()
             result = json.loads(result_bytes)
+            if request_bytes is not None and (result.get("execution_mode") != "variable_input"
+                                               or not isinstance(result.get("input_sha256"), str)):
+                raise ValueError("variable request did not produce a bound variable-input result")
             saved_result = attempt_dir / "model_result.json"
             saved_result.write_bytes(result_bytes)
         stage4_json = root / stage4_revision["artifact"]["json"]
@@ -355,6 +405,10 @@ def validate_generated(workflow_dir: Path) -> dict[str, Any]:
                     "generation_report_sha256": hash_file(stage4_json),
                     "bundle_path": str(bundle), "bundle_files": report["bundle"]["files"],
                     "result_path": str(saved_result), "result_sha256": hash_file(saved_result),
+                    "execution_mode": result.get("execution_mode"),
+                    "input_sha256": result.get("input_sha256"),
+                    "dependency_sha256": result.get("dependency_sha256"),
+                    "request_sha256": hashlib.sha256(request_bytes).hexdigest() if request_bytes is not None else None,
                     "compile_pass": True, "standalone_run_pass": True,
                     "runtime_dependencies": ["Python standard library only"],
                     "source_workbook_present_at_runtime": False, "project_package_required_at_runtime": False,
@@ -373,6 +427,7 @@ def validate_generated(workflow_dir: Path) -> dict[str, Any]:
         return {"schema_version": evidence["schema_version"], "tool": evidence["tool"], "status": "pass",
                 "validation": str(evidence_path), "markdown": str(markdown_path),
                 "result": str(saved_result), "result_sha256": evidence["result_sha256"],
+                "execution_mode": evidence["execution_mode"], "input_sha256": evidence["input_sha256"],
                 "result_summary": evidence["result_summary"]}
     except Exception as exc:
         return {"schema_version": "step5.execution_validation.v1", "tool": "step5.validate",
@@ -380,10 +435,10 @@ def validate_generated(workflow_dir: Path) -> dict[str, Any]:
 
 
 def _matches(actual: Any, expected: Any, abs_tol: float, rel_tol: float) -> bool:
-    if isinstance(actual, dict) and "excel_error" in actual:
-        actual = actual["excel_error"]
-    if isinstance(expected, dict) and "excel_error" in expected:
-        expected = expected["excel_error"]
+    if isinstance(actual, dict) or isinstance(expected, dict):
+        return (isinstance(actual, dict) and isinstance(expected, dict)
+                and set(actual) == set(expected) == {"excel_error"}
+                and actual["excel_error"] == expected["excel_error"])
     if isinstance(actual, (list, tuple)) or isinstance(expected, (list, tuple)):
         if not isinstance(actual, (list, tuple)) or not isinstance(expected, (list, tuple)):
             return False
@@ -459,7 +514,7 @@ def _compare_named_targets(
             if shape:
                 excel_value = _with_native_errors(excel_value, native_errors)
             elif isinstance(native.get("excel_error"), str) and native["excel_error"]:
-                excel_value = native["excel_error"]
+                excel_value = {"excel_error": native["excel_error"]}
             matched = _matches(model_value, excel_value, abs_tol, rel_tol)
         results[name] = {"model": model_value, "excel": excel_value, "matched": matched}
         if not matched and not shape_mismatch:
@@ -468,7 +523,8 @@ def _compare_named_targets(
     return results, mismatches, compared
 
 
-def _preflight_oracle(oracle: Any, source_hash: str, stage4_hash: str) -> dict[str, Any]:
+def _preflight_oracle(oracle: Any, source_hash: str, stage4_hash: str,
+                      input_sha256: str | None = None) -> dict[str, Any]:
     if not isinstance(oracle, dict) or oracle.get("schema_version") != "gp.excel_oracle.v1":
         raise ValueError("baseline must be a gp.excel_oracle.v1 JSON object from step5.oracle")
     if oracle.get("tool") != "step5.oracle" or oracle.get("status") != "pass" or oracle.get("engine") != "Microsoft Excel":
@@ -479,8 +535,16 @@ def _preflight_oracle(oracle: Any, source_hash: str, stage4_hash: str) -> dict[s
         raise ValueError("oracle source and private-copy hashes must match the approved workbook")
     if oracle.get("stage4_artifact_sha256") != stage4_hash:
         raise ValueError("oracle was captured for a different approved Step 4 artifact")
-    if oracle.get("macros_executed") is not False or oracle.get("input_overrides") != []:
-        raise ValueError("oracle must disable macros and use no input overrides")
+    if oracle.get("macros_executed") is not False:
+        raise ValueError("oracle must disable macros")
+    if input_sha256 is not None:
+        if (oracle.get("input_sha256") != input_sha256 or oracle.get("scenario_id") != input_sha256
+                or not isinstance(oracle.get("input_overrides"), list) or not oracle["input_overrides"]
+                or not isinstance(oracle.get("applied_inputs"), dict)):
+            raise ValueError("varied oracle is not bound to the exact input and readback ledger")
+        return oracle
+    if oracle.get("input_overrides") != []:
+        raise ValueError("saved-scenario oracle must use no input overrides")
     primary = oracle.get("primary_inputs")
     if not isinstance(primary, dict) or set(primary) != _PRIMARY_ADDRESSES:
         raise ValueError("oracle must include all seven saved primary input addresses")
@@ -739,7 +803,7 @@ def _read_literal_source_axis(source_path: Path, expected_source_sha256: Any,
 def _compare_external_boundary(manifest: dict[str, Any], bundle: Path,
                                model_result: dict[str, Any], native_cells: dict[str, dict[str, Any]],
                                abs_tol: float, rel_tol: float,
-                               source_path: Path) -> tuple[dict[str, int], list[dict[str, Any]]]:
+                               source_path: Path, variable_mode: bool = False) -> tuple[dict[str, int], list[dict[str, Any]]]:
     """Compare separately captured external vectors and their source formula cuts."""
     layout_path = bundle / "input_layout.json"
     if not layout_path.is_file():
@@ -847,7 +911,7 @@ def _compare_external_boundary(manifest: dict[str, Any], bundle: Path,
             metrics["external_formula_cut_members"] += 1
             metrics["external_input_coordinates"] += 1
             captured, generated, excel_value = captured_vector[index], result_vector[index], native.get("value")
-            if not _matches(generated, captured, 0, 0):
+            if not variable_mode and not _matches(generated, captured, 0, 0):
                 mismatches.append({"kind": "external_input_bundle_value", "variable_id": variable_id,
                                    "index": index, "address": address,
                                    "model": generated, "captured": captured})
@@ -952,8 +1016,14 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
         if not _inside(result_path, stage5_root) or not result_path.is_file() or hash_file(result_path) != validation.get("result_sha256"):
             raise ValueError("standalone model result is missing or changed")
         model_result = read_json(result_path)
+        variable_mode = validation.get("execution_mode") == "variable_input"
+        input_sha256 = model_result.get("input_sha256") if variable_mode else None
+        if variable_mode and (not isinstance(input_sha256, str) or input_sha256 != validation.get("input_sha256")):
+            raise ValueError("variable execution input digest differs from validation")
         oracle = _preflight_oracle(read_json(oracle_path), workflow["source"]["workbook_sha256"],
-                                  stage4_revision["artifact"]["json_sha256"])
+                                  stage4_revision["artifact"]["json_sha256"], input_sha256)
+        if variable_mode and oracle.get("validation_sha256") != hash_file(validation_path):
+            raise ValueError("varied oracle was captured from another validation receipt")
         mismatches: list[dict[str, Any]] = []
         compared_targets = 0
         design = _bound_stage3_design(root, workflow_manifest, stage4_revision)
@@ -964,13 +1034,40 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
             expected_targets, model_result.get("targets"), oracle.get("named_targets"),
             target_specs, abs_tol, rel_tol)
         mismatches.extend(target_mismatches)
+        if variable_mode:
+            axes = model_result.get("target_axes")
+            for name in sorted(expected_targets):
+                declared = target_specs.get(name, {}).get("axes", [])
+                if not isinstance(axes, dict) or axes.get(name) != declared:
+                    mismatches.append({"kind": "target_axis", "target": name,
+                                       "declared": declared, "model": axes.get(name) if isinstance(axes, dict) else None})
         primary_mismatches = []
-        raw = read_json(bundle / "source_values.json")
-        for address in sorted(_PRIMARY_ADDRESSES):
-            key = f"main!{address}"
-            native_value = oracle["primary_inputs"][address]["value"]
-            if key not in raw or not _matches(raw.get(key), native_value, 0, 0):
-                primary_mismatches.append({"address": f"Main!{address}", "model_source": raw.get(key), "excel": native_value})
+        if variable_mode:
+            raw = model_result.get("raw_inputs")
+            applied = oracle.get("applied_inputs", {})
+            requested = oracle.get("input_overrides", [])
+            requested_values = {_address_key(item["qualified_address"]): item["value"]
+                                for item in requested if isinstance(item, dict)
+                                and isinstance(item.get("qualified_address"), str)}
+            applied_records = {_address_key(address): record
+                               for address, record in applied.items() if isinstance(record, dict)}
+            applied_values = {address: record.get("value") for address, record in applied_records.items()}
+            if (not isinstance(raw, dict) or set(raw) != set(requested_values)
+                    or set(raw) != set(applied_values) or len(requested_values) != len(requested)):
+                raise ValueError("varied oracle input coordinates differ from the standalone request")
+            for key, value in raw.items():
+                if (not _matches(value, requested_values[key], 0, 0)
+                        or not _matches(value, applied_values[key], 0, 0)
+                        or applied_records[key].get("excel_error")):
+                    primary_mismatches.append({"address": key, "model_source": value,
+                                               "excel": applied_values[key]})
+        else:
+            raw = read_json(bundle / "source_values.json")
+            for address in sorted(_PRIMARY_ADDRESSES):
+                key = f"main!{address}"
+                native_value = oracle["primary_inputs"][address]["value"]
+                if key not in raw or not _matches(raw.get(key), native_value, 0, 0):
+                    primary_mismatches.append({"address": f"Main!{address}", "model_source": raw.get(key), "excel": native_value})
         if primary_mismatches:
             mismatches.extend({"kind": "primary_input", **item} for item in primary_mismatches)
 
@@ -981,7 +1078,7 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
             report, generated_manifest, source_workbook, workflow["source"]["workbook_sha256"])
         external_metrics, external_mismatches = _compare_external_boundary(
             generated_manifest, bundle, model_result, native_formula_values, abs_tol, rel_tol,
-            source_workbook)
+            source_workbook, variable_mode)
         mismatches.extend(external_mismatches)
         formula_values = model_result.get("cells", {})
         if not isinstance(formula_values, dict):
@@ -1072,6 +1169,9 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
                                         if delegated else None)}
         payload = {"schema_version": "step5.validation_report.v1", "tool": "step5.reconcile",
                    "status": status, "source_sha256": workflow["source"]["workbook_sha256"],
+                   "execution_mode": "variable_input" if variable_mode else "saved_scenario",
+                   "input_sha256": input_sha256,
+                   "dependency_sha256": model_result.get("dependency_sha256") if variable_mode else None,
                    "stage4_artifact_sha256": stage4_revision["artifact"]["json_sha256"],
                    "review_policy": review_policy,
                    "standalone_validation": {"path": str(validation_path), "sha256": hash_file(validation_path),
@@ -1087,7 +1187,9 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
                    "target_results": target_results,
                    "path_coverage": path_coverage,
                    "compared": {"named_targets": compared_targets, "required_targets": len(expected_targets),
-                                "primary_inputs": len(_PRIMARY_ADDRESSES) - len(primary_mismatches),
+                                "primary_inputs": (len(raw) if variable_mode else len(_PRIMARY_ADDRESSES))
+                                                  - len(primary_mismatches),
+                                "required_primary_inputs": len(raw) if variable_mode else len(_PRIMARY_ADDRESSES),
                                 "active_formula_members": compared_formulas,
                                 "required_active_formula_members": len(active_formula_addresses),
                                 "active_formula_identity_matches": formula_identity_matches,
@@ -1105,6 +1207,27 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
                                 "comparison_addresses": comparison_addresses},
                    "mismatch_count": len(mismatches), "mismatch_examples": mismatches[:50],
                    "formula_cache_inputs": False, "standalone_project_imports": False}
+        if variable_mode:
+            contract = read_json(bundle / "input_layout.json").get("variable_contract")
+            if not isinstance(contract, dict) or contract["support_domain"]["tolerances"] != payload["tolerances"]:
+                raise ValueError("varied reconciliation tolerances differ from approved support domain")
+            payload["case_definition_sha256"] = hashlib.sha256(json.dumps({
+                "source": payload["source_sha256"], "stage4": payload["stage4_artifact_sha256"],
+                "support_domain": contract["support_domain"], "targets": sorted(expected_targets),
+                "ranges": captured_ranges, "tolerances": payload["tolerances"],
+            }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            payload["native_verified_exact_input"] = status == "ready_for_review"
+            case_dir = _reserve_evidence_dir(root / "stage5" / "cases", f"{input_sha256}-")
+            case_path = case_dir / "case_report.json"
+            case_path.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+            (case_dir / "case_report.md").write_text(_reconciliation_markdown(
+                payload, design=design, machine_link="case_report.json",
+                workflow_link="../../../workflow.json"), encoding="utf-8")
+            return {"schema_version": payload["schema_version"], "tool": payload["tool"],
+                    "status": "pass" if status == "ready_for_review" else "fail",
+                    "artifact": str(case_path), "artifact_sha256": hash_file(case_path),
+                    "input_sha256": input_sha256, "native_verified_exact_input": payload["native_verified_exact_input"],
+                    "compared": payload["compared"], "mismatch_count": payload["mismatch_count"]}
         next_revision = len(workflow["stages"]["5"]["revisions"]) + 1
         revision_dir = root / "stage5" / f"revision-{next_revision:04d}"
         if revision_dir.exists():
@@ -1137,7 +1260,7 @@ def _reconciliation_evidence_markdown(value: dict[str, Any], design: dict[str, A
              f"- Microsoft Excel engine: `{value['oracle']['engine']}`",
              f"- Private copy SHA-256: `{value['oracle']['source_copy_sha256']}`",
              f"- Macros executed: `{value['oracle']['macros_executed']}`; input overrides: `{value['oracle']['input_overrides']}`",
-             f"- Primary inputs matched: {compared['primary_inputs']} / 7",
+             f"- Primary inputs matched: {compared['primary_inputs']} / {compared.get('required_primary_inputs', 7)}",
              f"- Named targets matched: {compared['named_targets']} / {compared['required_targets']}",
              f"- Active source formula members compared: {compared['active_formula_members']} / {compared['required_active_formula_members']}",
              f"- Active source formula identities matched: {compared.get('active_formula_identity_matches', 'unknown')} / {compared.get('required_active_formula_identities', 'unknown')}",
@@ -1399,7 +1522,8 @@ def _reconciliation_markdown(
     formula_identities = compared.get("active_formula_identity_matches")
     required_identities = compared.get("required_active_formula_identities")
     lines.extend([
-        f"- Primary inputs matched: {cell(compared.get('primary_inputs'))} / 7.",
+        f"- Primary inputs matched: {cell(compared.get('primary_inputs'))} / "
+        f"{cell(compared.get('required_primary_inputs', 7))}.",
         f"- Active formula identities matched: {cell(formula_identities)} / {cell(required_identities)}.",
         f"- External coordinates and formula cuts checked: {cell(compared.get('external_input_coordinates'))} / "
         f"{cell(compared.get('required_external_input_coordinates'))} coordinates; "
@@ -1425,7 +1549,7 @@ def _reconciliation_markdown(
     lines.extend(design_question_lines(design.get("open_questions")))
     lines.extend([
         "", "## Handover and review", "",
-        f"- Machine reconciliation: [validation_report.json](<{machine_link}>).",
+        f"- Machine reconciliation: [{'case_report.json' if machine_link == 'case_report.json' else 'validation_report.json'}](<{machine_link}>).",
         f"- Current acceptance ledger: [workflow.json](<{workflow_link}>).",
         next_review,
         "- To reject: route the decision to the responsible current or earlier Step, preserve this revision, refresh affected evidence and reports, then inspect the ledger before continuing.",

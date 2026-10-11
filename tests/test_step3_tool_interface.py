@@ -169,6 +169,23 @@ def test_unknown_fields_and_literal_defaults_are_rejected(tmp_path: Path) -> Non
             "default_policy": {"status": "literal", "value": 65}}]})
 
 
+def test_variable_domain_declarations_need_exact_trace_producer_and_tolerances() -> None:
+    declaration = {**_declaration("IssueAge"), "required": False,
+                   "default_policy": {"status": "saved"}, "allow_blank": False,
+                   "allowed_range": {"status": "enum", "values": [60, 65]}}
+    domain = {"status": "fixed_trace", "active_trace_sha256": "a" * 64,
+              "external_policy": {"rate": {"mode": "same_request",
+                                            "source_sha256": "b" * 64, "version": "v1"}},
+              "tolerances": {"absolute": 1e-12, "relative": 1e-12}}
+    validate_tool_interface_declarations({"objects": [declaration], "support_domain": domain})
+    with pytest.raises(ValueError, match="absolute and relative tolerances"):
+        validate_tool_interface_declarations({"objects": [declaration],
+                                              "support_domain": {**domain, "tolerances": {"absolute": 0}}})
+    with pytest.raises(ValueError, match="distinct finite scalar values"):
+        validate_tool_interface_declarations({"objects": [{**declaration,
+            "allowed_range": {"status": "enum", "values": [65, 65]}}]})
+
+
 def test_cli_reports_generation_without_execution_claim(tmp_path: Path) -> None:
     root = _approved_workflow(tmp_path)
     result = CliRunner().invoke(app, ["step3", "interface", "--workflow", str(root)])

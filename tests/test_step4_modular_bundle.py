@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 from openpyxl.worksheet.formula import ArrayFormula
 
@@ -17,6 +19,7 @@ from excel_to_act.steps.step4.modular_bundle import (
     _augment_literal_sources,
     _named_bindings,
     _raw_bindings,
+    _variable_contract_layout,
     add_adapter_metadata,
     build_modular_bundle_files,
 )
@@ -80,22 +83,77 @@ def _input_records():
     ]
 
 
+def _variable_interface(source_hash: str) -> dict:
+    return {
+        "schema_version": "step3.tool_interface.v1",
+        "contract_readiness": {"status": "defined", "blockers": []},
+        "bindings": {"source": {"workbook_sha256": source_hash}, "design": {}, "input_boundary": {}},
+        "support_domain": {"status": "fixed_trace", "active_trace_sha256": "t" * 64,
+                           "external_policy": {}, "tolerances": {"absolute": 0, "relative": 0}},
+        "objects": [{"variable_id": variable_id, "logical_name": name,
+                     "mutability": "mutable" if variable_id in {"raw.value", "raw.config"} else "immutable",
+                     "shape": shape, "axes": axes, "value_type": value_type,
+                     "required": variable_id != "raw.config",
+                     "default_policy": {"status": "saved" if variable_id == "raw.config" else "none"},
+                     "allowed_range": allowed_range}
+                    for variable_id, name, shape, axes, value_type, allowed_range in (
+                        ("raw.key", "Key", [3], [{"name": "year"}], "integer", {"status": "unbounded"}),
+                        ("raw.value", "Value", [3], [{"name": "year", "keys": [1, 2, 3]}], "number",
+                         {"status": "declared", "minimum": 0, "maximum": 25}),
+                        ("raw.config", "Config", [], [], "integer", {"status": "enum", "values": [2, 5]}),
+                    )],
+        "source_provenance": {"inputs": {variable_id: {"role": "source_raw"}
+                                         for variable_id in ("raw.key", "raw.value", "raw.config")},
+                              "outputs": {"Answer": {"selector": "Answer"}}},
+        "outputs": {"properties": {"Answer": {"x-axes": []}}},
+    }
+
+
+def test_fixed_trace_guard_includes_lookup_return_used_by_a_branch() -> None:
+    bindings = [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
+                for row in range(1, 4)]
+    bindings.append({"address": "main!F1", "variable_id": "raw.config", "indices": []})
+    trace = {"lookups": [{"formula_cell": "Main!D1", "function": "VLOOKUP",
+                          "table_range": "Main!A1:E3", "lookup_column": 1,
+                          "return_column": 2, "matched_row": 2}],
+             "branches": [{"formula_cell": "Main!D1", "function": "IF", "selected_argument": 1}],
+             "edges": [{"consumer": "Main!D1", "prerequisite": "Main!F1",
+                        "relationship": "cell_reference"}]}
+    contract = _variable_contract_layout(_variable_interface("a" * 64), bindings, [], "t" * 64,
+                                         trace, {"main!B1": 11, "main!B2": 12, "main!B3": 13,
+                                                 "main!F1": 2})
+    assert contract["fixed_trace_source_values"] == {"main!B2": 12, "main!F1": 2}
+
+
 def test_modular_bundle_runs_named_table_and_grouped_family_driver_in_isolation(tmp_path: Path) -> None:
     source_path = tmp_path / "source.xlsx"
-    source_hash = _workbook(source_path)
+    _workbook(source_path)
+    workbook = load_workbook(source_path)
+    workbook["Main"]["D1"] = "=VLOOKUP(2,RawTable,F1,FALSE)"
+    workbook["Main"]["E2"] = "=A2*100"
+    workbook["Main"]["F1"] = 2
+    workbook.save(source_path)
+    workbook.close()
+    source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
     variables = _input_records()
     formulas = [
         ("Main!C1", "=A1*10"), ("Main!C2", "=A2*10"), ("Main!C3", "=A3*10"),
-        ("Main!D1", "=VLOOKUP(2,RawTable,3,FALSE)"),
+        ("Main!D1", "=VLOOKUP(2,RawTable,F1,FALSE)"),
     ]
     trace = {"source_sha256": source_hash, "names": [
         {"scope": "workbook", "name": "RawTable"}, {"scope": "workbook", "name": "Answer"}],
         "cells": [
             *[{"address": f"Main!A{row}", "sheet": "Main", "role": "source_value"} for row in range(1, 4)],
             *[{"address": f"Main!B{row}", "sheet": "Main", "role": "source_value"} for row in range(1, 4)],
+            {"address": "Main!F1", "sheet": "Main", "role": "source_value"},
             *[{"address": address, "sheet": "Main", "role": "calculated_formula", "formula": formula}
               for address, formula in formulas],
-        ]}
+        ],
+        "edges": [{"consumer": "Main!D1", "prerequisite": "Main!F1", "relationship": "cell_reference"},
+                  {"consumer": "Main!D1", "prerequisite": "Main!A1:E3", "relationship": "lookup_table"}],
+        "lookups": [{"formula_cell": "Main!D1", "function": "VLOOKUP",
+                     "table_range": "Main!A1:E3", "lookup_column": 1, "return_column": 2,
+                     "matched_row": 2, "match_mode": "exact"}]}
     plan = {
         "schema_version": "step3.semantic_plan.v1", "source": {"source_sha256": source_hash},
         "variables": variables,
@@ -124,7 +182,7 @@ def test_modular_bundle_runs_named_table_and_grouped_family_driver_in_isolation(
             "array_instance_count": 0,
         },
         "reference_resolution": {"named_references": [
-            {"name": "RawTable", "kind": "range", "source_ref": "Main!A1:C3",
+            {"name": "RawTable", "kind": "range", "source_ref": "Main!A1:E3",
              "table_binding": {"kind": "column_overlay_table", "key_variable_id": "raw.key",
                                "value_variable_id": "raw.value", "value_column_index": 2,
                                "formula_columns": {"C": "table.value"}}},
@@ -153,12 +211,82 @@ def test_modular_bundle_runs_named_table_and_grouped_family_driver_in_isolation(
         semantic_plan_sha256="p" * 64, source_profile_sha256="f" * 64,
         trace_sha256="t" * 64, trace_path=tmp_path / "trace.json", trace_source="synthetic_fixture",
         scenario_ids=["synthetic"],
+        variable_interface=_variable_interface(source_hash),
     )
 
     bundle = Path(built["bundle"])
     result = _smoke_bundle(bundle, output / "smoke", ["Answer"])
     payload = json.loads(Path(result["result_path"]).read_text(encoding="utf-8"))
-    assert payload["targets"]["Answer"] == 20
+    assert payload["targets"]["Answer"] == 12
+    isolated = tmp_path / "isolated"
+    shutil.copytree(bundle, isolated)
+    assert not list(isolated.glob("*.xlsx"))
+
+    def varied(values: list[int], label: str, axes: list[dict] | None = None) -> subprocess.CompletedProcess[str]:
+        request = isolated / f"{label}.json"
+        request.write_text(json.dumps({"inputs": {"Value": {"values": values,
+                                                               "axes": axes if axes is not None else [{"name": "year", "keys": [1, 2, 3]}]}},
+                                       "external_data": {}}), encoding="utf-8")
+        return subprocess.run([sys.executable, "model.py", "--inputs", str(request),
+                               "--out", str(isolated / f"{label}-result.json")], cwd=isolated,
+                              capture_output=True, text=True, check=False)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = list(pool.map(lambda pair: varied(*pair),
+                                      [([11, 25, 13], "first"), ([11, 20, 13], "second")]))
+    assert first.returncode == second.returncode == 0, (first.stderr, second.stderr)
+    varied_result = json.loads((isolated / "first-result.json").read_text(encoding="utf-8"))
+    baseline_result = json.loads((isolated / "second-result.json").read_text(encoding="utf-8"))
+    assert varied_result["targets"]["Answer"] == 25
+    assert baseline_result["targets"]["Answer"] == 20
+    assert "main!e2" not in {address.casefold() for address in built["manifest"]["formula_addresses"]}
+    assert varied_result["raw_inputs"]["main!F1"] == 2
+    assert json.loads((bundle / "input_layout.json").read_text(encoding="utf-8"))[
+        "variable_contract"]["fixed_trace_source_values"] == {"main!F1": 2}
+    assert varied_result["input_sha256"] != baseline_result["input_sha256"]
+    selector_request = isolated / "selector.json"
+    selector_request.write_text(json.dumps({"inputs": {
+        "Value": {"values": [11, 25, 13], "axes": [{"name": "year", "keys": [1, 2, 3]}]},
+        "Config": {"values": 5, "axes": []}}, "external_data": {}}), encoding="utf-8")
+    unsupported = subprocess.run([sys.executable, "model.py", "--inputs", str(selector_request)],
+                                 cwd=isolated, capture_output=True, text=True, check=False)
+    assert unsupported.returncode != 0 and "unsupported fixed-trace formula or lookup selection: main!F1" in unsupported.stderr
+    selector_request.write_text(json.dumps({"inputs": {
+        "Value": {"values": [11, 25, 13], "axes": [{"name": "year", "keys": [1, 2, 3]}]},
+        "Config": None}, "external_data": {}}), encoding="utf-8")
+    null_optional = subprocess.run([sys.executable, "model.py", "--inputs", str(selector_request)],
+                                   cwd=isolated, capture_output=True, text=True, check=False)
+    assert null_optional.returncode != 0 and "Config must have values and axes" in null_optional.stderr
+    assert varied([11, 25, 13], "repeat").returncode == 0
+    assert json.loads((isolated / "repeat-result.json").read_text(encoding="utf-8"))["input_sha256"] == varied_result["input_sha256"]
+    assert "outside its approved range" in varied([11, 26, 13], "range").stderr
+    assert "invalid number" in varied([11, True, 13], "type").stderr
+    assert "wrong shape" in varied([11, 25], "shape").stderr
+    assert "axes or key order" in varied([11, 25, 13], "axes", [{"name": "other"}]).stderr
+    assert "axes or key order" in varied([11, 25, 13], "reordered", [{"name": "year", "keys": [2, 1, 3]}]).stderr
+    typed_axis = varied([11, 25, 13], "typed-axis", [{"name": "year", "keys": [True, 2, 3]}])
+    assert typed_axis.returncode != 0 and "axes or key order" in typed_axis.stderr
+    assert "duplicate or missing keys" in varied([11, 25, 13], "duplicate", [{"name": "year", "keys": [1, 1, 3]}]).stderr
+    null_request = isolated / "null-request.json"
+    null_request.write_text("null", encoding="utf-8")
+    null_run = subprocess.run([sys.executable, "model.py", "--inputs", str(null_request),
+                               "--out", str(isolated / "null-result.json")], cwd=isolated,
+                              capture_output=True, text=True, check=False)
+    assert null_run.returncode != 0 and "variable request must contain inputs and external_data" in null_run.stderr
+    assert not (isolated / "null-result.json").exists()
+    request = isolated / "missing.json"
+    request.write_text(json.dumps({"inputs": {}, "external_data": {}}), encoding="utf-8")
+    missing = subprocess.run([sys.executable, "model.py", "--inputs", str(request)],
+                             cwd=isolated, capture_output=True, text=True, check=False)
+    assert "required variable input is missing" in missing.stderr
+    request.write_text(json.dumps({"inputs": {"Key": {"values": [1, 2, 3], "axes": [{"name": "year"}]}},
+                                   "external_data": {}}), encoding="utf-8")
+    immutable = subprocess.run([sys.executable, "model.py", "--inputs", str(request)],
+                               cwd=isolated, capture_output=True, text=True, check=False)
+    assert "unknown or immutable variable input" in immutable.stderr
+    source_values_path = isolated / "source_values.json"
+    source_values_path.write_bytes(source_values_path.read_bytes() + b" ")
+    assert "bundle asset changed" in varied([11, 25, 13], "stale").stderr
     assert payload["calculated_variables"]["table.value"] == {
         "shape": [3],
         "demanded_values": [
@@ -168,9 +296,9 @@ def test_modular_bundle_runs_named_table_and_grouped_family_driver_in_isolation(
         ],
     }
     assert payload["calculated_variables"]["model.answer"]["demanded_values"] == [
-        {"indices": [], "value": 20}]
+        {"indices": [], "value": 12}]
     assert payload["calculated_value_count"] == 4
-    assert payload["cells"] == {"main!C1": 10, "main!C2": 20, "main!C3": 30, "main!D1": 20}
+    assert payload["cells"] == {"main!C1": 10, "main!C2": 20, "main!C3": 30, "main!D1": 12}
     assert built["manifest"]["compiled_variant_count"] == 2
     assert built["manifest"]["array_instance_count"] == built["coverage"]["array_instance_count"] == 0
     assert built["coverage"]["active_formula_member_count"] == 4

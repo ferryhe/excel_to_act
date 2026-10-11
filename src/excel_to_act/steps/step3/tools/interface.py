@@ -12,7 +12,7 @@ from excel_to_act.steps.step3.input_boundary import confirmed_boundary_reference
 
 
 _SCHEMA_ID = "step3.tool_interface.v1"
-_EXPORTER_VERSION = "1"
+_EXPORTER_VERSION = "2"
 _TYPES = {"boolean", "integer", "number", "string"}
 
 
@@ -38,7 +38,10 @@ def export_tool_interface(workflow_dir: Path) -> dict[str, Any]:
         design = conversion.read_json(design_path)
         boundary = conversion.read_json(boundary_json)
         _check_bindings(manifest, design_revision, design, boundary_reference, boundary, boundary_state)
-        objects, parameters, source_map, blockers = _build_contract(design, boundary)
+        support_domain = _support_domain(design.get("design", {}).get("tool_interface"))
+        objects, parameters, source_map, blockers = _build_contract(design, boundary, support_domain)
+        if support_domain is None:
+            blockers.append("supported variable-input trace and producer policy are not approved")
         outputs, output_provenance, output_blockers = _build_outputs(design)
         source_map["outputs"] = output_provenance
         blockers = sorted(set([*blockers, *output_blockers]))
@@ -49,6 +52,7 @@ def export_tool_interface(workflow_dir: Path) -> dict[str, Any]:
             "status": "interface_generated",
             "operation": "calculate",
             "parameters": parameters,
+            "support_domain": support_domain,
             "outputs": outputs,
             "objects": objects,
             "source_provenance": source_map,
@@ -174,7 +178,8 @@ def _check_bindings(
     validate_output_interface_declarations(design.get("design", {}).get("targets"))
 
 
-def _build_contract(design: dict[str, Any], boundary: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], list[str]]:
+def _build_contract(design: dict[str, Any], boundary: dict[str, Any],
+                    support_domain: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], list[str]]:
     variables = boundary.get("variables")
     if not isinstance(variables, list) or not variables:
         raise ValueError("confirmed input boundary has no logical variables")
@@ -214,7 +219,8 @@ def _build_contract(design: dict[str, Any], boundary: dict[str, Any]) -> tuple[l
         item = {"variable_id": variable_id, "logical_name": logical_name, "kind": kind,
                 "shape": shape, "axes": axes, "mutability": mutability,
                 "value_type": value_type, "required": requiredness, "default_policy": default_policy,
-                "allowed_range": allowed_range, "units": units, "unit_basis": unit_basis}
+                "allowed_range": allowed_range, "units": units, "unit_basis": unit_basis,
+                "allow_blank": declaration.get("allow_blank", False)}
         objects.append(item)
         source_map.setdefault("inputs", {})[variable_id] = {
             key: variable[key] for key in ("logical_name", "group_id", "role", "logical_role",
@@ -225,6 +231,8 @@ def _build_contract(design: dict[str, Any], boundary: dict[str, Any]) -> tuple[l
             properties[logical_name] = schema
             if requiredness is True:
                 required.append(logical_name)
+            elif requiredness is False and default_policy.get("status") != "saved":
+                blockers.append(f"{logical_name}: optional mutable input needs an approved saved default")
         if mutability == "unknown":
             blockers.append(f"{logical_name}: mutability is unknown")
         if value_type == "unknown":
@@ -239,7 +247,8 @@ def _build_contract(design: dict[str, Any], boundary: dict[str, Any]) -> tuple[l
             blockers.append(f"{logical_name}: units are unknown")
         if unit_basis == "unknown":
             blockers.append(f"{logical_name}: unit basis is unknown")
-        if variable.get("value_source_policy", {}).get("available_now") is False:
+        if (variable.get("value_source_policy", {}).get("available_now") is False
+                and variable_id not in (support_domain or {}).get("external_policy", {})):
             blockers.append(f"{logical_name}: approved current external value is unavailable")
     if declarations:
         raise ValueError("tool_interface declares boundary variables that are not in the current input boundary: "
@@ -297,13 +306,13 @@ def _build_outputs(design: dict[str, Any]) -> tuple[dict[str, Any], dict[str, An
 def _design_object_declarations(value: Any) -> dict[str, dict[str, Any]]:
     if value is None:
         return {}
-    _reject_fields(value, {"objects"}, "design.tool_interface")
+    _reject_fields(value, {"objects", "support_domain"}, "design.tool_interface")
     objects = value.get("objects")
     if not isinstance(objects, list):
         raise ValueError("design.tool_interface.objects must be a list")
     result: dict[str, dict[str, Any]] = {}
     allowed = {"variable_id", "mutability", "value_type", "required", "default_policy",
-               "allowed_range", "units", "unit_basis"}
+               "allowed_range", "units", "unit_basis", "allow_blank"}
     for index, declaration in enumerate(objects):
         _reject_fields(declaration, allowed, f"design.tool_interface.objects[{index}]")
         variable_id = declaration.get("variable_id")
@@ -316,6 +325,8 @@ def _design_object_declarations(value: Any) -> dict[str, dict[str, Any]]:
             raise ValueError(f"tool_interface {variable_id} value_type must be boolean, integer, number, string, or unknown")
         if "required" in declaration and not isinstance(declaration["required"], bool):
             raise ValueError(f"tool_interface {variable_id} required must be boolean")
+        if "allow_blank" in declaration and not isinstance(declaration["allow_blank"], bool):
+            raise ValueError(f"tool_interface {variable_id} allow_blank must be boolean")
         for key in ("units", "unit_basis"):
             if key in declaration and (not isinstance(declaration[key], str) or not declaration[key].strip()):
                 raise ValueError(f"tool_interface {variable_id} {key} must be non-empty text")
@@ -329,18 +340,32 @@ def _design_object_declarations(value: Any) -> dict[str, dict[str, Any]]:
 
 
 def _validate_default_policy(value: Any, variable_id: str) -> None:
-    if not isinstance(value, dict) or value.get("status") not in {"unknown", "none"}:
-        raise ValueError(f"tool_interface {variable_id} default_policy must be unknown or none; "
+    if not isinstance(value, dict) or value.get("status") not in {"unknown", "none", "saved"}:
+        raise ValueError(f"tool_interface {variable_id} default_policy must be unknown, none, or approved saved; "
                          "literal defaults need later approved value capture")
     _reject_fields(value, {"status"}, f"tool_interface {variable_id} default_policy")
 
 
 def _validate_allowed_range(value: Any, value_type: str, variable_id: str) -> None:
-    if not isinstance(value, dict) or value.get("status") not in {"unknown", "unbounded", "declared"}:
+    if not isinstance(value, dict) or value.get("status") not in {"unknown", "unbounded", "declared", "enum"}:
         raise ValueError(f"tool_interface {variable_id} allowed_range needs an explicit status")
     status = value["status"]
-    allowed = {"status", "minimum", "maximum"} if status == "declared" else {"status"}
+    allowed = ({"status", "minimum", "maximum"} if status == "declared" else
+               {"status", "values"} if status == "enum" else {"status"})
     _reject_fields(value, allowed, f"tool_interface {variable_id} allowed_range")
+    if status == "enum":
+        values = value.get("values")
+        if (not isinstance(values, list) or not values
+                or any(item is not None and type(item) not in {bool, int, float, str} for item in values)
+                or any(type(item) is float and not math.isfinite(item) for item in values)
+                or any(item is not None and not (
+                    value_type == "boolean" and type(item) is bool
+                    or value_type == "integer" and type(item) is int
+                    or value_type == "number" and type(item) in {int, float}
+                    or value_type == "string" and type(item) is str) for item in values)
+                or len({json.dumps(item, sort_keys=True) for item in values}) != len(values)):
+            raise ValueError(f"tool_interface {variable_id} enum needs distinct finite scalar values")
+        return
     if status != "declared":
         return
     if value_type not in {"integer", "number"}:
@@ -366,7 +391,8 @@ def _parameter_schema(variable: dict[str, Any], declaration: dict[str, Any]) -> 
                    "x-default-policy": declaration.get("default_policy", {"status": "unknown"}),
                    "x-allowed-range": allowed_range,
                    "x-units": declaration.get("units", "unknown"),
-                   "x-unit-basis": declaration.get("unit_basis", "unknown")})
+                   "x-unit-basis": declaration.get("unit_basis", "unknown"),
+                   "x-allow-blank": declaration.get("allow_blank", False)})
     return schema
 
 
@@ -383,6 +409,34 @@ def _shape_schema(shape: list[int], value_type: str, allowed_range: dict[str, An
 def validate_tool_interface_declarations(value: Any) -> None:
     """Validate the closed, optional per-object contract annotations in a design input."""
     _design_object_declarations(value)
+    _support_domain(value)
+
+
+def _support_domain(value: Any) -> dict[str, Any] | None:
+    if value is None or value.get("support_domain") is None:
+        return None
+    domain = value["support_domain"]
+    _reject_fields(domain, {"status", "active_trace_sha256", "external_policy", "tolerances"},
+                   "design.tool_interface.support_domain")
+    if (domain.get("status") != "fixed_trace" or not isinstance(domain.get("active_trace_sha256"), str)
+            or len(domain["active_trace_sha256"]) != 64 or not all(
+                char in "0123456789abcdef" for char in domain["active_trace_sha256"])):
+        raise ValueError("variable support domain needs an approved fixed active-trace SHA-256")
+    policies = domain.get("external_policy", {})
+    tolerances = domain.get("tolerances")
+    if (not isinstance(tolerances, dict) or set(tolerances) != {"absolute", "relative"}
+            or any(type(number) not in {int, float} or not math.isfinite(number) or number < 0
+                   for number in tolerances.values())):
+        raise ValueError("variable support domain needs approved absolute and relative tolerances")
+    if not isinstance(policies, dict):
+        raise ValueError("external producer policy must name each same-request input")
+    for key, policy in policies.items():
+        _reject_fields(policy, {"mode", "source_sha256", "version"}, f"external producer {key}")
+        if (not isinstance(key, str) or policy.get("mode") != "same_request"
+                or not isinstance(policy.get("source_sha256"), str) or len(policy["source_sha256"]) != 64
+                or not isinstance(policy.get("version"), str) or not policy["version"]):
+            raise ValueError("external producer needs an approved same-request source and version")
+    return domain
 
 
 def validate_output_interface_declarations(targets: Any) -> None:

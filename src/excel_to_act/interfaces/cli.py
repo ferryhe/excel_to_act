@@ -672,9 +672,12 @@ def step5_tools() -> None:
 
 
 @step5_app.command("validate")
-def step5_validate(workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False)) -> None:
+def step5_validate(
+    workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
+    inputs: Path | None = typer.Option(None, "--inputs", exists=True, dir_okay=False, readable=True),
+) -> None:
     """Compile and run generated Python in isolation without the source workbook."""
-    result = validate_generated(workflow)
+    result = validate_generated(workflow, request_path=inputs)
     _emit_json(result)
     if result.get("status") != "pass":
         raise typer.Exit(code=1)
@@ -685,9 +688,11 @@ def step5_oracle(
     workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
     target: list[str] = typer.Option([], "--target", help="Defined name to capture; may be repeated"),
     cell_range: list[str] = typer.Option([], "--range", help="Finite qualified range to capture; may be repeated"),
+    validation: Path | None = typer.Option(None, "--validation", exists=True, dir_okay=False, readable=True),
 ) -> None:
     """Capture native Excel results on a private macro-disabled copy; does not advance Step 5."""
-    result = capture_oracle(workflow, targets=target or None, ranges=cell_range or None)
+    result = capture_oracle(workflow, targets=target or None, ranges=cell_range or None,
+                            validation_path=validation)
     _emit_json(result)
     if result.get("status") != "pass":
         raise typer.Exit(code=1)

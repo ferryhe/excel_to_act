@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 from openpyxl import Workbook
 
@@ -32,6 +34,27 @@ from excel_to_act.steps.step5.workflow import (
     validate_generated,
 )
 from excel_to_act.steps.step5 import workflow as step5_workflow
+
+
+def test_step5_evidence_directories_are_reserved_exclusively(tmp_path: Path) -> None:
+    for parent, prefix in ((tmp_path / "stage5" / "execution", "attempt-"),
+                           (tmp_path / "stage5", "oracle-attempt-"),
+                           (tmp_path / "stage5" / "cases", f"{'a' * 64}-")):
+        parent.mkdir(parents=True, exist_ok=True)
+        existing = parent / f"{prefix}0001"
+        existing.mkdir()
+        (existing / "receipt.json").write_text("preserve", encoding="utf-8")
+        barrier = Barrier(8)
+
+        def reserve(_index: int) -> Path:
+            barrier.wait(timeout=10)
+            return step5_workflow._reserve_evidence_dir(parent, prefix)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            reserved = list(pool.map(reserve, range(8)))
+        assert {path.name for path in reserved} == {f"{prefix}{index:04d}" for index in range(2, 10)}
+        assert all(path.is_dir() for path in reserved)
+        assert (existing / "receipt.json").read_text(encoding="utf-8") == "preserve"
 
 
 def test_stage5_reconciles_declared_vector_and_table_values_recursively() -> None:
@@ -78,6 +101,18 @@ def test_stage5_reconciles_declared_vector_and_table_values_recursively() -> Non
     assert not _matches([[1.0, 2.1]], [[1.0], [2.1]], 0.5, 0)
     assert not _matches([True], [1], 1.0, 0.0)
     assert _matches([None], [None], 0.0, 0.0)
+    assert not _matches({"excel_error": "#N/A"}, "#N/A", 0, 0)
+    assert _matches({"excel_error": "#N/A"}, {"excel_error": "#N/A"}, 0, 0)
+    assert not _matches("", None, 0, 0)
+    assert not _matches(0, False, 0, 0)
+    error_target, error_mismatches, _ = _compare_named_targets(
+        {"Error"}, {"Error": {"excel_error": "#N/A"}},
+        {"Error": {"value": None, "excel_error": "#N/A"}}, {"Error": {"shape": []}}, 0, 0)
+    assert error_target["Error"]["matched"] and not error_mismatches
+    string_target, string_mismatches, _ = _compare_named_targets(
+        {"Error"}, {"Error": "#N/A"},
+        {"Error": {"value": None, "excel_error": "#N/A"}}, {"Error": {"shape": []}}, 0, 0)
+    assert not string_target["Error"]["matched"] and string_mismatches
     assert _value_has_shape([[3], [4]], [2, 1])
     assert not _value_has_shape([[3, 4]], [2, 1])
 
@@ -213,6 +248,17 @@ def test_step5_oracle_requires_completed_native_calculation_state() -> None:
               "primary_inputs": {address: {"value": 1} for address in
                                  ("C3", "C4", "C6", "C7", "C8", "J48", "O26")}}
     _preflight_oracle({**oracle, "calculation_state": 0}, "source", "stage4")
+    varied = {**oracle, "calculation_state": 0, "primary_inputs": {},
+              "input_overrides": [{"qualified_address": "Main!C3", "value": 7}],
+              "applied_inputs": {"Main!C3": {"value": 7}},
+              "input_sha256": "a" * 64, "scenario_id": "a" * 64}
+    _preflight_oracle(varied, "source", "stage4", "a" * 64)
+    try:
+        _preflight_oracle(varied, "source", "stage4", "b" * 64)
+    except ValueError as exc:
+        assert "exact input" in str(exc)
+    else:
+        raise AssertionError("oracle for input A must not serve input B")
     for state in (None, 1, 2):
         try:
             _preflight_oracle({**oracle, "calculation_state": state}, "source", "stage4")
@@ -622,20 +668,32 @@ def test_step5_reconciles_synthetic_generation_and_separates_extra_capture(tmp_p
 
     bundle = root / "stage4" / "bundles" / "revision-0001" / "bundle"
     bundle.mkdir(parents=True)
+    contract = {"mutable": {"X": {"bindings": [{"address": "main!C3", "indices": []}]}},
+                "support_domain": {"external_policy": {}, "tolerances": {"absolute": 1e-12, "relative": 1e-12}}}
     files = {
         "model.py": (
-            "import argparse, json\n"
+            "import argparse, hashlib, json\n"
             "from pathlib import Path\n"
             "def main():\n"
             "    parser = argparse.ArgumentParser()\n"
             "    parser.add_argument('--out', type=Path, default=Path('model_result.json'))\n"
+            "    parser.add_argument('--inputs', type=Path)\n"
             "    args = parser.parse_args()\n"
-            "    args.out.write_text(json.dumps({'status':'pass','targets':{'GP':1},"
-            "'cells':{'Main!A1':2},'cell_count':1,'formula_count':1}), encoding='utf-8')\n"
+            "    request = json.loads(args.inputs.read_text()) if args.inputs else None\n"
+            "    value = request['inputs']['X']['values'] if request else 1\n"
+            "    effective = request['inputs'] if request else None\n"
+            "    digest = hashlib.sha256((json.dumps(effective,sort_keys=True,separators=(',',':'))+'\\n').encode()).hexdigest() if request else None\n"
+            "    args.out.write_text(json.dumps({'status':'pass','targets':{'GP':value},"
+            "'cells':{'Main!A1':2},'cell_count':1,'formula_count':1,"
+            "'execution_mode':'variable_input' if request else 'saved_scenario',"
+            "'input_sha256':digest,'raw_inputs':{'main!C3':value} if request else {},"
+            "'external_inputs':{},'target_axes':{'GP':[]},"
+            "'dependency_sha256':'dependency'}), encoding='utf-8')\n"
             "if __name__ == '__main__': main()\n"
         ),
         "modular_runtime.py": "VALUE = 1\n",
-        "input_layout.json": '{"external_bindings": [], "external_capture": null}\n',
+        "input_layout.json": json.dumps({"external_bindings": [], "external_capture": None,
+                                           "variable_contract": contract}) + "\n",
         "source_values.json": json.dumps({f"main!{address}": 1 for address in
                                            ("C3", "C4", "C6", "C7", "C8", "J48", "O26")}) + "\n",
     }
@@ -742,3 +800,46 @@ def test_step5_reconciles_synthetic_generation_and_separates_extra_capture(tmp_p
     assert "Captured selector `Main!B1`: captured-only for active-formula comparison; no active formula address from this selector was compared." in markdown
     assert "The report lists named targets, primary inputs, external values, formula cuts, and age keys separately." in markdown
     assert "ExtraTarget" not in report["target_results"]
+
+    request_a = root / "request-a.json"
+    request_a.write_text(json.dumps({"inputs": {"X": {"values": 7, "axes": []}},
+                                     "external_data": {}}), encoding="utf-8")
+    varied_a = validate_generated(root, request_a)
+    assert varied_a["status"] == "pass" and varied_a["input_sha256"]
+
+    def varied_capture(_source, output_dir, *, targets, ranges, target_shapes,
+                       input_overrides, input_sha256, scenario_id):
+        assert input_overrides == [{"address": "main!C3", "value": 7}]
+        assert scenario_id == input_sha256
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "excel_oracle.json").write_text(json.dumps({
+            "schema_version": "gp.excel_oracle.v1", "tool": "step5.oracle", "status": "pass",
+            "engine": "Microsoft Excel", "calculation_state": 0,
+            "source_sha256": source_hash, "source_copy_sha256": source_hash,
+            "macros_executed": False, "input_overrides": [{"qualified_address": "Main!C3", "value": 7}],
+            "input_sha256": input_sha256, "scenario_id": scenario_id,
+            "applied_inputs": {"Main!C3": {"value": 7, "excel_error": None}},
+            "named_targets": {"GP": {"value": 7}},
+            "ranges": {"Main!A1": {"qualified_address": "Main!A1", "values": [[2]],
+                                    "formulas": [["=1+1"]], "excel_errors": [[None]]}},
+        }), encoding="utf-8")
+        return {"status": "pass", "tool": "step5.oracle"}
+
+    monkeypatch.setattr(step5_workflow, "capture_excel_oracle", varied_capture)
+    varied_oracle = step5_workflow.capture_oracle(root, validation_path=Path(varied_a["validation"]))
+    assert varied_oracle["status"] == "pass", varied_oracle
+    revisions_before = len(load_workflow(root)[1]["stages"]["5"]["revisions"])
+    varied_case = reconcile(root, Path(varied_a["validation"]), Path(varied_oracle["artifact"]))
+    assert varied_case["status"] == "pass" and varied_case["native_verified_exact_input"] is True, varied_case
+    assert varied_case["input_sha256"] == varied_a["input_sha256"]
+    case_markdown = Path(varied_case["artifact"]).with_suffix(".md").read_text(encoding="utf-8")
+    assert "Primary inputs matched: 1 / 1" in case_markdown
+    assert "[case_report.json](<case_report.json>)" in case_markdown
+    assert len(load_workflow(root)[1]["stages"]["5"]["revisions"]) == revisions_before
+    request_b = root / "request-b.json"
+    request_b.write_text(json.dumps({"inputs": {"X": {"values": 8, "axes": []}},
+                                     "external_data": {}}), encoding="utf-8")
+    varied_b = validate_generated(root, request_b)
+    assert varied_b["status"] == "pass" and varied_b["input_sha256"] != varied_a["input_sha256"]
+    cross_input = reconcile(root, Path(varied_b["validation"]), Path(varied_oracle["artifact"]))
+    assert cross_input["status"] == "blocked" and "exact input" in cross_input["reason"]
