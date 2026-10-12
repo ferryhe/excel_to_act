@@ -8,6 +8,8 @@ from math import prod
 from pathlib import Path
 import re
 from typing import Any
+import xml.etree.ElementTree as ET
+from zipfile import ZipFile
 
 from openpyxl.utils.cell import get_column_letter, range_boundaries
 
@@ -100,6 +102,46 @@ def _validate_scope_notes(notes: Any) -> None:
                         raise ValueError(f"stored coordinate audit {key} must be boolean")
 
 
+def _with_verified_stored_blanks(catalog: dict[str, Any], fields: dict[str, Any],
+                                 inventory: dict[str, Any], source_path: Path,
+                                 source_sha256: str) -> dict[str, Any]:
+    reconciliation = catalog.get("source_scope_notes", {}).get("stored_coordinate_reconciliation", {})
+    blanks = [item for item in reconciliation.get("historical_empty_coordinates", [])
+              if item.get("source_value_status") == "stored_blank_no_literal"]
+    if not blanks:
+        return fields
+    if (reconciliation.get("source_copy_sha256") != source_sha256 or not source_path.is_file()
+            or conversion.hash_file(source_path) != source_sha256):
+        raise ValueError("stored blank source checksum does not match the bound workbook")
+    existing = {_address_key(f"{field['sheet']}!{member['address']}")
+                for field in fields["fields"] for member in field["members"]}
+    parts = {str(sheet["name"]).casefold(): next((
+        (cell.get("source_location") or {}).get("ooxml_part") for cell in sheet.get("cells", [])
+        if (cell.get("source_location") or {}).get("ooxml_part")), None)
+        for sheet in inventory["sheets"]}
+    added: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    with ZipFile(source_path) as package:
+        for item in blanks:
+            address = item.get("address")
+            if not isinstance(address, str) or "!" not in address:
+                raise ValueError("stored blank needs a qualified source address")
+            sheet, cell = address.rsplit("!", 1)
+            key = _address_key(address)
+            part = parts.get(sheet.casefold())
+            if key in seen or key in existing or not part or not re.fullmatch(r"[A-Za-z]+[1-9][0-9]*", cell):
+                raise ValueError(f"stored blank has duplicate or unknown source coordinates: {address}")
+            seen.add(key)
+            element = ET.fromstring(package.read(part)).find(
+                f".//{{http://schemas.openxmlformats.org/spreadsheetml/2006/main}}c[@r='{cell.upper()}']")
+            if (element is None or list(element) or (element.text or "").strip()
+                    or item.get("data_type") != element.get("t", "n")):
+                raise ValueError(f"source cell is not a stored blank: {address}")
+            added.append({"field_id": f"stored-blank:{key}", "sheet": sheet, "role": "source",
+                          "members": [{"address": cell.upper(), "source_kind": "stored_blank"}]})
+    return {**fields, "fields": [*fields["fields"], *added]}
+
+
 def create_input_boundary(
     analysis_dir: Path,
     workflow_dir: Path,
@@ -123,10 +165,18 @@ def create_input_boundary(
         _assert_no_embedded_values(catalog, "catalog")
         target_selection = _validate_targets(targets, binding, analysis["binding_sha256"])
         _validate_catalog_identity(catalog, binding, target_selection)
+        if "source_scope_notes" in catalog:
+            _validate_scope_notes(catalog["source_scope_notes"])
 
         fields, fields_sha = step3._read_stage(analysis_dir, analysis, "fields")
         dependencies, dependencies_sha = step3._read_stage(analysis_dir, analysis, "dependencies")
         _plan, plan_sha = step3._read_stage(analysis_dir, analysis, "plan")
+        source_copy = manifest.get("source", {}).get("step1_source_copy_path")
+        fields = _with_verified_stored_blanks(
+            catalog, fields, step3._load_inventory(_inventory_path),
+            Path(source_copy) if isinstance(source_copy, str) else Path(),
+            binding["source"]["source_sha256"],
+        )
         topology_evidence = catalog.get("topology_evidence")
         trace_path: Path | None = None
         trace_sha: str | None = None
