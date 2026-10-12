@@ -941,6 +941,36 @@ def test_approved_stored_empty_adapter_metadata_reaches_bundle_and_unapproved_bl
     metadata_file = json.loads((Path(built["bundle"]) / "adapter_metadata.json").read_text(encoding="utf-8"))
     assert metadata_file["groups"]["source.verified_empty"]["values"] == [None]
 
+    # A confirmed catalog can carry an audited adapter blank without a separate
+    # single-cell model-scope region.
+    catalog_blank = {"axis_metadata": [], "source_records": [{
+        "record_id": "terminal", "classification": "adapter_metadata",
+        "source_extents": [{"sheet": "Main", "range": "E1", "source_role": "raw_source"}],
+        "provenance": {"source_workbook_sha256": source_hash},
+    }], "source_scope_notes": {"stored_coordinate_reconciliation": {
+        "source_copy_sha256": source_hash,
+        "historical_empty_coordinates": [{"address": "Main!E1",
+                                          "source_value_status": "stored_blank_no_literal"}],
+    }}}
+    catalog_plan = json.loads(json.dumps(plan))
+    add_adapter_metadata(catalog_plan, catalog_blank, {"allowed_regions": []},
+                         trace, source_path, source_hash, candidate_trace)
+    assert catalog_plan["adapter_metadata_groups"]["source.terminal"]["classification"] == "source_audited_blank"
+    assert _augment_literal_sources(source_path, source_hash, catalog_plan, trace, {})["main!E1"] is None
+
+    stale_catalog = json.loads(json.dumps(catalog_blank))
+    stale_catalog["source_records"][0]["provenance"]["source_workbook_sha256"] = "0" * 64
+    with pytest.raises(CalculationBlocked, match="catalog blank.*source"):
+        add_adapter_metadata(json.loads(json.dumps(plan)), stale_catalog, {"allowed_regions": []},
+                             trace, source_path, source_hash, candidate_trace)
+
+    missing_evidence = {**catalog_blank, "source_scope_notes": {}}
+    missing_plan = json.loads(json.dumps(plan))
+    add_adapter_metadata(missing_plan, missing_evidence, {"allowed_regions": []},
+                         trace, source_path, source_hash, candidate_trace)
+    with pytest.raises(CalculationBlocked, match="catalog metadata source coordinate is unexpectedly blank"):
+        _augment_literal_sources(source_path, source_hash, missing_plan, trace, {})
+
     unapproved_trace = {**trace, "cells": [*trace["cells"], {
         "address": "Main!G1", "sheet": "Main", "role": "source_value", "value": None}]}
     unapproved_plan = json.loads(json.dumps(plan))

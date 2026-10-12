@@ -202,6 +202,50 @@ def add_adapter_metadata(plan: dict[str, Any], catalog: dict[str, Any],
             cells.append({"address": address, "group_id": group_id,
                           "indices": [index], "axes": [axis]})
 
+    # A confirmed catalog may identify a source-owned adapter blank that the
+    # earlier candidate scope did not fence as a separate single cell.
+    notes = catalog.get("source_scope_notes")
+    reconciliation = notes.get("stored_coordinate_reconciliation", {}) if isinstance(notes, dict) else {}
+    declared_blanks = {_address_key(item["address"])
+                       for item in reconciliation.get("historical_empty_coordinates", [])
+                       if isinstance(item, dict)
+                       and item.get("source_value_status") == "stored_blank_no_literal"
+                       and isinstance(item.get("address"), str)}
+    catalog_blanks: set[str] = set()
+    for record in catalog.get("source_records", []):
+        extents = record.get("source_extents", [])
+        if record.get("classification") != "adapter_metadata" or len(extents) != 1:
+            continue
+        extent = extents[0]
+        if extent.get("source_role") != "raw_source":
+            continue
+        reference = _parse_reference(f"{extent.get('sheet', '')}!{extent.get('range', '')}", "Main")
+        if reference is None or not reference.single:
+            continue
+        address = _address_key(_address(reference.sheet, reference.min_row, reference.min_col))
+        if address in declared_blanks:
+            provenance = record.get("provenance")
+            if (reconciliation.get("source_copy_sha256") != source_sha256
+                    or not isinstance(provenance, dict)
+                    or provenance.get("source_workbook_sha256") != source_sha256):
+                raise CalculationBlocked(f"catalog blank source binding is stale: {address}")
+            catalog_blanks.add(address)
+
+    from excel_to_act.steps.step4.discovery import _approved_stored_empty_addresses
+
+    try:
+        scoped_blanks = _approved_stored_empty_addresses(
+            source_path, source_sha256, model_scope, candidate_trace)
+        verified_catalog_blanks = _approved_stored_empty_addresses(
+            source_path, source_sha256,
+            {"allowed_regions": [{"source_ref": address} for address in sorted(catalog_blanks)]},
+            candidate_trace) if catalog_blanks else set()
+    except (OSError, ValueError) as exc:
+        raise CalculationBlocked(str(exc)) from exc
+    if verified_catalog_blanks != catalog_blanks:
+        raise CalculationBlocked("catalog blank is absent from the source candidate trace")
+    approved_blank_addresses = scoped_blanks | verified_catalog_blanks
+
     for record in catalog.get("axis_metadata", []):
         axis_id = record.get("axis_id")
         if not isinstance(axis_id, str):
@@ -230,18 +274,10 @@ def add_adapter_metadata(plan: dict[str, Any], catalog: dict[str, Any],
             addresses.extend(_address(parsed.sheet, row, col)
                              for row in range(parsed.min_row, parsed.max_row + 1)
                              for col in range(parsed.min_col, parsed.max_col + 1))
-        add_group(f"source.{record_id}", addresses, None, classification)
+        audited = len(addresses) == 1 and _address_key(addresses[0]) in verified_catalog_blanks
+        add_group(f"source.{record_id}", addresses, None,
+                  "source_audited_blank" if audited else classification)
 
-    # Scope prose is not proof. Reuse discovery's source-hash, candidate-trace,
-    # exact-single-cell and physical formula-free-blank checks before projection.
-    from excel_to_act.steps.step4.discovery import _approved_stored_empty_addresses
-
-    try:
-        approved_blank_addresses = _approved_stored_empty_addresses(
-            source_path, source_sha256, model_scope, candidate_trace
-        )
-    except (OSError, ValueError) as exc:
-        raise CalculationBlocked(str(exc)) from exc
     active_trace_blanks = {
         _address_key(item["address"])
         for item in trace.get("cells", [])
@@ -250,11 +286,12 @@ def add_adapter_metadata(plan: dict[str, Any], catalog: dict[str, Any],
     }
     if not approved_blank_addresses <= active_trace_blanks:
         raise CalculationBlocked("approved stored-empty coordinate is not a current active-trace blank")
-    add_group("source.verified_empty", sorted(approved_blank_addresses), None, "source_audited_blank")
+    add_group("source.verified_empty", sorted(scoped_blanks - verified_catalog_blanks),
+              None, "source_audited_blank")
     projected_blank_addresses = {
         _address_key(address)
         for group_id, group in groups.items()
-        if group_id == "source.verified_empty"
+        if group["classification"] == "source_audited_blank"
         for address in group["addresses"]
     }
     if projected_blank_addresses != approved_blank_addresses:
