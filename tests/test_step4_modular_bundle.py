@@ -17,7 +17,9 @@ from openpyxl.worksheet.formula import ArrayFormula
 from excel_to_act.steps.step3.calculation import CalculationBlocked
 from excel_to_act.steps.step4.generator import _bind_current_support_domain, _bundle_files, _smoke_bundle
 from excel_to_act.steps.step4.modular_bundle import (
+    _adapter_source,
     _augment_literal_sources,
+    _bound_private_fixed_literals,
     _canonical_hash,
     _named_bindings,
     _raw_bindings,
@@ -351,6 +353,105 @@ def test_derived_seed_alias_must_match_an_approved_fixed_source_cell() -> None:
                                   semantic_plan=plan)
 
 
+def test_private_fixed_literals_require_exact_current_source_ownership() -> None:
+    definition = _variable_interface("a" * 64)
+    bindings = ([{"address": f"main!A{row}", "variable_id": "raw.key", "indices": [row - 1]}
+                 for row in range(1, 4)]
+                + [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
+                   for row in range(1, 4)]
+                + [{"address": "main!F1", "variable_id": "raw.config", "indices": []},
+                   {"address": "main!E1", "variable_id": "private.selector", "indices": [0]},
+                   {"address": "main!G1", "variable_id": "private.seed", "indices": [0]}])
+    plan = {"variables": [
+        {"variable_id": "private.selector", "role": "raw", "shape": [1],
+         "source_extents": [{"ref": "Main!E1", "role": "raw_source"}],
+         "initial_condition": None},
+        {"variable_id": "private.seed", "role": "derived", "shape": [1],
+         "source_extents": [{"ref": "Main!G2", "role": "formula_output"}],
+         "initial_condition": {"logical_index": 0, "seed_ref": "Main!G1",
+                               "source_role": "fixed_source_numeric_zero"}},
+    ]}
+    saved = {**{f"main!A{row}": row for row in range(1, 4)},
+             **{f"main!B{row}": row + 10 for row in range(1, 4)},
+             "main!F1": 2, "main!E1": None, "main!G1": 0}
+    fixed = [{"address": "Main!E1", "variable_id": "private.selector", "indices": [0], "value": None},
+             {"address": "Main!G1", "variable_id": "private.seed", "indices": [0], "value": 0}]
+    with pytest.raises(CalculationBlocked, match="approved fixed seed"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved, semantic_plan=plan)
+    contract = _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                         semantic_plan=plan, private_fixed_literals=fixed)
+    assert contract["private_fixed_literals"] == fixed
+    for changed in (
+        [{**fixed[0], "value": ""}, fixed[1]],
+        [fixed[0], {**fixed[1], "value": False}],
+        [fixed[0], {**fixed[1], "address": "Main!G2"}],
+        [fixed[0], {**fixed[1], "indices": [1]}],
+        [fixed[0], fixed[0]],
+        [fixed[0]],
+        [fixed[0], fixed[1], {**fixed[1], "address": "Main!H1"}],
+        [fixed[0], {**fixed[1], "value": {"excel_error": "#N/A"}}],
+    ):
+        with pytest.raises(CalculationBlocked, match="private fixed|approved fixed seed"):
+            _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                      semantic_plan=plan, private_fixed_literals=changed)
+    plan["variables"][0]["role"] = "external"
+    with pytest.raises(CalculationBlocked, match="private fixed"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                  semantic_plan=plan, private_fixed_literals=fixed)
+    plan["variables"][0]["role"] = "raw"
+    definition["objects"].append({**definition["objects"][0], "variable_id": "private.selector",
+                                  "mutability": "unknown"})
+    with pytest.raises(CalculationBlocked, match="mutability"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                  semantic_plan=plan, private_fixed_literals=fixed)
+
+
+def test_private_literal_ledger_rejects_stale_artifact_bindings(tmp_path: Path) -> None:
+    interface = _variable_interface("a" * 64)
+    expected = {"source_sha256": "a" * 64, "stage3_artifact_sha256": "b" * 64,
+                "semantic_plan_sha256": "c" * 64, "source_profile_sha256": "d" * 64,
+                "active_trace_sha256": "e" * 64, "external_capture_sha256": "f" * 64}
+    payload = {"schema_version": "step4.active_implementation.v1", "binding": expected,
+               "private_fixed_literals_interface_sha256": _canonical_hash(interface),
+               "private_fixed_literals": [{"address": "Main!E1", "variable_id": "private.value",
+                                           "indices": [], "value": None}]}
+    path = tmp_path / "implementation.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    record = {"implementation_input": {"path": str(path),
+                                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}}
+    assert _bound_private_fixed_literals(record, interface, expected) == payload["private_fixed_literals"]
+    for changed in ("source_sha256", "external_capture_sha256", "stage3_artifact_sha256"):
+        with pytest.raises(CalculationBlocked, match="stale"):
+            _bound_private_fixed_literals(record, interface, {**expected, changed: "0" * 64})
+    with pytest.raises(CalculationBlocked, match="stale interface"):
+        _bound_private_fixed_literals(record, {**interface, "extra": "changed"}, expected)
+    path.write_text("{}", encoding="utf-8")
+    with pytest.raises(CalculationBlocked, match="missing or stale"):
+        _bound_private_fixed_literals(record, interface, expected)
+
+
+def test_variable_adapter_never_overrides_private_source_literals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "modular_runtime", runtime)
+    namespace = {"__file__": str(tmp_path / "input_adapter.py")}
+    exec(_adapter_source(), namespace)
+    source = {"main!A1": 7, "main!E1": None}
+    layout = {"source_sha256": "a" * 64, "variable_shapes": {"public": [], "private": []},
+              "raw_bindings": [{"address": "main!A1", "variable_id": "public", "indices": []},
+                               {"address": "main!E1", "variable_id": "private", "indices": []}],
+              "variable_contract": {"mutable": {"Value": {"bindings": [
+                  {"address": "main!A1", "indices": []}]}}},
+              "scenario_guard": {"scenario_ids": [], "source_values": {}},
+              "metadata_seed_bindings": [], "adapter_metadata_groups": {}, "external_bindings": []}
+    (tmp_path / "input_layout.json").write_text(json.dumps(layout), encoding="utf-8")
+    guard_hash = namespace["_canonical_hash"]({})
+    with pytest.raises(runtime.CalculationBlocked, match="approved raw bindings"):
+        namespace["build_values"](source_values=source, scenario_guard_sha256=guard_hash,
+                                  scenario_ids=[], metadata_seed_bindings_sha256=namespace["_canonical_hash"]([]),
+                                  raw_overrides={"main!E1": "override"})
+
+
 def test_fixed_trace_guard_verifies_finite_match_selected_vlookup_column() -> None:
     definition = _variable_interface("a" * 64)
     bindings = [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
@@ -452,7 +553,7 @@ def test_generated_value_checks_keep_partial_indices_and_dependent_enum_typed(
     namespace["__file__"] = str(tmp_path / "model.py")
     files = {}
     for filename in ("model.py", "input_layout.json", "source_values.json",
-                     "pricing.py", "formula_families.py"):
+                     "private_fixed_literals.json", "pricing.py", "formula_families.py"):
         path = tmp_path / filename
         path.write_text("{}", encoding="utf-8")
         files[filename] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -462,9 +563,36 @@ def test_generated_value_checks_keep_partial_indices_and_dependent_enum_typed(
     layout = {"source_sha256": "a" * 64, "variable_contract": contract}
     inputs = {"Table": {"axes": axes, "values": [{"indices": [0, 1], "value": "B"}]},
               "Term": {"axes": [], "values": 7}, "Period": {"axes": [], "values": 7}}
+    fixed_asset = tmp_path / "private_fixed_literals.json"
+    fixed_asset.write_text("changed", encoding="utf-8")
+    with pytest.raises(runtime.CalculationBlocked, match="bundle asset changed"):
+        namespace["_variable_inputs"](layout, inputs, {})
+    fixed_asset.write_text("{}", encoding="utf-8")
     overrides, _external, _digest, _dependency, _contract = namespace["_variable_inputs"](
         layout, inputs, {})
     assert overrides == {"main!B1": "B", "main!C1": 7, "main!D1": 7}
+    contract["interface_sha256"] = "i" * 64
+    contract["private_fixed_literals"] = [
+        {"address": "main!E1", "variable_id": "private", "indices": [], "value": None}]
+    namespace["VARIABLE_CONTRACT_SHA256"] = adapter._canonical_hash(contract)
+    fixed_asset.write_text(json.dumps({"schema_version": "step4.private_fixed_literals.v1",
+        "source_sha256": "a" * 64, "interface_sha256": "i" * 64,
+        "implementation_plan_sha256": "p" * 64,
+        "records": [{**contract["private_fixed_literals"][0], "value": ""}]}), encoding="utf-8")
+    files["private_fixed_literals.json"] = hashlib.sha256(fixed_asset.read_bytes()).hexdigest()
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": "a" * 64, "files": files, "implementation_plan_sha256": "p" * 64,
+        "variable_input_contract_sha256": namespace["VARIABLE_CONTRACT_SHA256"]}), encoding="utf-8")
+    with pytest.raises(runtime.CalculationBlocked, match="private fixed literal asset differs"):
+        namespace["_variable_inputs"](layout, inputs, {})
+    del contract["private_fixed_literals"]
+    del contract["interface_sha256"]
+    namespace["VARIABLE_CONTRACT_SHA256"] = adapter._canonical_hash(contract)
+    fixed_asset.write_text("{}", encoding="utf-8")
+    files["private_fixed_literals.json"] = hashlib.sha256(fixed_asset.read_bytes()).hexdigest()
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": "a" * 64, "files": files,
+        "variable_input_contract_sha256": namespace["VARIABLE_CONTRACT_SHA256"]}), encoding="utf-8")
     with pytest.raises(runtime.CalculationBlocked, match="approved values"):
         namespace["_variable_inputs"](layout, {**inputs, "Period": {"axes": [], "values": 8}}, {})
     contract["verified_cases"] = [{"input_sha256": adapter._canonical_hash(inputs),

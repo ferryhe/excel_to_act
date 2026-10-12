@@ -548,6 +548,26 @@ def _verified_case_layout(cases: Any, mutable: dict[str, Any],
     return proofs
 
 
+def _bound_private_fixed_literals(record: dict[str, Any], interface: dict[str, Any],
+                                  expected: dict[str, str | None]) -> list[dict[str, Any]]:
+    input_ref = record.get("implementation_input", {})
+    input_path = Path(input_ref.get("path", ""))
+    if not input_path.is_file() or hash_file(input_path) != input_ref.get("sha256"):
+        raise CalculationBlocked("private fixed literal implementation input is missing or stale")
+    implementation = json.loads(input_path.read_text(encoding="utf-8"))
+    binding = implementation.get("binding", {})
+    if (implementation.get("schema_version") != "step4.active_implementation.v1"
+            or not isinstance(binding, dict)
+            or any(binding.get(key) != value for key, value in expected.items())):
+        raise CalculationBlocked("private fixed literals cite stale source or approval evidence")
+    records = implementation.get("private_fixed_literals", [])
+    if records and implementation.get("private_fixed_literals_interface_sha256") != (
+            interface.get("support_certificate", {}).get("approved_interface_sha256")
+            or _canonical_hash(interface)):
+        raise CalculationBlocked("private fixed literals cite a stale interface")
+    return records
+
+
 def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dict[str, Any]],
                               external_bindings: list[dict[str, Any]],
                               trace_sha256: str, trace: dict[str, Any],
@@ -557,7 +577,8 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
                               target_names: list[str] | None = None,
                               names: dict[str, Any] | None = None,
                               variant_sources: list[dict[str, Any]] | None = None,
-                              capture_artifact_sha256: str | None = None) -> dict[str, Any]:
+                              capture_artifact_sha256: str | None = None,
+                              private_fixed_literals: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     domain = definition.get("support_domain")
     if (definition.get("schema_version") != "step3.tool_interface.v1"
             or definition.get("contract_readiness", {}).get("status") != "defined"
@@ -587,6 +608,26 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
     if any(objects[item]["mutability"] == "unknown" for item in raw_ids & objects.keys()):
         raise CalculationBlocked("raw source bindings lack complete approved mutability policy")
     unlisted = raw_ids - objects.keys()
+    fixed_records = private_fixed_literals if private_fixed_literals is not None else []
+    if not isinstance(fixed_records, list):
+        raise CalculationBlocked("private fixed literal ledger is malformed")
+    fixed_by_owner: dict[tuple[str, str, tuple[int, ...]], dict[str, Any]] = {}
+    for record in fixed_records:
+        if (not isinstance(record, dict) or set(record) != {"address", "variable_id", "indices", "value"}
+                or not isinstance(record["address"], str)
+                or not isinstance(record["variable_id"], str)
+                or not isinstance(record["indices"], list)
+                or any(type(index) is not int or index < 0 for index in record["indices"])
+                or type(record["value"]) not in {type(None), str, int, float, bool}
+                or type(record["value"]) is float and not math.isfinite(record["value"])):
+            raise CalculationBlocked("private fixed literal ledger is malformed")
+        key = (_address_key(record["address"]), record["variable_id"], tuple(record["indices"]))
+        if key in fixed_by_owner or record["variable_id"] in objects:
+            raise CalculationBlocked("private fixed literal has duplicate or public ownership")
+        fixed_by_owner[key] = record
+    used_fixed: set[tuple[str, str, tuple[int, ...]]] = set()
+    external_addresses = {_address_key(address) for item in external_bindings
+                          for address in item.get("addresses", [])}
     if unlisted:
         records = (semantic_plan or {}).get("variables", {})
         variables = (records if isinstance(records, dict) else
@@ -598,6 +639,28 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
                           and objects[binding["variable_id"]]["mutability"] == "immutable"}
         for binding in (item for item in raw_bindings if item["variable_id"] in unlisted):
             variable = variables.get(binding["variable_id"], {})
+            address = _address_key(binding["address"])
+            key = (address, binding["variable_id"], tuple(binding["indices"]))
+            if key in fixed_by_owner:
+                record = fixed_by_owner[key]
+                initial = variable.get("initial_condition")
+                raw_extent = variable.get("role") == "raw" and any(
+                    extent.get("role") in {"raw_source", "raw_input"}
+                    and address in {_address_key(item) for item in _addresses(extent.get("ref", ""))}
+                    for extent in variable.get("source_extents", []) if isinstance(extent, dict))
+                derived_seed = (variable.get("role") == "derived" and isinstance(initial, dict)
+                                and initial.get("source_role") == "fixed_source_numeric_zero"
+                                and binding["indices"] == [initial.get("logical_index")]
+                                and isinstance(initial.get("seed_ref"), str)
+                                and _address_key(initial["seed_ref"]) == address
+                                and type(record["value"]) is int and record["value"] == 0)
+                if (not (raw_extent or derived_seed) or address not in source_values
+                        or _canonical_hash(source_values[address]) != _canonical_hash(record["value"])
+                        or address in external_addresses
+                        or sum(_address_key(item["address"]) == address for item in raw_bindings) != 1):
+                    raise CalculationBlocked("private fixed literal differs from its current source owner or value")
+                used_fixed.add(key)
+                continue
             initial = variable.get("initial_condition")
             if not isinstance(initial, dict):
                 raise CalculationBlocked("raw source bindings lack an approved fixed seed alias")
@@ -612,6 +675,8 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
                     or _address_key(seed_ref) != _address_key(binding["address"])
                     or _address_key(binding["address"]) not in source_values):
                 raise CalculationBlocked("raw source bindings lack an approved fixed seed alias")
+    if used_fixed != set(fixed_by_owner):
+        raise CalculationBlocked("private fixed literal ledger has an unbound source owner")
     external_ids = {item["variable_id"] for item in external_bindings}
     if set(domain.get("external_policy", {})) != external_ids:
         raise CalculationBlocked("each formula-derived external producer needs a same-request policy")
@@ -773,6 +838,7 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
             "source_sha256": definition["bindings"]["source"]["workbook_sha256"],
             "design": definition["bindings"]["design"], "input_boundary": definition["bindings"]["input_boundary"],
             "support_domain": domain, "mutable": mutable,
+            "private_fixed_literals": fixed_records,
             "fixed_trace_source_values": fixed_trace_values,
             **({"verified_cases": verified_cases} if verified_cases is not None else {}),
             **({"support_certificate": certificate} if certificate is not None else {}),
@@ -1221,7 +1287,10 @@ def build_values(source_values=None, scenario_guard_sha256=None, scenario_ids=No
         if address not in source_values or source_values[address] != expected:
             raise runtime.CalculationBlocked(f"saved-scenario source selector changed: {address}")
     if raw_overrides:
-        allowed = {item["address"] for item in layout["raw_bindings"]}
+        contract = layout.get("variable_contract")
+        allowed = ({binding["address"] for spec in contract["mutable"].values()
+                    for binding in spec["bindings"]} if isinstance(contract, dict)
+                   else {item["address"] for item in layout["raw_bindings"]})
         if not set(raw_overrides) <= allowed:
             raise runtime.CalculationBlocked("variable input does not map to approved raw bindings")
         source_values = {**source_values, **raw_overrides}
@@ -1455,6 +1524,17 @@ def _variable_inputs(layout, inputs, external_data):
             raise runtime.CalculationBlocked(f"variable-input bundle asset changed: {filename}")
     if manifest.get("variable_input_contract_sha256") != VARIABLE_CONTRACT_SHA256:
         raise runtime.CalculationBlocked("variable-input manifest is stale")
+    if contract.get("private_fixed_literals"):
+        try:
+            fixed = json.loads((base / "private_fixed_literals.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise runtime.CalculationBlocked("private fixed literal asset is missing or malformed") from exc
+        if (fixed.get("schema_version") != "step4.private_fixed_literals.v1"
+                or fixed.get("source_sha256") != contract["source_sha256"]
+                or fixed.get("interface_sha256") != contract["interface_sha256"]
+                or fixed.get("implementation_plan_sha256") != manifest.get("implementation_plan_sha256")
+                or _canonical_hash(fixed.get("records")) != _canonical_hash(contract["private_fixed_literals"])):
+            raise runtime.CalculationBlocked("private fixed literal asset differs from the approved contract")
     certificate = contract.get("support_certificate")
     if certificate is not None and (manifest.get("support_certificate_sha256") != _canonical_hash(certificate)
             or certificate.get("verified_cases_sha256") != _canonical_hash(contract.get("verified_cases"))
@@ -1710,13 +1790,23 @@ def build_modular_bundle_files(
     names = _named_bindings(semantic_plan, index, raw_addresses)
     external_bindings = _external_bindings(semantic_plan, external_capture,
                                            external_capture_artifact_sha256, index)
+    private_fixed_literals: list[dict[str, Any]] = []
+    if variable_interface is not None and implementation_plan_record is not None:
+        expected = {"source_sha256": source_sha256, "stage3_artifact_sha256": design_sha256,
+                    "semantic_plan_sha256": semantic_plan_sha256,
+                    "source_profile_sha256": source_profile_sha256,
+                    "active_trace_sha256": trace_sha256,
+                    "external_capture_sha256": external_capture_artifact_sha256}
+        private_fixed_literals = _bound_private_fixed_literals(
+            implementation_plan_record, variable_interface, expected)
     variant_sources: list[dict[str, Any]] = []
     variable_contract = (_variable_contract_layout(variable_interface, raw_bindings,
                                                     external_bindings, trace_sha256, trace, source_values,
                                                     source_path=source_path, semantic_plan=semantic_plan,
                                                     source_profile=source_profile, target_names=target_names,
                                                     names=names, variant_sources=variant_sources,
-                                                    capture_artifact_sha256=external_capture_artifact_sha256)
+                                                    capture_artifact_sha256=external_capture_artifact_sha256,
+                                                    private_fixed_literals=private_fixed_literals)
                          if variable_interface is not None else None)
     if variable_contract is not None and variable_contract["source_sha256"] != source_sha256:
         raise CalculationBlocked("variable-input interface is bound to another source workbook")
@@ -1809,6 +1899,14 @@ def build_modular_bundle_files(
         json.dumps(layout, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     (bundle / "source_values.json").write_text(
         json.dumps(source_values, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    if private_fixed_literals:
+        (bundle / "private_fixed_literals.json").write_text(
+            json.dumps({"schema_version": "step4.private_fixed_literals.v1",
+                        "source_sha256": source_sha256,
+                        "interface_sha256": variable_contract["interface_sha256"],
+                        "implementation_plan_sha256": implementation_plan_sha256,
+                        "records": private_fixed_literals}, indent=2, sort_keys=True,
+                       ensure_ascii=False) + "\n", encoding="utf-8")
     if metadata_payload_groups:
         metadata_payload = {"schema_version": "step4.adapter_metadata.v1",
                             "source_sha256": source_sha256,
