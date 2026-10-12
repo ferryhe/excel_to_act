@@ -28,7 +28,7 @@ from excel_to_act.steps.step4.modular_bundle import (
     add_adapter_metadata,
     build_modular_bundle_files,
 )
-from excel_to_act.steps.step4.modular_compiler import build_source_cell_index, compile_formula_function
+from excel_to_act.steps.step4.modular_compiler import SourceCell, build_source_cell_index, compile_formula_function
 from excel_to_act.steps.step4.modular_runtime import binary
 from excel_to_act.steps.step4 import modular_runtime as runtime
 
@@ -1399,6 +1399,76 @@ def test_named_scalar_can_bind_external_coordinate_or_declared_source_literal() 
     values["__source_values__"].clear()
     with pytest.raises(runtime.CalculationBlocked, match="missing"):
         runtime.lookup_name(values, "RateLabel")
+
+
+def _indexed_scalar_name_plan() -> dict:
+    return {"variables": [
+        {"variable_id": "raw.matrix", "role": "raw", "shape": [2, 2],
+         "axes": [{"name": "row"}, {"name": "column"}], "source_extents": [{
+             "ref": "Inputs!B2:C3", "role": "raw_source", "coordinate_mapping": {
+                 "kind": "row_column_ordinal", "axes": [
+                     {"axis": "row", "dimension": 0, "source_coordinate": "row",
+                      "origin": 2, "index_origin": 0},
+                     {"axis": "column", "dimension": 1, "source_coordinate": "column",
+                      "origin": "B", "index_origin": 0}]}}]},
+        {"variable_id": "raw.single", "role": "raw", "shape": [], "axes": [],
+         "source_extents": [{"ref": "Inputs!E2", "role": "raw_source",
+                             "coordinate_mapping": {"kind": "scalar", "fixed_axes": []}}]},
+    ], "source_mappings": [], "array_mappings": [], "reference_resolution": {
+        "named_references": [
+            {"name": "Selected", "kind": "scalar", "source_ref": "Inputs!C2",
+             "variable_id": "raw.matrix", "indices": [0, 1]},
+            {"name": "Single", "kind": "scalar", "source_ref": "Inputs!E2",
+             "variable_id": "raw.single"},
+        ]}}
+
+
+def test_indexed_scalar_name_uses_verified_source_coordinate() -> None:
+    plan = _indexed_scalar_name_plan()
+    names = _named_bindings(plan, build_source_cell_index(plan), set())
+    values = {"raw.matrix": [["other", "selected"], ["later", "last"]],
+              "raw.single": 17, "__names__": names}
+
+    assert names["selected"] == {"kind": "coordinate", "variable_id": "raw.matrix", "indices": [0, 1]}
+    assert runtime.lookup_name(values, "Selected") == "selected"
+    assert runtime.match(lambda: runtime.lookup_name(values, "Selected"),
+                         lambda: ["other", "selected"], lambda: 0) == 2
+    assert names["single"] == {"kind": "variable", "variable_id": "raw.single"}
+    assert runtime.lookup_name(values, "Single") == 17
+
+
+@pytest.mark.parametrize("bad_binding", [
+    "wrong_address", "wrong_index", "wrong_variable", "out_of_shape", "bool_index",
+    "malformed_index", "missing_owner", "ambiguous_owner", "formula_owner", "range_ref",
+])
+def test_indexed_scalar_name_rejects_unverified_source_coordinate(bad_binding: str) -> None:
+    plan = _indexed_scalar_name_plan()
+    index = build_source_cell_index(plan)
+    name = plan["reference_resolution"]["named_references"][0]
+    key = ("inputs", 2, 3)
+    if bad_binding == "wrong_address":
+        name["source_ref"] = "Inputs!B2"
+    elif bad_binding == "wrong_index":
+        name["indices"] = [1, 1]
+    elif bad_binding == "wrong_variable":
+        name["variable_id"] = "raw.single"
+    elif bad_binding == "out_of_shape":
+        name["indices"] = [2, 1]
+    elif bad_binding == "bool_index":
+        name["indices"] = [False, 1]
+    elif bad_binding == "malformed_index":
+        name["indices"] = "0,1"
+    elif bad_binding == "missing_owner":
+        index.pop(key)
+    elif bad_binding == "ambiguous_owner":
+        index[key].append(SourceCell("raw.other", (0, 1), ("row", "column"), "raw_source"))
+    elif bad_binding == "formula_owner":
+        index[key] = [SourceCell("raw.matrix", (0, 1), ("row", "column"), "formula_output")]
+    else:
+        name["source_ref"] = "Inputs!B2:C2"
+
+    with pytest.raises(CalculationBlocked, match="named scalar Selected"):
+        _named_bindings(plan, index, set())
 
 
 def test_raw_binding_that_is_now_a_formula_is_rejected(tmp_path: Path) -> None:

@@ -1150,6 +1150,9 @@ def _named_bindings(plan: dict[str, Any], index: dict[tuple[str, int, int], list
                     raw_addresses: set[str]) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     references = plan.get("reference_resolution", {}).get("named_references", [])
+    variables = plan.get("variables", {})
+    if isinstance(variables, list):
+        variables = {record.get("variable_id"): record for record in variables if isinstance(record, dict)}
     for item in references:
         name = item.get("name")
         if not isinstance(name, str) or not name:
@@ -1173,6 +1176,27 @@ def _named_bindings(plan: dict[str, Any], index: dict[tuple[str, int, int], list
         if item.get("kind") == "scalar":
             binding = item.get("binding")
             if binding is None:
+                indices = item.get("indices", [])
+                if not isinstance(indices, list):
+                    raise CalculationBlocked(f"named scalar {name} has an invalid logical binding")
+                if indices:
+                    variable_id, source_ref = item.get("variable_id"), item.get("source_ref")
+                    variable = variables.get(variable_id) if isinstance(variables, dict) else None
+                    shape = variable.get("shape") if isinstance(variable, dict) else None
+                    reference = (_parse_reference(source_ref, "Main")
+                                 if isinstance(source_ref, str) and "!" in source_ref else None)
+                    owners = (index.get((reference.sheet.casefold(), reference.min_row, reference.min_col), [])
+                              if reference is not None and reference.single else [])
+                    if (not isinstance(shape, list) or len(shape) != len(indices)
+                            or any(type(value) is not int or type(size) is not int
+                                   or value < 0 or value >= size
+                                   for value, size in zip(indices, shape))
+                            or len(owners) != 1 or owners[0].role not in {"raw_source", "raw_input"}
+                            or owners[0].variable_id != variable_id
+                            or owners[0].indices != tuple(indices)):
+                        raise CalculationBlocked(f"named scalar {name} lacks an exact source coordinate")
+                    result[key] = {"kind": "coordinate", "variable_id": variable_id, "indices": indices}
+                    continue
                 binding = {"kind": "variable", "variable_id": item.get("variable_id")}
             if not isinstance(binding, dict):
                 raise CalculationBlocked(f"named scalar {name} has a malformed binding")
