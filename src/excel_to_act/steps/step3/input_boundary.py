@@ -636,7 +636,7 @@ def _validate_catalog(catalog: dict[str, Any], targets: dict[str, Any], fields: 
     seen_exclusions: set[tuple[str, str]] = set()
     clean_exclusions: list[dict[str, Any]] = []
     for item in exclusions:
-        _reject_unlisted_fields(item, {"boundary_variable_id", "named_source", "source_range", "reason"},
+        _reject_unlisted_fields(item, {"boundary_variable_id", "named_source", "source_range", "excluded_range", "reason"},
                                 "each upstream exclusion")
         if item.get("boundary_variable_id") not in boundary_variables:
             raise ValueError("each upstream exclusion must cite a formula-derived boundary variable")
@@ -646,6 +646,18 @@ def _validate_catalog(catalog: dict[str, Any], targets: dict[str, Any], fields: 
         descriptor = name_descriptors.get(name.casefold())
         if descriptor is None or _canonical_ref(str(descriptor.get("address", "")), descriptor.get("sheet")) != _canonical_ref(ref):
             raise ValueError(f"upstream exclusion {name} does not match the canonical defined-name descriptor")
+        if "excluded_range" in item:
+            named_bounds = _reference_bounds(ref)
+            excluded_bounds = (_reference_bounds(item["excluded_range"])
+                               if isinstance(item["excluded_range"], str) else None)
+            if excluded_bounds is not None and (excluded_bounds[0] > excluded_bounds[2]
+                                                or excluded_bounds[1] > excluded_bounds[3]):
+                raise ValueError(f"upstream exclusion {name} excluded_range has reversed endpoints")
+            if (named_bounds is None or excluded_bounds is None
+                    or excluded_bounds[4].casefold() != named_bounds[4].casefold()
+                    or excluded_bounds[0] < named_bounds[0] or excluded_bounds[1] < named_bounds[1]
+                    or excluded_bounds[2] > named_bounds[2] or excluded_bounds[3] > named_bounds[3]):
+                raise ValueError(f"upstream exclusion {name} excluded_range must be within the named source range")
         key = (item["boundary_variable_id"], name.casefold())
         if key in seen_exclusions:
             raise ValueError(f"duplicate upstream exclusion for {name}")
@@ -1240,7 +1252,7 @@ def _boundary_evidence_markdown(payload: dict[str, Any]) -> str:
     for item in payload["upstream_exclusions"]:
         lines.append(f"| `{_markdown_table_cell(item['boundary_variable_id'])}` | "
                      f"`{_markdown_table_cell(item['named_source'])}` | "
-                     f"`{_markdown_table_cell(item['source_range'])}` | {_markdown_table_cell(item['reason'])} |")
+                     f"`{_markdown_table_cell(item.get('excluded_range', item['source_range']))}` | {_markdown_table_cell(item['reason'])} |")
     if payload.get("source_records"):
         lines.extend(["", "## Non-business and pending source records", "", "These records account for retained source coordinates without treating headers, labels, or literals as separate business variables. Pending classifications remain visible and are not asserted as understood inputs.", ""])
         for item in payload["source_records"]:

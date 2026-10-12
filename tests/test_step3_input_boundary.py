@@ -99,6 +99,34 @@ def test_source_topology_cut_and_partition_keep_values_out_of_catalog() -> None:
         assert forbidden not in serialized
 
 
+def test_upstream_exclusion_can_keep_a_named_range_column_for_runtime() -> None:
+    trace, fields, targets, binding, catalog = _boundary_fixture()
+    fields["descriptors"]["defined_names"][0]["address"] = "B1:D2"
+    exclusion = catalog["upstream_exclusions"][0]
+    exclusion["source_range"] = "Main!B1:D2"
+    exclusion["excluded_range"] = "Main!C1:C2"
+    cut = input_boundary._cut_report(trace, targets, catalog, fields, binding)
+
+    input_boundary._validate_catalog(catalog, targets, fields, cut)
+    from excel_to_act.steps.step3.profiling import _catalog_upstream_exclusions
+
+    coordinates, _records = _catalog_upstream_exclusions(catalog)
+    assert coordinates == {"main!C1", "main!C2"}
+
+    for reversed_ref in ("Main!C2:C1", "Main!D1:B1"):
+        exclusion["excluded_range"] = reversed_ref
+        with pytest.raises(ValueError, match="reversed"):
+            input_boundary._validate_catalog(catalog, targets, fields, cut)
+
+    exclusion["excluded_range"] = "Main!E1:E2"
+    with pytest.raises(ValueError, match="within the named source range"):
+        input_boundary._validate_catalog(catalog, targets, fields, cut)
+
+    exclusion["excluded_range"] = None
+    with pytest.raises(ValueError, match="within the named source range"):
+        input_boundary._validate_catalog(catalog, targets, fields, cut)
+
+
 @pytest.mark.parametrize("mutation, error", [
     ("formula_as_raw", "includes a formula cell"),
     ("promote_target", "cannot be promoted to an input"),
