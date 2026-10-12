@@ -940,6 +940,114 @@ def test_lookup_table_schedules_only_key_and_selected_return_columns() -> None:
             plan, {"edges": trace["edges"], "lookups": []}, build_source_cell_index(plan))
 
 
+def _different_named_row_axes(*, future: bool = False, cross_sheet: bool = False) -> tuple[dict, dict]:
+    right_sheet = "Other" if cross_sheet else "Calc"
+    right = f"{right_sheet}!H2"
+    left_formula = f"={right_sheet}!H2+2" if cross_sheet else "=H2+2"
+    first_formula = "=H2+2" if future else "=1"
+    right_formula = "=Calc!G1+1" if cross_sheet else "=G1+1"
+
+    def variable(variable_id: str, family_id: str, axis: str, extent: str,
+                 origin: int, length: int, dependencies: list[str]) -> dict:
+        return {"variable_id": variable_id, "role": "derived", "shape": [length],
+                "axes": [{"name": axis}],
+                "dependencies": [{"variable_id": item} for item in dependencies],
+                "equation_segments": [{"segment_id": family_id, "source_family_ids": [family_id],
+                    "equation_family_ids": [f"eq.{family_id}"], "execution": "vectorized",
+                    "index_axis": axis, "index_start": 0, "index_stop_exclusive": length,
+                    "recurrence_group": None, "snapshot_before_update": False}],
+                "source_extents": [{"ref": extent, "role": "formula_output",
+                    "coordinate_mapping": {"kind": "row_ordinal", "axes": [{"axis": axis,
+                        "dimension": 0, "source_coordinate": "row", "origin": origin,
+                        "index_origin": 0}]}}]}
+
+    plan = {
+        "variables": {
+            "model.left": variable("model.left", "family.left", "left_row", "Calc!G1:G2", 1, 2,
+                                   ["model.right"]),
+            "model.right": variable("model.right", "family.right", "right_row", right, 2, 1,
+                                    ["model.left"]),
+        },
+        "equation_families": {
+            family_id: {"family_id": family_id, "function_name": name}
+            for family_id, name in (("eq.family.left", "left_step"),
+                                    ("eq.family.right", "right_step"))
+        },
+        "source_mappings": [
+            {"source_family_id": family_id, "equation_family_id": f"eq.{family_id}",
+             "variable_id": variable_id, "source_members": members,
+             "index_mapping": {"axes": [{"axis": axis, "dimension": 0,
+                 "source_coordinate": "row", "origin": origin, "index_origin": 0}]}}
+            for family_id, variable_id, members, axis, origin in (
+                ("family.left", "model.left", ["Calc!G1", "Calc!G2"], "left_row", 1),
+                ("family.right", "model.right", [right], "right_row", 2))
+        ],
+        "execution_plan": {"passes": [{"pass_id": "calculation", "order": 0,
+            "source_family_ids": ["family.left", "family.right"]}]},
+    }
+    trace = {"cells": [
+        {"address": "Calc!G1", "formula": first_formula, "role": "calculated_formula"},
+        {"address": "Calc!G2", "formula": left_formula, "role": "calculated_formula"},
+        {"address": right, "formula": right_formula, "role": "calculated_formula"},
+    ], "edges": [
+        {"consumer": "Calc!G2", "prerequisite": right, "relationship": "cell_reference"},
+        {"consumer": right, "prerequisite": "Calc!G1", "relationship": "cell_reference"},
+        *([{"consumer": "Calc!G1", "prerequisite": right,
+            "relationship": "cell_reference"}] if future else []),
+    ]}
+    return plan, trace
+
+
+def test_distinct_row_axis_names_execute_in_physical_source_row_order() -> None:
+    plan, trace = _different_named_row_axes()
+    compilation = compile_mapped_families(plan, trace, lambda *_: "None")
+    driver = render_grouped_driver(plan, compilation)
+    schedule = compilation["execution_schedule"]
+    assert schedule["same_index_dependencies"]["family.left"] == ["family.right"]
+    assert schedule["lagged_edge_count"] == 1
+    assert driver.count("for _source_row in range(") == 1
+
+    namespace = {"runtime": runtime}
+    for source in compilation["functions"].values():
+        exec(compile(source, "formula_families.py", "exec"), namespace)
+    exec(compile(driver, "pricing.py", "exec"), namespace)
+    values = {"model.left": [None, None], "model.right": [None]}
+    family_functions = {name: namespace[name] for name in compilation["functions"]}
+    namespace["run_pricing"](values, family_functions)
+    assert values == {"model.left": [1, 4], "model.right": [2]}
+
+
+def test_distinct_row_axis_names_reject_future_source_row() -> None:
+    plan, trace = _different_named_row_axes(future=True)
+    with pytest.raises(CalculationBlocked, match="future-row formula prerequisite"):
+        compile_mapped_families(plan, trace, lambda *_: "None")
+
+
+def test_distinct_row_axis_names_do_not_merge_across_sheets() -> None:
+    plan, trace = _different_named_row_axes(cross_sheet=True)
+    compilation = compile_mapped_families(plan, trace, lambda *_: "None")
+    with pytest.raises(CalculationBlocked, match="same-pass execution-cluster cycle"):
+        render_grouped_driver(plan, compilation)
+
+
+def test_distinct_row_axis_names_do_not_merge_external_family() -> None:
+    plan, trace = _different_named_row_axes()
+    plan["variables"]["model.right"]["role"] = "external"
+    schedule = _build_execution_schedule(plan, trace, build_source_cell_index(plan))
+    assert schedule["physical_row_clusters"] == {}
+    assert schedule["family_dependencies"]["family.left"] == ["family.right"]
+    assert schedule["family_dependencies"]["family.right"] == ["family.left"]
+
+
+@pytest.mark.parametrize("relationship", ["range_read", "cell_reference"])
+def test_distinct_row_axis_names_need_direct_cell_proof(relationship: str) -> None:
+    plan, trace = _different_named_row_axes()
+    trace["edges"][1] = {"consumer": "Calc!H2", "prerequisite": "Calc!G1:G1",
+                         "relationship": relationship}
+    with pytest.raises(CalculationBlocked, match="non-cell dependency"):
+        compile_mapped_families(plan, trace, lambda *_: "None")
+
+
 def test_grouped_recurrence_buffers_each_state_step_before_commit() -> None:
     def variable(variable_id: str, output_range: str, seed_ref: str, family_id: str,
                  dependency: str) -> dict[str, object]:

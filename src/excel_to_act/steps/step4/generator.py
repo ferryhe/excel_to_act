@@ -28,7 +28,10 @@ from excel_to_act.steps.conversion_workflow import (
 )
 from excel_to_act.steps.step3.calculation import CalculationBlocked, _parse_reference
 from excel_to_act.steps.step3.tools.interface import export_tool_interface
-from excel_to_act.steps.step4.implementation import load_current_implementation_plan
+from excel_to_act.steps.step4.implementation import (
+    _apply_family_execution_refinements,
+    load_current_implementation_plan,
+)
 from excel_to_act.steps.step4.modular_bundle import build_modular_bundle_files
 
 
@@ -454,6 +457,7 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
         implementation_plan_path=implementation_path,
         implementation_plan_sha256=implementation_sha256,
         variable_interface=variable_interface,
+        execution_refiner=_apply_family_execution_refinements,
     )
     built.update({"discovery_path": discovery_path if discovery is not None else None,
                   "input_files": {"semantic_plan": semantic_plan_path,

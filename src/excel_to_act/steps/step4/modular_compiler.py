@@ -774,6 +774,8 @@ def _build_execution_schedule(
         mapping_axes = mapping.get("index_mapping", {}).get("axes", [])
         axis_mapping = next((item for item in mapping_axes
                              if item.get("dimension") == dimension), {})
+        member_sheets = {_address_key(address).split("!", 1)[0]
+                         for address in mapping.get("source_members", [])}
         if segment.get("execution") != "scalar" and dimension is None:
             raise CalculationBlocked(f"execution axis {axis_name!r} is not declared: {family_id}")
         family_contexts[family_id] = {
@@ -781,6 +783,8 @@ def _build_execution_schedule(
             "axis": axis_name if dimension is not None else None,
             "dimension": dimension,
             "source_coordinate": axis_mapping.get("source_coordinate"),
+            "source_sheet": next(iter(member_sheets)) if len(member_sheets) == 1 else None,
+            "role": variable.get("role"),
             "execution": segment.get("execution"),
             "start": segment.get("index_start", 0),
             "stop": segment.get("index_stop_exclusive", 1),
@@ -793,11 +797,13 @@ def _build_execution_schedule(
             if previous != family_id:
                 raise CalculationBlocked(f"formula address belongs to multiple families: {address}")
 
+    array_families: set[str] = set()
     for array_group in semantic_plan.get("array_mappings", []):
         for instance in array_group.get("instances", []):
             family_id = instance.get("anchor_source_family_id")
             if not isinstance(family_id, str) or family_id not in family_contexts:
                 raise CalculationBlocked("array instance has no mapped formula anchor family")
+            array_families.add(family_id)
             for address in [instance.get("anchor"), *instance.get("source_members", [])]:
                 if not isinstance(address, str):
                     continue
@@ -919,6 +925,8 @@ def _build_execution_schedule(
     same_pass_edges = 0
     cross_pass_edges = 0
     future_edges: list[dict[str, Any]] = []
+    row_pairs: set[tuple[str, str]] = set()
+    unproven_row_pairs: set[tuple[str, str]] = set()
     for edge in trace.get("edges", []):
         if not isinstance(edge, dict):
             continue
@@ -972,18 +980,40 @@ def _build_execution_schedule(
                     else:
                         future_edges.append({"consumer": consumer_address,
                                              "prerequisite": prerequisite_address,
-                                             "family_id": consumer_family})
+                                             "family_id": consumer_family,
+                                             "source_row": source_row})
                 continue
             same_pass_edges += 1
             consumer_context = family_contexts[consumer_family]
             prerequisite_context = family_contexts[prerequisite_family]
             consumer_cluster = (consumer_context.get("axis"), consumer_context.get("dimension"))
             prerequisite_cluster = (prerequisite_context.get("axis"), prerequisite_context.get("dimension"))
-            if consumer_cluster != prerequisite_cluster:
+            row_contexts = (consumer_context.get("source_coordinate") == "row"
+                            and prerequisite_context.get("source_coordinate") == "row")
+            same_source_rows = (row_contexts
+                                and consumer_context.get("source_sheet") is not None
+                                and consumer_context["source_sheet"] == prerequisite_context.get("source_sheet")
+                                and isinstance(consumer_context.get("dimension"), int)
+                                and consumer_context["dimension"] == prerequisite_context.get("dimension")
+                                and consumer_context.get("role") == "derived"
+                                and prerequisite_context.get("role") == "derived"
+                                and consumer_family not in array_families
+                                and prerequisite_family not in array_families)
+            prerequisite_ref = _parse_reference(edge.get("prerequisite"), "Main")
+            direct_cell = (edge.get("relationship") == "cell_reference"
+                           and prerequisite_ref is not None and prerequisite_ref.single
+                           and ":" not in edge["prerequisite"])
+            pair = tuple(sorted((consumer_family, prerequisite_family)))
+            if same_source_rows and direct_cell:
+                row_pairs.add(pair)
+            elif same_source_rows and consumer_cluster != prerequisite_cluster:
+                unproven_row_pairs.add(pair)
+            if (consumer_cluster != prerequisite_cluster
+                    and not (same_source_rows and direct_cell)) or (
+                    row_contexts and not same_source_rows):
                 family_dependencies[consumer_family].add(prerequisite_family)
                 continue
-            source_row = (consumer_context.get("source_coordinate") == "row"
-                          and prerequisite_context.get("source_coordinate") == "row")
+            source_row = row_contexts
             consumer_index = schedule_coordinate(consumer_address, consumer_family, source_row=source_row)
             prerequisite_index = schedule_coordinate(prerequisite_address, prerequisite_family,
                                                      source_row=source_row)
@@ -1001,17 +1031,40 @@ def _build_execution_schedule(
             else:
                 future_edges.append({"consumer": consumer_address,
                                      "prerequisite": prerequisite_address,
-                                     "family_id": consumer_family})
+                                     "family_id": consumer_family,
+                                     "source_row": source_row})
     if future_edges:
         sample = future_edges[0]
-        raise CalculationBlocked(
-            "ascending logical loop has a future-index formula prerequisite: "
-            f"{sample['consumer']} needs {sample['prerequisite']}"
-        )
+        prefix = ("ascending source-row loop has a future-row formula prerequisite: "
+                  if sample.get("source_row") else
+                  "ascending logical loop has a future-index formula prerequisite: ")
+        raise CalculationBlocked(f"{prefix}{sample['consumer']} needs {sample['prerequisite']}")
+    row_neighbors: dict[str, set[str]] = {}
+    for left, right in row_pairs:
+        row_neighbors.setdefault(left, set()).add(right)
+        row_neighbors.setdefault(right, set()).add(left)
+    physical_row_clusters: dict[str, str] = {}
+    while row_neighbors:
+        component: set[str] = set()
+        pending = [next(iter(row_neighbors))]
+        while pending:
+            family_id = pending.pop()
+            if family_id not in component:
+                component.add(family_id)
+                pending.extend(row_neighbors.get(family_id, set()) - component)
+        for family_id in component:
+            row_neighbors.pop(family_id, None)
+        if len({family_contexts[family_id]["axis"] for family_id in component}) > 1:
+            if any(left in component and right in component for left, right in unproven_row_pairs):
+                raise CalculationBlocked("physical source-row alignment has a non-cell dependency")
+            sheet = family_contexts[next(iter(component))]["source_sheet"]
+            cluster_id = f"{sheet}!{min(component)}"
+            physical_row_clusters.update({family_id: cluster_id for family_id in component})
     return {
         "family_contexts": family_contexts,
         "family_pass": family_pass,
         "family_rank": family_rank,
+        "physical_row_clusters": physical_row_clusters,
         "family_dependencies": {key: sorted(value) for key, value in family_dependencies.items()},
         "same_index_dependencies": {key: sorted(value) for key, value in same_index_dependencies.items()},
         "lagged_edges": lagged_edges,
@@ -1042,6 +1095,7 @@ def render_grouped_driver(semantic_plan: dict[str, Any], compilation: dict[str, 
     dependencies = schedule.get("family_dependencies", {})
     ranks = schedule.get("family_rank", {})
     same_index_dependencies = schedule.get("same_index_dependencies", {})
+    physical_row_clusters = schedule.get("physical_row_clusters", {})
     if not all(isinstance(value, dict) for value in
                (contexts, dependencies, ranks, same_index_dependencies)):
         raise CalculationBlocked("trace-derived family execution schedule is incomplete")
@@ -1082,7 +1136,8 @@ def render_grouped_driver(semantic_plan: dict[str, Any], compilation: dict[str, 
         if not pass_families:
             continue
         cluster_by_family = {
-            family_id: _schedule_cluster(family_id, contexts[family_id], array_instances)
+            family_id: _schedule_cluster(family_id, contexts[family_id], array_instances,
+                                         physical_row_clusters)
             for family_id in pass_families
         }
         clusters: dict[tuple[Any, ...], list[str]] = {}
@@ -1140,9 +1195,15 @@ def render_grouped_driver(semantic_plan: dict[str, Any], compilation: dict[str, 
 
 
 def _schedule_cluster(family_id: str, context: dict[str, Any],
-                      arrays: dict[str, dict[str, Any]]) -> tuple[Any, ...]:
+                      arrays: dict[str, dict[str, Any]],
+                      physical_row_clusters: dict[str, str]) -> tuple[Any, ...]:
     if family_id in arrays or context.get("axis") is None:
         return ("single", family_id)
+    if family_id in physical_row_clusters:
+        return ("axis", "source_row", context["dimension"], physical_row_clusters[family_id])
+    if context.get("source_coordinate") == "row":
+        return ("axis", context["axis"], context["dimension"],
+                context.get("source_sheet") or family_id)
     return ("axis", context["axis"], context["dimension"])
 
 
@@ -1375,6 +1436,7 @@ def _render_axis_cluster(
     lines.append("")
     family_order = [family_id for node in node_order for family_id in node_families[node]]
     return lines, {"families": family_ids, "loop_axis": axis_name,
+                   "loop_cluster_id": cluster[3] if len(cluster) > 3 else None,
                    "loop_dimension": dimension, "loop_start": start, "loop_stop": stop,
                    "node_order": [repr(node) for node in node_order],
                    "family_order": family_order}
@@ -1426,9 +1488,11 @@ def _validate_emitted_schedule(emitted: dict[str, Any], schedule: dict[str, Any]
         pass_id = pass_record.get("pass_id")
         for cluster_index, cluster_report in enumerate(emitted.get(pass_id, [])):
             family_ids = cluster_report.get("family_order", cluster_report.get("families", []))
-            cluster_key = (("axis", cluster_report["loop_axis"], cluster_report["loop_dimension"])
-                           if cluster_report.get("loop_axis") is not None
-                           else None)
+            cluster_key = None
+            if cluster_report.get("loop_axis") is not None:
+                cluster_key = ("axis", cluster_report["loop_axis"], cluster_report["loop_dimension"])
+                if cluster_report.get("loop_cluster_id") is not None:
+                    cluster_key += (cluster_report["loop_cluster_id"],)
             for position, family_id in enumerate(family_ids):
                 positions[family_id] = (pass_id, cluster_index, position)
                 clusters_by_family[family_id] = cluster_key or ("single", family_id)

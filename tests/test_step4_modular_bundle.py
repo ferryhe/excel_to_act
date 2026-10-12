@@ -177,7 +177,7 @@ def test_post_discovery_support_binds_current_artifacts_and_rejects_stale_files(
     saved = {f"main!B{row}": row + 10 for row in range(1, 4)} | {"main!F1": 2}
     proofs = [{"input_sha256": "i" * 64, "dependency_sha256": "e" * 64}]
     monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle._verified_case_layout",
-                        lambda *_args: proofs)
+                        lambda *_args, **_kwargs: proofs)
     contract = _variable_contract_layout(bound, bindings, [], trace_hash, {}, saved,
         source_path=source_path, semantic_plan={}, source_profile={}, target_names=["Answer"],
         names={}, capture_artifact_sha256=capture_hash)
@@ -192,7 +192,7 @@ def test_post_discovery_support_binds_current_artifacts_and_rejects_stale_files(
         _variable_contract_layout(stale_case, bindings, [], trace_hash, {}, saved,
             source_path=source_path, semantic_plan={}, source_profile={}, target_names=["Answer"],
             names={}, capture_artifact_sha256=capture_hash)
-    def missing_closure(*_args: object) -> list[dict[str, str]]:
+    def missing_closure(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
         raise CalculationBlocked("exact-case source cells closure differs from trace")
     monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle._verified_case_layout", missing_closure)
     with pytest.raises(CalculationBlocked, match="closure differs"):
@@ -308,6 +308,106 @@ def test_exact_case_replay_rejects_stale_case_reference(
               for name in ("trace", "raw_request", "public_request", "producer")}]
     with pytest.raises(CalculationBlocked, match="exact-case trace artifact is missing or stale"):
         _verified_case_layout(cases, {}, [], source, {}, {}, {}, [], {}, {}, [])
+
+
+@pytest.mark.parametrize("case_consumer, case_prerequisite, directive_family, error", [
+    ("Main!A1", "Main!B1", "family.consumer", None),
+    ("Main!A2", "Main!B1", "family.consumer", "prior-period"),
+    ("Main!A1", "Main!B2", "family.consumer", "future-period"),
+    ("Main!A1", "Main!B1", "family.unknown", "unique mapped families"),
+])
+def test_exact_case_rechecks_execution_refinement_against_its_own_trace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    case_consumer: str, case_prerequisite: str, directive_family: str, error: str | None,
+) -> None:
+    from excel_to_act.steps.step4.implementation import _apply_family_execution_refinements
+    from excel_to_act.steps.step4.modular_bundle import _verified_case_layout
+    from test_step4_implementation import _schedule_fixture
+
+    source = tmp_path / "source.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "Main"
+    workbook.active["A1"] = "=B1"
+    workbook.active["A2"] = "=B1"
+    workbook.active["B1"] = "=1"
+    workbook.active["B2"] = "=1"
+    workbook.save(source)
+    workbook.close()
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    base_plan, base_trace, _ = _schedule_fixture()
+    case_plan, case_trace, _ = _schedule_fixture(case_consumer, case_prerequisite)
+    for item in (base_plan, case_plan):
+        item["source"] = {"source_sha256": source_hash}
+    base_trace["source_sha256"] = source_hash
+    _apply_family_execution_refinements(base_plan, {
+        "execution_plan": {"family_execution": [
+            {"source_family_id": "family.consumer", "execution": "vectorized"}]}}, base_trace)
+    raw_request = {"input_overrides": []}
+    raw_digest = hashlib.sha256(b"[]").hexdigest()
+    public_request = {"inputs": {}, "external_data": {}}
+    producer = {"source_sha256": source_hash, "input_sha256": raw_digest, "cuts": {}}
+    artifacts = {"raw_request": raw_request, "public_request": public_request,
+                 "producer": producer, "plan": case_plan,
+                 "profile": {"source_sha256": source_hash}}
+    refs = {}
+    for name, payload in artifacts.items():
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        refs[name] = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    case_trace.update({"source_sha256": source_hash, "input_sha256": raw_digest,
+                       "request_sha256": refs["raw_request"]["sha256"],
+                       "producer_sha256": refs["producer"]["sha256"],
+                       "names": [], "lookups": [], "branches": [], "dynamic_ranges": []})
+    trace_path = tmp_path / "trace.json"
+    trace_path.write_text(json.dumps(case_trace), encoding="utf-8")
+    refs["trace"] = {"path": str(trace_path), "sha256": hashlib.sha256(trace_path.read_bytes()).hexdigest()}
+
+    class Replay:
+        def __init__(self, path: Path):
+            self.workbook = load_workbook(path)
+            self.sheet_names = {"main": "Main"}
+            self.external_overrides = {}
+            self.cells = {item["address"]: item for item in case_trace["cells"]}
+            self.edges = {index: item for index, item in enumerate(case_trace["edges"])}
+            self.names = {}
+            self.lookups = []
+            self.branches = []
+            self.dynamic_ranges = []
+
+        def close(self):
+            self.workbook.close()
+
+    def compile_checked(plan, *_args):
+        if plan["variables"]["projection"]["equation_segments"][0]["execution"] != "vectorized":
+            raise CalculationBlocked("same-year dependency inside an atomic recurrence group")
+        return {}
+
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle.FormulaEvaluator", Replay)
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle.validate_family_coverage", lambda *_: None)
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle._augment_literal_sources", lambda *args: args[4])
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle._named_bindings", lambda *_: {})
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle._formula_cell_bindings", lambda *_: {})
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle.compile_mapped_families", compile_checked)
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle.render_grouped_driver", lambda *_: "driver")
+    variants = []
+    implementation = {"execution_plan": {"family_execution": [
+        {"source_family_id": directive_family, "execution": "vectorized"}]}}
+    def verify():
+        return _verified_case_layout([refs], {}, [], source, base_plan, {"source_sha256": source_hash},
+                                     base_trace, [], {}, {}, variants,
+                                     implementation=implementation,
+                                     execution_refiner=_apply_family_execution_refinements)
+
+    if error:
+        with pytest.raises(CalculationBlocked, match=error):
+            verify()
+    else:
+        with pytest.raises(CalculationBlocked, match="no current trace validator"):
+            _verified_case_layout([refs], {}, [], source, base_plan, {"source_sha256": source_hash},
+                                  base_trace, [], {}, {}, [], implementation=implementation)
+        proof = verify()
+        assert proof[0]["trace_sha256"] == refs["trace"]["sha256"]
+        assert variants[0]["metadata"]["execution_refinements"][0]["trace_sha256"] == refs["trace"]["sha256"]
 
 
 def test_fixed_trace_guard_includes_lookup_return_used_by_a_branch() -> None:

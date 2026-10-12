@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openpyxl import load_workbook
 from openpyxl.utils.cell import get_column_letter, range_boundaries
@@ -330,7 +330,10 @@ def _verified_case_layout(cases: Any, mutable: dict[str, Any],
                           external_bindings: list[dict[str, Any]], source_path: Path,
                           plan: dict[str, Any], profile: dict[str, Any], base_trace: dict[str, Any],
                           target_names: list[str], names: dict[str, Any],
-                          source_values: dict[str, Any], variant_sources: list[dict[str, Any]]) -> list[dict[str, str]]:
+                          source_values: dict[str, Any], variant_sources: list[dict[str, Any]], *,
+                          implementation: dict[str, Any] | None = None,
+                          execution_refiner: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]],
+                                                      list[dict[str, Any]]] | None = None) -> list[dict[str, str]]:
     """Replay exact requests from source formulas before admitting finite bundle variants."""
     if not isinstance(cases, list) or not cases:
         raise CalculationBlocked("exact-case support needs at least one bound request")
@@ -517,6 +520,14 @@ def _verified_case_layout(cases: Any, mutable: dict[str, Any],
             if name.casefold() not in case_names:
                 raise CalculationBlocked(f"named reference is not mapped: {name}")
             return f"runtime.lookup_name(values, {name.casefold()!r})"
+        case_refinements: list[dict[str, Any]] = []
+        if implementation is not None and implementation.get("execution_plan", {}).get("family_execution"):
+            if execution_refiner is None:
+                raise CalculationBlocked("exact-case execution refinement has no current trace validator")
+            case_refinements = execution_refiner(
+                case_plan, implementation,
+                {**trace, "active_trace_sha256": case["trace"]["sha256"]},
+            )
         compiled = compile_mapped_families(case_plan, trace, case_resolve_name)
         driver = render_grouped_driver(case_plan, compiled)
         driver_sha = hashlib.sha256(driver.encode("utf-8")).hexdigest()
@@ -533,6 +544,7 @@ def _verified_case_layout(cases: Any, mutable: dict[str, Any],
                         "trace_sha256": case["trace"]["sha256"],
                         "plan_sha256": case["plan"]["sha256"],
                         "profile_sha256": case["profile"]["sha256"],
+                        "execution_refinements": case_refinements,
                         "named_bindings": case_names,
                         "extra_variable_shapes": {key: value["shape"] for key, value in extra_variables.items()},
                         "source_literals": case_literals,
@@ -578,7 +590,10 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
                               names: dict[str, Any] | None = None,
                               variant_sources: list[dict[str, Any]] | None = None,
                               capture_artifact_sha256: str | None = None,
-                              private_fixed_literals: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                              private_fixed_literals: list[dict[str, Any]] | None = None,
+                              implementation: dict[str, Any] | None = None,
+                              execution_refiner: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]],
+                                                          list[dict[str, Any]]] | None = None) -> dict[str, Any]:
     domain = definition.get("support_domain")
     if (definition.get("schema_version") != "step3.tool_interface.v1"
             or definition.get("contract_readiness", {}).get("status") != "defined"
@@ -730,6 +745,7 @@ def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dic
             domain.get("cases"), mutable, external_bindings, source_path,
             semantic_plan, source_profile, trace, target_names, names, source_values,
             variant_sources if variant_sources is not None else [],
+            implementation=implementation, execution_refiner=execution_refiner,
         )
         if certificate is not None:
             certificate = {**certificate, "verified_cases_sha256": _canonical_hash(verified_cases)}
@@ -1728,6 +1744,8 @@ def build_modular_bundle_files(
     implementation_plan_path: Path | None = None,
     implementation_plan_sha256: str | None = None,
     variable_interface: dict[str, Any] | None = None,
+    execution_refiner: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]],
+                                list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Compile, package, and report a source-bound logical-variable bundle."""
     coverage = validate_family_coverage(semantic_plan, source_profile, trace)
@@ -1806,7 +1824,9 @@ def build_modular_bundle_files(
                                                     source_profile=source_profile, target_names=target_names,
                                                     names=names, variant_sources=variant_sources,
                                                     capture_artifact_sha256=external_capture_artifact_sha256,
-                                                    private_fixed_literals=private_fixed_literals)
+                                                    private_fixed_literals=private_fixed_literals,
+                                                    implementation=implementation_plan_record,
+                                                    execution_refiner=execution_refiner)
                          if variable_interface is not None else None)
     if variable_contract is not None and variable_contract["source_sha256"] != source_sha256:
         raise CalculationBlocked("variable-input interface is bound to another source workbook")
