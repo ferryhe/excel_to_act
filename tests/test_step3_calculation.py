@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -313,6 +315,36 @@ def test_oracle_requires_a_bounded_request_and_packaged_script(tmp_path: Path) -
     assert "at least one" in result["reason"]
 
 
+@pytest.mark.skipif(os.name != "nt" or not shutil.which("powershell.exe"),
+                    reason="requires Windows Excel automation")
+def test_native_oracle_writes_mixed_literal_types(tmp_path: Path) -> None:
+    source = tmp_path / "mixed.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Inputs"
+    sheet["A1"], sheet["A2"], sheet["A3"] = 0, "A", 0.125
+    sheet["A4"], sheet["A5"] = "filled", False
+    sheet["B1"] = "=A1+A3"
+    workbook.defined_names.add(DefinedName("Answer", attr_text="Inputs!$B$1"))
+    workbook.save(source)
+    workbook.close()
+
+    result = calculation.capture_excel_oracle(
+        source, tmp_path.parent / f"{tmp_path.name}-oracle", targets=["Answer"],
+        ranges=["Inputs!A1:A5"], input_overrides=[
+            {"address": "Inputs!A1", "value": 2},
+            {"address": "Inputs!A2", "value": "B"},
+            {"address": "Inputs!A3", "value": 0.123456},
+            {"address": "Inputs!A4", "value": None},
+            {"address": "Inputs!A5", "value": True},
+        ], input_sha256="a" * 64, scenario_id="mixed-literals")
+    assert result["status"] == "pass", result
+    captured = json.loads(Path(result["artifacts"][0]).read_text(encoding="utf-8"))
+    assert [captured["applied_inputs"][f"Inputs!A{row}"]["value"]
+            for row in range(1, 6)] == [2, "B", 0.123456, None, True]
+    assert captured["named_targets"]["Answer"]["value"] == pytest.approx(2.123456)
+
+
 def test_native_oracle_resolves_requested_sheet_names_case_insensitively(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -389,10 +421,61 @@ def test_native_oracle_resolves_requested_sheet_names_case_insensitively(
     assert set(saved["ranges"]) == set(saved["requested_ranges"])
     assert requests[0]["target_shapes"] == target_shapes
     assert len(calls) == 1
-
     missing_sheet = calculation.capture_excel_oracle(
         source, tmp_path.parent / f"{tmp_path.name}-missing-sheet", targets=[], ranges=["not_a_sheet!A1"],
     )
     assert missing_sheet["status"] == "blocked"
     assert missing_sheet["reason"] == "worksheet does not exist: not_a_sheet"
     assert len(calls) == 1
+
+
+def test_varied_native_oracle_rejects_formula_and_readback_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "Inputs"
+    workbook.active["A1"] = 5
+    workbook.active["B1"] = "=A1*2"
+    workbook.save(source)
+    workbook.close()
+    monkeypatch.setattr(calculation, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(calculation.shutil, "which", lambda _name: "powershell.exe")
+    requested = []
+    readback = {"value": 6}
+
+    def fake_run(args, **_kwargs):
+        request = json.loads(Path(args[args.index("-RequestPath") + 1]).read_text(encoding="utf-8"))
+        requested.append(request)
+        Path(args[args.index("-OutputPath") + 1]).write_text(json.dumps({
+            "engine": "Microsoft Excel", "engine_settings": {"version": "16"},
+            "full_rebuild_seconds": 0.1, "calculation_state": 0,
+            "named_targets": {}, "after_full_rebuild": {},
+            "ranges": {"Inputs!B1": {"values": [[10]], "formulas": [["=A1*2"]],
+                                      "excel_errors": [[None]]}},
+            "applied_inputs": {"Inputs!A1": readback},
+        }), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(calculation.subprocess, "run", fake_run)
+    blocked = calculation.capture_excel_oracle(source, tmp_path.parent / f"{tmp_path.name}-bad",
+        targets=[], ranges=["Inputs!B1"], input_overrides=[{"address": "Inputs!A1", "value": 7}],
+        input_sha256="a" * 64, scenario_id="case-a")
+    assert blocked["status"] == "blocked" and "readback mismatch" in blocked["reason"]
+    assert requested[0]["input_overrides"][0]["qualified_address"] == "Inputs!A1"
+    assert requested[0]["primary_input_addresses"] == []
+    readback["value"] = 7
+    accepted = calculation.capture_excel_oracle(source, tmp_path.parent / f"{tmp_path.name}-good",
+        targets=[], ranges=["Inputs!B1"], input_overrides=[{"address": "Inputs!A1", "value": 7}],
+        input_sha256="a" * 64, scenario_id="case-a")
+    assert accepted["status"] == "pass"
+    readback["formula"] = "=7"
+    converted = calculation.capture_excel_oracle(source, tmp_path.parent / f"{tmp_path.name}-converted",
+        targets=[], ranges=["Inputs!B1"], input_overrides=[{"address": "Inputs!A1", "value": 7}],
+        input_sha256="a" * 64, scenario_id="case-a")
+    assert converted["status"] == "blocked" and "readback mismatch" in converted["reason"]
+    readback.pop("formula")
+    formula = calculation.capture_excel_oracle(source, tmp_path.parent / f"{tmp_path.name}-formula",
+        targets=[], ranges=["Inputs!B1"], input_overrides=[{"address": "Inputs!B1", "value": 7}],
+        input_sha256="a" * 64, scenario_id="case-a")
+    assert formula["status"] == "blocked" and "formula cell" in formula["reason"]

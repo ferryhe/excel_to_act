@@ -1136,7 +1136,7 @@ def _catalog_upstream_exclusions(boundary: dict[str, Any]) -> tuple[set[str], li
     for item in boundary.get("upstream_exclusions", []):
         if not isinstance(item, dict):
             continue
-        reference = item.get("source_range")
+        reference = item.get("excluded_range", item.get("source_range"))
         if not isinstance(reference, str):
             continue
         try:

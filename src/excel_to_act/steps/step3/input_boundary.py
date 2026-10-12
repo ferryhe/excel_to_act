@@ -8,6 +8,8 @@ from math import prod
 from pathlib import Path
 import re
 from typing import Any
+import xml.etree.ElementTree as ET
+from zipfile import ZipFile
 
 from openpyxl.utils.cell import get_column_letter, range_boundaries
 
@@ -100,6 +102,46 @@ def _validate_scope_notes(notes: Any) -> None:
                         raise ValueError(f"stored coordinate audit {key} must be boolean")
 
 
+def _with_verified_stored_blanks(catalog: dict[str, Any], fields: dict[str, Any],
+                                 inventory: dict[str, Any], source_path: Path,
+                                 source_sha256: str) -> dict[str, Any]:
+    reconciliation = catalog.get("source_scope_notes", {}).get("stored_coordinate_reconciliation", {})
+    blanks = [item for item in reconciliation.get("historical_empty_coordinates", [])
+              if item.get("source_value_status") == "stored_blank_no_literal"]
+    if not blanks:
+        return fields
+    if (reconciliation.get("source_copy_sha256") != source_sha256 or not source_path.is_file()
+            or conversion.hash_file(source_path) != source_sha256):
+        raise ValueError("stored blank source checksum does not match the bound workbook")
+    existing = {_address_key(f"{field['sheet']}!{member['address']}")
+                for field in fields["fields"] for member in field["members"]}
+    parts = {str(sheet["name"]).casefold(): next((
+        (cell.get("source_location") or {}).get("ooxml_part") for cell in sheet.get("cells", [])
+        if (cell.get("source_location") or {}).get("ooxml_part")), None)
+        for sheet in inventory["sheets"]}
+    added: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    with ZipFile(source_path) as package:
+        for item in blanks:
+            address = item.get("address")
+            if not isinstance(address, str) or "!" not in address:
+                raise ValueError("stored blank needs a qualified source address")
+            sheet, cell = address.rsplit("!", 1)
+            key = _address_key(address)
+            part = parts.get(sheet.casefold())
+            if key in seen or key in existing or not part or not re.fullmatch(r"[A-Za-z]+[1-9][0-9]*", cell):
+                raise ValueError(f"stored blank has duplicate or unknown source coordinates: {address}")
+            seen.add(key)
+            element = ET.fromstring(package.read(part)).find(
+                f".//{{http://schemas.openxmlformats.org/spreadsheetml/2006/main}}c[@r='{cell.upper()}']")
+            if (element is None or list(element) or (element.text or "").strip()
+                    or item.get("data_type") != element.get("t", "n")):
+                raise ValueError(f"source cell is not a stored blank: {address}")
+            added.append({"field_id": f"stored-blank:{key}", "sheet": sheet, "role": "source",
+                          "members": [{"address": cell.upper(), "source_kind": "stored_blank"}]})
+    return {**fields, "fields": [*fields["fields"], *added]}
+
+
 def create_input_boundary(
     analysis_dir: Path,
     workflow_dir: Path,
@@ -123,10 +165,18 @@ def create_input_boundary(
         _assert_no_embedded_values(catalog, "catalog")
         target_selection = _validate_targets(targets, binding, analysis["binding_sha256"])
         _validate_catalog_identity(catalog, binding, target_selection)
+        if "source_scope_notes" in catalog:
+            _validate_scope_notes(catalog["source_scope_notes"])
 
         fields, fields_sha = step3._read_stage(analysis_dir, analysis, "fields")
         dependencies, dependencies_sha = step3._read_stage(analysis_dir, analysis, "dependencies")
         _plan, plan_sha = step3._read_stage(analysis_dir, analysis, "plan")
+        source_copy = manifest.get("source", {}).get("step1_source_copy_path")
+        fields = _with_verified_stored_blanks(
+            catalog, fields, step3._load_inventory(_inventory_path),
+            Path(source_copy) if isinstance(source_copy, str) else Path(),
+            binding["source"]["source_sha256"],
+        )
         topology_evidence = catalog.get("topology_evidence")
         trace_path: Path | None = None
         trace_sha: str | None = None
@@ -636,7 +686,7 @@ def _validate_catalog(catalog: dict[str, Any], targets: dict[str, Any], fields: 
     seen_exclusions: set[tuple[str, str]] = set()
     clean_exclusions: list[dict[str, Any]] = []
     for item in exclusions:
-        _reject_unlisted_fields(item, {"boundary_variable_id", "named_source", "source_range", "reason"},
+        _reject_unlisted_fields(item, {"boundary_variable_id", "named_source", "source_range", "excluded_range", "reason"},
                                 "each upstream exclusion")
         if item.get("boundary_variable_id") not in boundary_variables:
             raise ValueError("each upstream exclusion must cite a formula-derived boundary variable")
@@ -646,6 +696,18 @@ def _validate_catalog(catalog: dict[str, Any], targets: dict[str, Any], fields: 
         descriptor = name_descriptors.get(name.casefold())
         if descriptor is None or _canonical_ref(str(descriptor.get("address", "")), descriptor.get("sheet")) != _canonical_ref(ref):
             raise ValueError(f"upstream exclusion {name} does not match the canonical defined-name descriptor")
+        if "excluded_range" in item:
+            named_bounds = _reference_bounds(ref)
+            excluded_bounds = (_reference_bounds(item["excluded_range"])
+                               if isinstance(item["excluded_range"], str) else None)
+            if excluded_bounds is not None and (excluded_bounds[0] > excluded_bounds[2]
+                                                or excluded_bounds[1] > excluded_bounds[3]):
+                raise ValueError(f"upstream exclusion {name} excluded_range has reversed endpoints")
+            if (named_bounds is None or excluded_bounds is None
+                    or excluded_bounds[4].casefold() != named_bounds[4].casefold()
+                    or excluded_bounds[0] < named_bounds[0] or excluded_bounds[1] < named_bounds[1]
+                    or excluded_bounds[2] > named_bounds[2] or excluded_bounds[3] > named_bounds[3]):
+                raise ValueError(f"upstream exclusion {name} excluded_range must be within the named source range")
         key = (item["boundary_variable_id"], name.casefold())
         if key in seen_exclusions:
             raise ValueError(f"duplicate upstream exclusion for {name}")
@@ -1240,7 +1302,7 @@ def _boundary_evidence_markdown(payload: dict[str, Any]) -> str:
     for item in payload["upstream_exclusions"]:
         lines.append(f"| `{_markdown_table_cell(item['boundary_variable_id'])}` | "
                      f"`{_markdown_table_cell(item['named_source'])}` | "
-                     f"`{_markdown_table_cell(item['source_range'])}` | {_markdown_table_cell(item['reason'])} |")
+                     f"`{_markdown_table_cell(item.get('excluded_range', item['source_range']))}` | {_markdown_table_cell(item['reason'])} |")
     if payload.get("source_records"):
         lines.extend(["", "## Non-business and pending source records", "", "These records account for retained source coordinates without treating headers, labels, or literals as separate business variables. Pending classifications remain visible and are not asserted as understood inputs.", ""])
         for item in payload["source_records"]:

@@ -20,10 +20,11 @@ def tool_catalog() -> dict[str, Any]:
                    "Normally omit --trace; if supplied, it must name the exact latest passing Stage 4 discovery trace bound by the current implementation preflight. Stage 3 traces and older discovery revisions are rejected.",
                    "External capture derives vector IDs, finite ranges, shapes, and the shared key axis from the confirmed catalog and semantic cut; callers cannot override ranges.",
                    "The current GP design has five external 106-value rate vectors on one 106-key age axis (530 captured coordinates). Their upstream CI producer formulas remain excluded; the values are recaptured in native Excel for each Stage 5 comparison.",
-                   "The current primary-input reconciliation expects seven approved Main cells. Another workbook needs its own reviewed catalog, semantic plan, and Stage 4 adapter; this workflow is not a general workbook converter.",
+                   "The saved-scenario reconciliation retains seven approved Main cells. A variable-input contract uses its approved raw source map and exact input digest instead.",
                    "Discovery uses formula text and literal source values; it does not call native Excel or read formula caches.",
                    "The captured vectors are a separate formula-derived external input ledger, never raw source values or cache values.",
                    "Only targets and scenarios in the approved Stage 3 design are discovered and emitted.",
                    "Generated code uses standard-library helpers and separate raw and external input ledgers.",
+                   "A generated bundle exposes model.py --inputs REQUEST.json only when the current Step 3 interface has a complete approved fixed-trace support domain. REQUEST.json contains logical inputs and same-request external_data; model.py without --inputs retains the saved scenario.",
                    "Unsupported active formulas, unresolved references, cycles, or unbound inputs block generation.",
                    "This is not a general Excel compiler or GPU implementation."]}

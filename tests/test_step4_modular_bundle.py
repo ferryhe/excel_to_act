@@ -3,24 +3,32 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import types
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 from openpyxl.worksheet.formula import ArrayFormula
 
 from excel_to_act.steps.step3.calculation import CalculationBlocked
-from excel_to_act.steps.step4.generator import _smoke_bundle
+from excel_to_act.steps.step4.generator import _bind_current_support_domain, _bundle_files, _smoke_bundle
 from excel_to_act.steps.step4.modular_bundle import (
+    _adapter_source,
     _augment_literal_sources,
+    _bound_private_fixed_literals,
+    _canonical_hash,
     _named_bindings,
     _raw_bindings,
+    _variable_contract_layout,
+    _model_source,
     add_adapter_metadata,
     build_modular_bundle_files,
 )
-from excel_to_act.steps.step4.modular_compiler import build_source_cell_index
+from excel_to_act.steps.step4.modular_compiler import SourceCell, build_source_cell_index, compile_formula_function
 from excel_to_act.steps.step4.modular_runtime import binary
 from excel_to_act.steps.step4 import modular_runtime as runtime
 
@@ -80,22 +88,782 @@ def _input_records():
     ]
 
 
+def _variable_interface(source_hash: str) -> dict:
+    return {
+        "schema_version": "step3.tool_interface.v1",
+        "contract_readiness": {"status": "defined", "blockers": []},
+        "bindings": {"source": {"workbook_sha256": source_hash}, "design": {}, "input_boundary": {}},
+        "support_domain": {"status": "fixed_trace", "active_trace_sha256": "t" * 64,
+                           "external_policy": {}, "tolerances": {"absolute": 0, "relative": 0}},
+        "objects": [{"variable_id": variable_id, "logical_name": name,
+                     "mutability": "mutable" if variable_id in {"raw.value", "raw.config"} else "immutable",
+                     "shape": shape, "axes": axes, "value_type": value_type,
+                     "required": variable_id != "raw.config",
+                     "default_policy": {"status": "saved" if variable_id == "raw.config" else "none"},
+                     "allowed_range": allowed_range}
+                    for variable_id, name, shape, axes, value_type, allowed_range in (
+                        ("raw.key", "Key", [3], [{"name": "year"}], "integer", {"status": "unbounded"}),
+                        ("raw.value", "Value", [3], [{"name": "year", "keys": [1, 2, 3]}], "number",
+                         {"status": "declared", "minimum": 0, "maximum": 25}),
+                        ("raw.config", "Config", [], [], "integer", {"status": "enum", "values": [2, 5]}),
+                    )],
+        "source_provenance": {"inputs": {variable_id: {"role": "source_raw"}
+                                         for variable_id in ("raw.key", "raw.value", "raw.config")},
+                              "outputs": {"Answer": {"selector": "Answer"}}},
+        "outputs": {"properties": {"Answer": {"x-axes": []}}},
+    }
+
+
+def test_post_discovery_support_binds_current_artifacts_and_rejects_stale_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from excel_to_act.steps.conversion_workflow import json_bytes
+
+    source_hash, design_hash = "a" * 64, "d" * 64
+    definition = _variable_interface(source_hash)
+    definition["bindings"]["design"] = {
+        "artifact": {"json_sha256": design_hash},
+        "review_receipts": {name: {"decision": "approve", "artifact_sha256": design_hash}
+                            for name in ("agent", "human")}}
+    definition["support_domain"] = {
+        "status": "exact_cases", "trace_binding": "post_discovery",
+        "cases": [{name: {"path": "case.json", "sha256": "c" * 64} for name in
+                   ("trace", "raw_request", "public_request", "producer")}],
+        "external_policy": {}, "tolerances": {"absolute": 0, "relative": 0}}
+    interface_path = tmp_path / "interface.json"
+    interface_path.write_bytes(json_bytes(definition))
+    capture_path = tmp_path / "external_inputs.json"
+    capture_path.write_bytes(json_bytes({"schema_version": "step4.external_inputs.v1",
+        "status": "pass", "source_sha256": source_hash,
+        "stage3": {"artifact_json_sha256": design_hash}}))
+    capture_hash = hashlib.sha256(capture_path.read_bytes()).hexdigest()
+    trace_path = tmp_path / "active_trace.json"
+    trace_path.write_bytes(json_bytes({"source_sha256": source_hash,
+        "design_sha256": design_hash, "external_capture_sha256": capture_hash, "cells": []}))
+    trace_hash = hashlib.sha256(trace_path.read_bytes()).hexdigest()
+    discovery_path = tmp_path / "discovery.json"
+    discovery_path.write_bytes(json_bytes({"schema_version": "step4.discovery.v1",
+        "status": "pass", "source_sha256": source_hash,
+        "stage3_artifact_sha256": design_hash, "active_trace_sha256": trace_hash,
+        "active_trace_path": str(trace_path)}))
+    kwargs = {"interface_path": interface_path, "design_sha256": design_hash,
+              "source_sha256": source_hash, "capture_path": capture_path,
+              "capture_sha256": capture_hash, "discovery_path": discovery_path,
+              "trace_path": trace_path}
+    bound = _bind_current_support_domain(definition, **kwargs)
+    assert bound["support_domain"]["active_trace_sha256"] == trace_hash
+    assert bound["support_certificate"]["capture_artifact_sha256"] == capture_hash
+    assert bound["support_certificate"]["approved_interface_sha256"] == hashlib.sha256(
+        interface_path.read_bytes()).hexdigest()
+    assert "active_trace_sha256" not in definition["support_domain"]
+    capture_path.write_bytes(json_bytes({"schema_version": "step4.external_inputs.v1",
+        "status": "pass", "source_sha256": source_hash,
+        "stage3": {"artifact_json_sha256": design_hash}, "dependency_version": "new"}))
+    refreshed_hash = hashlib.sha256(capture_path.read_bytes()).hexdigest()
+    with pytest.raises(CalculationBlocked, match="capture.*trace"):
+        _bind_current_support_domain(definition, **{**kwargs, "capture_sha256": refreshed_hash})
+    capture_path.write_bytes(json_bytes({"schema_version": "step4.external_inputs.v1",
+        "status": "pass", "source_sha256": source_hash,
+        "stage3": {"artifact_json_sha256": design_hash}}))
+    blocked = json.loads(json.dumps(definition))
+    blocked["contract_readiness"]["status"] = "blocked"
+    with pytest.raises(CalculationBlocked, match="contract is blocked"):
+        _bind_current_support_domain(blocked, **kwargs)
+    source_path = tmp_path / "source.xlsx"
+    source_path.write_bytes(b"synthetic source")
+    bindings = [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
+                for row in range(1, 4)]
+    bindings.append({"address": "main!F1", "variable_id": "raw.config", "indices": []})
+    saved = {f"main!B{row}": row + 10 for row in range(1, 4)} | {"main!F1": 2}
+    proofs = [{"input_sha256": "i" * 64, "dependency_sha256": "e" * 64}]
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle._verified_case_layout",
+                        lambda *_args, **_kwargs: proofs)
+    contract = _variable_contract_layout(bound, bindings, [], trace_hash, {}, saved,
+        source_path=source_path, semantic_plan={}, source_profile={}, target_names=["Answer"],
+        names={}, capture_artifact_sha256=capture_hash)
+    assert contract["support_certificate"]["verified_cases_sha256"] == _canonical_hash(proofs)
+    with pytest.raises(CalculationBlocked, match="certificate"):
+        _variable_contract_layout(bound, bindings, [], trace_hash, {}, saved,
+            source_path=source_path, semantic_plan={}, source_profile={}, target_names=["Answer"],
+            names={}, capture_artifact_sha256="0" * 64)
+    stale_case = json.loads(json.dumps(bound))
+    stale_case["support_domain"]["cases"][0]["producer"]["sha256"] = "0" * 64
+    with pytest.raises(CalculationBlocked, match="certificate"):
+        _variable_contract_layout(stale_case, bindings, [], trace_hash, {}, saved,
+            source_path=source_path, semantic_plan={}, source_profile={}, target_names=["Answer"],
+            names={}, capture_artifact_sha256=capture_hash)
+    def missing_closure(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+        raise CalculationBlocked("exact-case source cells closure differs from trace")
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle._verified_case_layout", missing_closure)
+    with pytest.raises(CalculationBlocked, match="closure differs"):
+        _variable_contract_layout(bound, bindings, [], trace_hash, {}, saved,
+            source_path=source_path, semantic_plan={}, source_profile={}, target_names=["Answer"],
+            names={}, capture_artifact_sha256=capture_hash)
+    for changed in ("design_sha256", "source_sha256", "capture_sha256"):
+        with pytest.raises(CalculationBlocked, match="stale|current"):
+            _bind_current_support_domain(definition, **{**kwargs, changed: "0" * 64})
+    discovery_path.write_text("{}", encoding="utf-8")
+    with pytest.raises(CalculationBlocked, match="discovery|current"):
+        _bind_current_support_domain(definition, **kwargs)
+    discovery_path.write_bytes(json_bytes({"schema_version": "step4.discovery.v1",
+        "status": "pass", "source_sha256": source_hash,
+        "stage3_artifact_sha256": design_hash, "active_trace_sha256": trace_hash,
+        "active_trace_path": str(trace_path)}))
+    trace_path.write_text("changed", encoding="utf-8")
+    with pytest.raises(CalculationBlocked, match="discovery|trace"):
+        _bind_current_support_domain(definition, **kwargs)
+
+
+@pytest.mark.parametrize("exact_cases", [False, True])
+def test_empty_interface_registry_never_silently_drops_exact_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exact_cases: bool,
+) -> None:
+    from excel_to_act.steps.conversion_workflow import json_bytes
+
+    def evidence(name: str, payload: dict) -> tuple[Path, str]:
+        path = tmp_path / name
+        path.write_bytes(json_bytes(payload))
+        return path, hashlib.sha256(path.read_bytes()).hexdigest()
+
+    source_path = tmp_path / "source.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "Main"
+    workbook.active["A1"] = 3
+    workbook.save(source_path)
+    workbook.close()
+    source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    design_hash = "d" * 64
+    trace_path, trace_hash = evidence("active_trace.json", {
+        "source_sha256": source_hash, "design_sha256": design_hash,
+        "cells": [{"address": "Main!A1", "sheet": "Main", "role": "source_value"}],
+        "names": [{"scope": "workbook", "name": "Result"}],
+    })
+    evidence("discovery.json", {"schema_version": "step4.discovery.v1", "status": "pass",
+        "source_sha256": source_hash, "stage3_artifact_sha256": design_hash,
+        "active_trace_path": str(trace_path), "active_trace_sha256": trace_hash})
+    map_path, map_hash = evidence("map.json", {})
+    profile_path, profile_hash = evidence("profile.json", {})
+    plan_path, plan_hash = evidence("plan.json", {"status": "pass",
+        "source": {"source_sha256": source_hash},
+        "semantic_map_input": {"path": str(map_path), "sha256": map_hash},
+        "evidence": {"source_family_profile": {"path": str(profile_path), "sha256": profile_hash}}})
+    check_path, check_hash = evidence("check.json", {"status": "pass",
+        "semantic_plan_sha256": plan_hash, "semantic_map_input_sha256": map_hash,
+        "source_family_profile_sha256": profile_hash})
+    capture_path, capture_hash = evidence("capture.json", {})
+    implementation_path, implementation_hash = evidence("implementation.json", {})
+    implementation_input_path, _ = evidence("implementation-input.json", {})
+    stage3 = {"source": {"workbook_path": str(source_path), "workbook_sha256": source_hash},
+        "_artifact_sha256": design_hash,
+        "analysis": {"artifacts": {"semantic_plan": {"path": str(plan_path), "sha256": plan_hash},
+                                   "semantic_check": {"path": str(check_path), "sha256": check_hash}}},
+        "design": {"targets": [{"selector": "Result"}], "validation_plan": [],
+                   "historical_evidence": [], "tool_interface": {"support_domain": {
+                       "status": "exact_cases" if exact_cases else "fixed_trace"}}}}
+    monkeypatch.setattr("excel_to_act.steps.step4.generator._require_modular_design", lambda *_: None)
+    monkeypatch.setattr("excel_to_act.steps.step4.generator.load_current_implementation_plan",
+                        lambda *_: ({"implementation_input": {"path": str(implementation_input_path)}},
+                                   implementation_path, implementation_hash,
+                                   {"trace_path": trace_path, "projected_plan": {},
+                                    "projected_profile": {}, "capture": {}, "capture_path": capture_path,
+                                    "capture_file_sha256": capture_hash}))
+    monkeypatch.setattr("excel_to_act.steps.step4.generator._saved_scenario_guard",
+                        lambda *_: (["saved"], {}))
+    monkeypatch.setattr("excel_to_act.steps.step4.generator._path_implementation_evidence",
+                        lambda *_: {})
+    monkeypatch.setattr("excel_to_act.steps.step4.generator.load_workflow",
+                        lambda *_: (tmp_path, {"tool_interfaces": []}))
+    calls: list[str] = []
+    def export(_root: Path) -> dict:
+        calls.append("export")
+        return {"status": "blocked"}
+    def build(**_kwargs: object) -> dict:
+        calls.append("build")
+        return {"manifest": {}}
+    monkeypatch.setattr("excel_to_act.steps.step4.generator.export_tool_interface", export)
+    monkeypatch.setattr("excel_to_act.steps.step4.generator.build_modular_bundle_files", build)
+    monkeypatch.setattr("excel_to_act.steps.step4.generator._modular_oracle_ranges", lambda *_: [])
+
+    if exact_cases:
+        with pytest.raises(CalculationBlocked, match="exact-case interface cannot be exported"):
+            _bundle_files(stage3, trace_path, tmp_path / "bundle", tmp_path)
+        assert calls == ["export"]
+    else:
+        assert _bundle_files(stage3, trace_path, tmp_path / "bundle", tmp_path)["manifest"] == {}
+        assert calls == ["build"]
+
+
+def test_exact_case_replay_rejects_stale_case_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from excel_to_act.steps.step4.modular_bundle import _verified_case_layout
+
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle.compile_mapped_families",
+                        lambda *_args: {})
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle.render_grouped_driver",
+                        lambda *_args: "driver")
+    source = tmp_path / "source.xlsx"
+    source.write_bytes(b"synthetic source")
+    cases = [{name: {"path": str(tmp_path / "absent.json"), "sha256": "a" * 64}
+              for name in ("trace", "raw_request", "public_request", "producer")}]
+    with pytest.raises(CalculationBlocked, match="exact-case trace artifact is missing or stale"):
+        _verified_case_layout(cases, {}, [], source, {}, {}, {}, [], {}, {}, [])
+
+
+@pytest.mark.parametrize("case_consumer, case_prerequisite, directive_family, error", [
+    ("Main!A1", "Main!B1", "family.consumer", None),
+    ("Main!A2", "Main!B1", "family.consumer", "prior-period"),
+    ("Main!A1", "Main!B2", "family.consumer", "future-period"),
+    ("Main!A1", "Main!B1", "family.unknown", "unique mapped families"),
+])
+def test_exact_case_rechecks_execution_refinement_against_its_own_trace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    case_consumer: str, case_prerequisite: str, directive_family: str, error: str | None,
+) -> None:
+    from excel_to_act.steps.step4.implementation import _apply_family_execution_refinements
+    from excel_to_act.steps.step4.modular_bundle import _verified_case_layout
+    from test_step4_implementation import _schedule_fixture
+
+    source = tmp_path / "source.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "Main"
+    workbook.active["A1"] = "=B1"
+    workbook.active["A2"] = "=B1"
+    workbook.active["B1"] = "=1"
+    workbook.active["B2"] = "=1"
+    workbook.save(source)
+    workbook.close()
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    base_plan, base_trace, _ = _schedule_fixture()
+    case_plan, case_trace, _ = _schedule_fixture(case_consumer, case_prerequisite)
+    for item in (base_plan, case_plan):
+        item["source"] = {"source_sha256": source_hash}
+    base_trace["source_sha256"] = source_hash
+    _apply_family_execution_refinements(base_plan, {
+        "execution_plan": {"family_execution": [
+            {"source_family_id": "family.consumer", "execution": "vectorized"}]}}, base_trace)
+    raw_request = {"input_overrides": []}
+    raw_digest = hashlib.sha256(b"[]").hexdigest()
+    public_request = {"inputs": {}, "external_data": {}}
+    producer = {"source_sha256": source_hash, "input_sha256": raw_digest, "cuts": {}}
+    artifacts = {"raw_request": raw_request, "public_request": public_request,
+                 "producer": producer, "plan": case_plan,
+                 "profile": {"source_sha256": source_hash}}
+    refs = {}
+    for name, payload in artifacts.items():
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        refs[name] = {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    case_trace.update({"source_sha256": source_hash, "input_sha256": raw_digest,
+                       "request_sha256": refs["raw_request"]["sha256"],
+                       "producer_sha256": refs["producer"]["sha256"],
+                       "names": [], "lookups": [], "branches": [], "dynamic_ranges": []})
+    trace_path = tmp_path / "trace.json"
+    trace_path.write_text(json.dumps(case_trace), encoding="utf-8")
+    refs["trace"] = {"path": str(trace_path), "sha256": hashlib.sha256(trace_path.read_bytes()).hexdigest()}
+
+    class Replay:
+        def __init__(self, path: Path):
+            self.workbook = load_workbook(path)
+            self.sheet_names = {"main": "Main"}
+            self.external_overrides = {}
+            self.cells = {item["address"]: item for item in case_trace["cells"]}
+            self.edges = {index: item for index, item in enumerate(case_trace["edges"])}
+            self.names = {}
+            self.lookups = []
+            self.branches = []
+            self.dynamic_ranges = []
+
+        def close(self):
+            self.workbook.close()
+
+    def compile_checked(plan, *_args):
+        if plan["variables"]["projection"]["equation_segments"][0]["execution"] != "vectorized":
+            raise CalculationBlocked("same-year dependency inside an atomic recurrence group")
+        return {}
+
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle.FormulaEvaluator", Replay)
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle.validate_family_coverage", lambda *_: None)
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle._augment_literal_sources", lambda *args: args[4])
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle._named_bindings", lambda *_: {})
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle._formula_cell_bindings", lambda *_: {})
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle.compile_mapped_families", compile_checked)
+    monkeypatch.setattr("excel_to_act.steps.step4.modular_bundle.render_grouped_driver", lambda *_: "driver")
+    variants = []
+    implementation = {"execution_plan": {"family_execution": [
+        {"source_family_id": directive_family, "execution": "vectorized"}]}}
+    def verify():
+        return _verified_case_layout([refs], {}, [], source, base_plan, {"source_sha256": source_hash},
+                                     base_trace, [], {}, {}, variants,
+                                     implementation=implementation,
+                                     execution_refiner=_apply_family_execution_refinements)
+
+    if error:
+        with pytest.raises(CalculationBlocked, match=error):
+            verify()
+    else:
+        with pytest.raises(CalculationBlocked, match="no current trace validator"):
+            _verified_case_layout([refs], {}, [], source, base_plan, {"source_sha256": source_hash},
+                                  base_trace, [], {}, {}, [], implementation=implementation)
+        proof = verify()
+        assert proof[0]["trace_sha256"] == refs["trace"]["sha256"]
+        assert variants[0]["metadata"]["execution_refinements"][0]["trace_sha256"] == refs["trace"]["sha256"]
+
+
+def test_fixed_trace_guard_includes_lookup_return_used_by_a_branch() -> None:
+    bindings = [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
+                for row in range(1, 4)]
+    bindings.append({"address": "main!F1", "variable_id": "raw.config", "indices": []})
+    trace = {"lookups": [{"formula_cell": "Main!D1", "function": "VLOOKUP",
+                          "table_range": "Main!A1:E3", "lookup_column": 1,
+                          "return_column": 2, "matched_row": 2}],
+             "branches": [{"formula_cell": "Main!D1", "function": "IF", "selected_argument": 1}],
+             "edges": [{"consumer": "Main!D1", "prerequisite": "Main!F1",
+                        "relationship": "cell_reference"}]}
+    contract = _variable_contract_layout(_variable_interface("a" * 64), bindings, [], "t" * 64,
+                                         trace, {"main!B1": 11, "main!B2": 12, "main!B3": 13,
+                                                 "main!F1": 2})
+    assert contract["fixed_trace_source_values"] == {"main!B2": 12, "main!F1": 2}
+
+
+def test_derived_seed_alias_must_match_an_approved_fixed_source_cell() -> None:
+    definition = _variable_interface("a" * 64)
+    bindings = ([{"address": f"main!A{row}", "variable_id": "raw.key", "indices": [row - 1]}
+                 for row in range(1, 4)]
+                + [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
+                   for row in range(1, 4)]
+                + [{"address": "main!F1", "variable_id": "raw.config", "indices": []},
+                   {"address": "main!A1", "variable_id": "state", "indices": [0]}])
+    plan = {"variables": [{"variable_id": "state", "role": "derived", "initial_condition": {
+        "input_variable_id": "raw.key", "input_index": [0], "logical_index": 0,
+        "seed_ref": "Main!A1"}}]}
+    saved = {**{f"main!A{row}": row for row in range(1, 4)},
+             **{f"main!B{row}": row + 10 for row in range(1, 4)}, "main!F1": 2}
+    contract = _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                         semantic_plan=plan)
+    assert "state" not in contract["mutable"]
+    plan["variables"][0]["initial_condition"]["seed_ref"] = "Main!A2"
+    with pytest.raises(CalculationBlocked, match="approved fixed seed"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                  semantic_plan=plan)
+    plan["variables"][0]["initial_condition"].update({
+        "seed_ref": "Main!A1", "input_variable_id": "raw.value"})
+    with pytest.raises(CalculationBlocked, match="approved fixed seed"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                  semantic_plan=plan)
+
+
+def test_private_fixed_literals_require_exact_current_source_ownership() -> None:
+    definition = _variable_interface("a" * 64)
+    bindings = ([{"address": f"main!A{row}", "variable_id": "raw.key", "indices": [row - 1]}
+                 for row in range(1, 4)]
+                + [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
+                   for row in range(1, 4)]
+                + [{"address": "main!F1", "variable_id": "raw.config", "indices": []},
+                   {"address": "main!E1", "variable_id": "private.selector", "indices": [0]},
+                   {"address": "main!G1", "variable_id": "private.seed", "indices": [0]}])
+    plan = {"variables": [
+        {"variable_id": "private.selector", "role": "raw", "shape": [1],
+         "source_extents": [{"ref": "Main!E1", "role": "raw_source"}],
+         "initial_condition": None},
+        {"variable_id": "private.seed", "role": "derived", "shape": [1],
+         "source_extents": [{"ref": "Main!G2", "role": "formula_output"}],
+         "initial_condition": {"logical_index": 0, "seed_ref": "Main!G1",
+                               "source_role": "fixed_source_numeric_zero"}},
+    ]}
+    saved = {**{f"main!A{row}": row for row in range(1, 4)},
+             **{f"main!B{row}": row + 10 for row in range(1, 4)},
+             "main!F1": 2, "main!E1": None, "main!G1": 0}
+    fixed = [{"address": "Main!E1", "variable_id": "private.selector", "indices": [0], "value": None},
+             {"address": "Main!G1", "variable_id": "private.seed", "indices": [0], "value": 0}]
+    with pytest.raises(CalculationBlocked, match="approved fixed seed"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved, semantic_plan=plan)
+    contract = _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                         semantic_plan=plan, private_fixed_literals=fixed)
+    assert contract["private_fixed_literals"] == fixed
+    for changed in (
+        [{**fixed[0], "value": ""}, fixed[1]],
+        [fixed[0], {**fixed[1], "value": False}],
+        [fixed[0], {**fixed[1], "address": "Main!G2"}],
+        [fixed[0], {**fixed[1], "indices": [1]}],
+        [fixed[0], fixed[0]],
+        [fixed[0]],
+        [fixed[0], fixed[1], {**fixed[1], "address": "Main!H1"}],
+        [fixed[0], {**fixed[1], "value": {"excel_error": "#N/A"}}],
+    ):
+        with pytest.raises(CalculationBlocked, match="private fixed|approved fixed seed"):
+            _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                      semantic_plan=plan, private_fixed_literals=changed)
+    plan["variables"][0]["role"] = "external"
+    with pytest.raises(CalculationBlocked, match="private fixed"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                  semantic_plan=plan, private_fixed_literals=fixed)
+    plan["variables"][0]["role"] = "raw"
+    definition["objects"].append({**definition["objects"][0], "variable_id": "private.selector",
+                                  "mutability": "unknown"})
+    with pytest.raises(CalculationBlocked, match="mutability"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, {}, saved,
+                                  semantic_plan=plan, private_fixed_literals=fixed)
+
+
+def test_private_literal_ledger_rejects_stale_artifact_bindings(tmp_path: Path) -> None:
+    interface = _variable_interface("a" * 64)
+    expected = {"source_sha256": "a" * 64, "stage3_artifact_sha256": "b" * 64,
+                "semantic_plan_sha256": "c" * 64, "source_profile_sha256": "d" * 64,
+                "active_trace_sha256": "e" * 64, "external_capture_sha256": "f" * 64}
+    payload = {"schema_version": "step4.active_implementation.v1", "binding": expected,
+               "private_fixed_literals_interface_sha256": _canonical_hash(interface),
+               "private_fixed_literals": [{"address": "Main!E1", "variable_id": "private.value",
+                                           "indices": [], "value": None}]}
+    path = tmp_path / "implementation.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    record = {"implementation_input": {"path": str(path),
+                                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}}
+    assert _bound_private_fixed_literals(record, interface, expected) == payload["private_fixed_literals"]
+    for changed in ("source_sha256", "external_capture_sha256", "stage3_artifact_sha256"):
+        with pytest.raises(CalculationBlocked, match="stale"):
+            _bound_private_fixed_literals(record, interface, {**expected, changed: "0" * 64})
+    with pytest.raises(CalculationBlocked, match="stale interface"):
+        _bound_private_fixed_literals(record, {**interface, "extra": "changed"}, expected)
+    path.write_text("{}", encoding="utf-8")
+    with pytest.raises(CalculationBlocked, match="missing or stale"):
+        _bound_private_fixed_literals(record, interface, expected)
+
+
+def test_variable_adapter_never_overrides_private_source_literals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "modular_runtime", runtime)
+    namespace = {"__file__": str(tmp_path / "input_adapter.py")}
+    exec(_adapter_source(), namespace)
+    source = {"main!A1": 7, "main!E1": None}
+    layout = {"source_sha256": "a" * 64, "variable_shapes": {"public": [], "private": []},
+              "raw_bindings": [{"address": "main!A1", "variable_id": "public", "indices": []},
+                               {"address": "main!E1", "variable_id": "private", "indices": []}],
+              "variable_contract": {"mutable": {"Value": {"bindings": [
+                  {"address": "main!A1", "indices": []}]}}},
+              "scenario_guard": {"scenario_ids": [], "source_values": {}},
+              "metadata_seed_bindings": [], "adapter_metadata_groups": {}, "external_bindings": []}
+    (tmp_path / "input_layout.json").write_text(json.dumps(layout), encoding="utf-8")
+    guard_hash = namespace["_canonical_hash"]({})
+    with pytest.raises(runtime.CalculationBlocked, match="approved raw bindings"):
+        namespace["build_values"](source_values=source, scenario_guard_sha256=guard_hash,
+                                  scenario_ids=[], metadata_seed_bindings_sha256=namespace["_canonical_hash"]([]),
+                                  raw_overrides={"main!E1": "override"})
+
+
+def test_fixed_trace_guard_verifies_finite_match_selected_vlookup_column() -> None:
+    definition = _variable_interface("a" * 64)
+    bindings = [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
+                for row in range(1, 4)]
+    bindings.append({"address": "main!F1", "variable_id": "raw.config", "indices": []})
+    trace = {"source_sha256": "a" * 64, "lookups": [
+        {"formula_cell": "Main!D1", "function": "MATCH", "lookup_range": "Main!H1:J1",
+         "lookup_value": "Blue", "match_type": 0},
+        {"formula_cell": "Main!D1", "function": "VLOOKUP", "table_range": "Main!A1:E3",
+         "lookup_column": 1, "return_column": 2, "matched_row": 2}],
+        "cells": [{"address": "Main!D1", "role": "calculated_formula",
+                   "formula": "=VLOOKUP(A1,A1:E3,MATCH(F1,H1:J1,0),FALSE)"},
+                  *[{"address": f"Main!{column}1", "role": "source_value", "value": value}
+                    for column, value in (("H", "Red"), ("I", "Blue"), ("J", "Green"))]],
+        "branches": [{"formula_cell": "Main!D1", "function": "IF", "selected_argument": 1}],
+        "edges": [{"consumer": "Main!D1", "prerequisite": "Main!F1",
+                   "relationship": "cell_reference"},
+                  {"consumer": "Main!D1", "prerequisite": "Main!H1:J1",
+                   "relationship": "range_read"}]}
+    saved = {"main!B1": 11, "main!B2": 12, "main!B3": 13, "main!F1": 2}
+    contract = _variable_contract_layout(definition, bindings, [], "t" * 64, trace, saved)
+    assert contract["fixed_trace_source_values"] == {"main!B2": 12, "main!F1": 2}
+    trace["cells"][2]["value"] = "Other"
+    with pytest.raises(CalculationBlocked, match="MATCH key|MATCH selection"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, trace, saved)
+    trace["cells"][2]["value"] = "Blue"
+    trace["lookups"][1]["return_column"] = 3
+    with pytest.raises(CalculationBlocked, match="MATCH selection"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, trace, saved)
+
+
+def test_partial_raw_table_contract_selects_only_declared_cells() -> None:
+    definition = _variable_interface("a" * 64)
+    value = next(item for item in definition["objects"] if item["variable_id"] == "raw.value")
+    value["mutable_cells"] = [{"indices": [1], "value_type": "number", "allow_blank": False,
+                               "allowed_range": {"status": "enum", "values": [12, 18]}}]
+    bindings = [{"address": f"main!B{row}", "variable_id": "raw.value", "indices": [row - 1]}
+                for row in range(1, 4)]
+    bindings.append({"address": "main!F1", "variable_id": "raw.config", "indices": []})
+    contract = _variable_contract_layout(definition, bindings, [], "t" * 64, {},
+                                         {f"main!B{row}": row + 10 for row in range(1, 4)})
+    assert contract["mutable"]["Value"]["bindings"] == [bindings[1]]
+    value["mutable_cells"] = [{**value["mutable_cells"][0], "indices": [9]}]
+    with pytest.raises(CalculationBlocked, match="missing or duplicate per-cell"):
+        _variable_contract_layout(definition, bindings, [], "t" * 64, {}, {})
+
+
+def test_generated_value_checks_keep_partial_indices_and_dependent_enum_typed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    adapter = types.ModuleType("input_adapter")
+    adapter.build_values = lambda **_kwargs: None
+    adapter._allocate = lambda shape, missing: missing if not shape else [missing] * shape[0]
+    adapter._canonical_hash = lambda value: hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    pricing = types.ModuleType("pricing")
+    pricing.run_pricing = lambda values, _functions: values
+    families = types.ModuleType("formula_families")
+    families.FAMILY_FUNCTIONS = {}
+    for name, module in (("modular_runtime", runtime), ("input_adapter", adapter),
+                         ("pricing", pricing), ("formula_families", families)):
+        monkeypatch.setitem(sys.modules, name, module)
+    namespace = {"__file__": "model.py"}
+    exec(_model_source([], "s" * 64, "m" * 64), namespace)
+    check = namespace["_checked_values"]
+    table = {"shape": [2, 2], "mutable_cells": [
+        {"indices": [0, 1], "value_type": "string", "allow_blank": False,
+         "allowed_range": {"status": "enum", "values": ["A", "B"]}}]}
+    assert check([{"indices": [0, 1], "value": "B"}], table, "Table") == {(0, 1): "B"}
+    with pytest.raises(runtime.CalculationBlocked, match="indices differ"):
+        check([{"indices": [1, 0], "value": "B"}], table, "Table")
+    with pytest.raises(runtime.CalculationBlocked, match="approved values"):
+        check([{"indices": [0, 1], "value": "C"}], table, "Table")
+    period = {"shape": [], "value_type": "integer", "allow_blank": False,
+              "allowed_range": {"status": "dependent_enum", "values": [1, 2],
+                                "variable_id": "term"}}
+    assert check(7, period, "Period", dependent_value=7) == {(): 7}
+    with pytest.raises(runtime.CalculationBlocked, match="approved values"):
+        check(8, period, "Period", dependent_value=7)
+    with pytest.raises(runtime.CalculationBlocked, match="invalid integer"):
+        check(True, period, "Period", dependent_value=True)
+    axes = [{"name": "row", "keys": ["first", "second"]},
+            {"name": "column", "keys": ["fixed", "choice"]}]
+    contract = {"source_sha256": "a" * 64, "fixed_trace_source_values": {},
+                "support_domain": {"external_policy": {}}, "external_specs": {},
+                "mutable": {
+                    "Table": {**table, "variable_id": "table", "axes": axes, "required": True,
+                              "allowed_range": {"status": "unbounded"},
+                              "default_policy": {"status": "none"},
+                              "bindings": [{"address": "main!B1", "indices": [0, 1]}]},
+                    "Term": {"shape": [], "variable_id": "term", "axes": [], "value_type": "integer",
+                             "allowed_range": {"status": "declared", "minimum": 2, "maximum": 7},
+                             "required": True, "default_policy": {"status": "none"},
+                             "bindings": [{"address": "main!C1", "indices": []}]},
+                    "Period": {**period, "variable_id": "period", "axes": [], "required": True,
+                               "default_policy": {"status": "none"},
+                               "bindings": [{"address": "main!D1", "indices": []}]}}}
+    namespace["VARIABLE_CONTRACT_SHA256"] = adapter._canonical_hash(contract)
+    namespace["__file__"] = str(tmp_path / "model.py")
+    files = {}
+    for filename in ("model.py", "input_layout.json", "source_values.json",
+                     "private_fixed_literals.json", "pricing.py", "formula_families.py"):
+        path = tmp_path / filename
+        path.write_text("{}", encoding="utf-8")
+        files[filename] = hashlib.sha256(path.read_bytes()).hexdigest()
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": "a" * 64, "files": files,
+        "variable_input_contract_sha256": namespace["VARIABLE_CONTRACT_SHA256"]}), encoding="utf-8")
+    layout = {"source_sha256": "a" * 64, "variable_contract": contract}
+    inputs = {"Table": {"axes": axes, "values": [{"indices": [0, 1], "value": "B"}]},
+              "Term": {"axes": [], "values": 7}, "Period": {"axes": [], "values": 7}}
+    fixed_asset = tmp_path / "private_fixed_literals.json"
+    fixed_asset.write_text("changed", encoding="utf-8")
+    with pytest.raises(runtime.CalculationBlocked, match="bundle asset changed"):
+        namespace["_variable_inputs"](layout, inputs, {})
+    fixed_asset.write_text("{}", encoding="utf-8")
+    overrides, _external, _digest, _dependency, _contract = namespace["_variable_inputs"](
+        layout, inputs, {})
+    assert overrides == {"main!B1": "B", "main!C1": 7, "main!D1": 7}
+    contract["interface_sha256"] = "i" * 64
+    contract["private_fixed_literals"] = [
+        {"address": "main!E1", "variable_id": "private", "indices": [], "value": None}]
+    namespace["VARIABLE_CONTRACT_SHA256"] = adapter._canonical_hash(contract)
+    fixed_asset.write_text(json.dumps({"schema_version": "step4.private_fixed_literals.v1",
+        "source_sha256": "a" * 64, "interface_sha256": "i" * 64,
+        "implementation_plan_sha256": "p" * 64,
+        "records": [{**contract["private_fixed_literals"][0], "value": ""}]}), encoding="utf-8")
+    files["private_fixed_literals.json"] = hashlib.sha256(fixed_asset.read_bytes()).hexdigest()
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": "a" * 64, "files": files, "implementation_plan_sha256": "p" * 64,
+        "variable_input_contract_sha256": namespace["VARIABLE_CONTRACT_SHA256"]}), encoding="utf-8")
+    with pytest.raises(runtime.CalculationBlocked, match="private fixed literal asset differs"):
+        namespace["_variable_inputs"](layout, inputs, {})
+    del contract["private_fixed_literals"]
+    del contract["interface_sha256"]
+    namespace["VARIABLE_CONTRACT_SHA256"] = adapter._canonical_hash(contract)
+    fixed_asset.write_text("{}", encoding="utf-8")
+    files["private_fixed_literals.json"] = hashlib.sha256(fixed_asset.read_bytes()).hexdigest()
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": "a" * 64, "files": files,
+        "variable_input_contract_sha256": namespace["VARIABLE_CONTRACT_SHA256"]}), encoding="utf-8")
+    with pytest.raises(runtime.CalculationBlocked, match="approved values"):
+        namespace["_variable_inputs"](layout, {**inputs, "Period": {"axes": [], "values": 8}}, {})
+    contract["verified_cases"] = [{"input_sha256": adapter._canonical_hash(inputs),
+                                    "dependency_sha256": adapter._canonical_hash({})}]
+    namespace["VARIABLE_CONTRACT_SHA256"] = adapter._canonical_hash(contract)
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": "a" * 64, "files": files,
+        "variable_input_contract_sha256": namespace["VARIABLE_CONTRACT_SHA256"]}), encoding="utf-8")
+    assert namespace["_variable_inputs"](layout, inputs, {})[2] == adapter._canonical_hash(inputs)
+    changed = {**inputs, "Table": {"axes": axes,
+                                   "values": [{"indices": [0, 1], "value": "A"}]}}
+    with pytest.raises(runtime.CalculationBlocked, match="no verified formula"):
+        namespace["_variable_inputs"](layout, changed, {})
+    assert namespace["_variable_inputs"](layout, inputs, {})[0] == overrides
+    contract["verified_cases"][0]["dependency_sha256"] = "b" * 64
+    namespace["VARIABLE_CONTRACT_SHA256"] = adapter._canonical_hash(contract)
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": "a" * 64, "files": files,
+        "variable_input_contract_sha256": namespace["VARIABLE_CONTRACT_SHA256"]}), encoding="utf-8")
+    with pytest.raises(runtime.CalculationBlocked, match="no verified formula"):
+        namespace["_variable_inputs"](layout, inputs, {})
+
+
+def test_generated_model_selects_only_exact_distinct_formula_variants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    source_hash = "a" * 64
+    input_records = {value: {"Choice": {"axes": [], "values": value}} for value in (1, 2, 3)}
+    dependency_hash = _canonical_hash({})
+    monkeypatch.setitem(sys.modules, "modular_runtime", runtime)
+    metadata = {}
+    for variant_id, address, increment in (("v0001", "main!B1", 10),
+                                           ("v0002", "main!C1", 100)):
+        family = types.ModuleType(f"formula_families_{variant_id}")
+        source = compile_formula_function(
+            "calculate", "=A1+10" if increment == 10 else "=A1+D1", "Main", address,
+            lambda reference, _sheet, _owner: ("values['raw.choice']" if reference.min_col == 1
+                                                else "runtime.source_literal(values, 'main!D1')"),
+            lambda _name, _sheet, _owner: "",
+        )
+        exec("import modular_runtime as runtime\n" + source, family.__dict__)
+        family.FAMILY_FUNCTIONS = {"calculate": family.calculate}
+        driver = types.ModuleType(f"pricing_{variant_id}")
+        driver.run_pricing = lambda values, functions: {
+            **values, "model.answer": functions["calculate"](values),
+        }
+        monkeypatch.setitem(sys.modules, family.__name__, family)
+        monkeypatch.setitem(sys.modules, driver.__name__, driver)
+        metadata[variant_id] = {
+            "source_sha256": source_hash, "driver_sha256": hashlib.sha256(source.encode()).hexdigest(),
+            "trace_sha256": increment.__str__().zfill(64), "plan_sha256": "b" * 64,
+            "profile_sha256": "c" * 64, "named_bindings": {},
+            "source_literals": {} if increment == 10 else {"main!D1": 100},
+            "extra_variable_shapes": {} if increment == 10 else {"extra.helper": []},
+            "formula_cells": [{"address": address, "variable_id": "model.answer", "indices": []}],
+        }
+    contract = {
+        "source_sha256": source_hash, "interface_sha256": "i" * 64,
+        "fixed_trace_source_values": {}, "support_domain": {"external_policy": {}},
+        "external_specs": {}, "outputs": {"properties": {}}, "output_provenance": {},
+        "mutable": {"Choice": {"variable_id": "raw.choice", "shape": [], "axes": [],
+                              "value_type": "integer", "allow_blank": False, "required": True,
+                              "default_policy": {"status": "none"},
+                              "allowed_range": {"status": "enum", "values": [1, 2, 3]},
+                              "bindings": [{"address": "main!A1", "indices": []}]}},
+        "verified_cases": [
+            {"input_sha256": _canonical_hash(input_records[value]),
+             "dependency_sha256": dependency_hash, "variant_id": variant_id,
+             "variant_metadata_sha256": _canonical_hash(metadata[variant_id]),
+             "driver_sha256": metadata[variant_id]["driver_sha256"],
+             "trace_sha256": metadata[variant_id]["trace_sha256"]}
+            for value, variant_id in ((1, "v0001"), (2, "v0002"))
+        ],
+    }
+    contract["support_certificate"] = {
+        "verified_cases_sha256": _canonical_hash(contract["verified_cases"]),
+        "active_trace_sha256": "t" * 64,
+        "capture_artifact_sha256": "c" * 64,
+    }
+    adapter = types.ModuleType("input_adapter")
+    adapter._canonical_hash = _canonical_hash
+    adapter._allocate = lambda shape, missing: missing if not shape else [missing] * shape[0]
+    adapter.build_values = lambda **kwargs: {
+        "raw.choice": kwargs["raw_overrides"]["main!A1"], "model.answer": 0,
+        "__source_values__": {"main!A1": kwargs["raw_overrides"]["main!A1"]},
+    }
+    pricing = types.ModuleType("pricing")
+    pricing.run_pricing = lambda _values, _functions: pytest.fail("stale base driver ran")
+    families = types.ModuleType("formula_families")
+    families.FAMILY_FUNCTIONS = {}
+    for name, module in (("modular_runtime", runtime), ("input_adapter", adapter),
+                         ("pricing", pricing), ("formula_families", families)):
+        monkeypatch.setitem(sys.modules, name, module)
+    layout = {"source_sha256": source_hash, "variable_contract": contract,
+              "target_bindings": {"Answer": "model.answer"},
+              "variable_shapes": {"model.answer": []}, "formula_cells": []}
+    files = {}
+    for filename, payload in {
+        "model.py": _model_source([], "s" * 64, "m" * 64, _canonical_hash(contract)),
+        "input_layout.json": json.dumps(layout), "source_values.json": "{}",
+        "pricing.py": "", "formula_families.py": "",
+        **{f"variant_{key}.json": json.dumps(value) for key, value in metadata.items()},
+        **{f"pricing_{key}.py": "" for key in metadata},
+        **{f"formula_families_{key}.py": "" for key in metadata},
+    }.items():
+        path = tmp_path / filename
+        path.write_text(payload, encoding="utf-8")
+        files[filename] = hashlib.sha256(path.read_bytes()).hexdigest()
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": source_hash, "files": files,
+        "variable_input_contract_sha256": _canonical_hash(contract),
+        "support_certificate_sha256": _canonical_hash(contract["support_certificate"]),
+        "trace_sha256": "t" * 64, "external_capture_artifact_sha256": "c" * 64,
+    }), encoding="utf-8")
+    namespace = {"__file__": str(tmp_path / "model.py")}
+    exec((tmp_path / "model.py").read_text(encoding="utf-8"), namespace)
+    assert namespace["run_model"](input_records[1], {})["targets"]["Answer"] == 11
+    assert namespace["run_model"](input_records[2], {})["targets"]["Answer"] == 102
+    assert namespace["run_model"](input_records[1], {})["cells"] == {"main!B1": 11}
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": source_hash, "files": files,
+        "variable_input_contract_sha256": _canonical_hash(contract),
+        "support_certificate_sha256": "0" * 64,
+        "trace_sha256": "t" * 64, "external_capture_artifact_sha256": "c" * 64,
+    }), encoding="utf-8")
+    with pytest.raises(runtime.CalculationBlocked, match="support certificate is stale"):
+        namespace["run_model"](input_records[1], {})
+    (tmp_path / "model_manifest.json").write_text(json.dumps({
+        "source_sha256": source_hash, "files": files,
+        "variable_input_contract_sha256": _canonical_hash(contract),
+        "support_certificate_sha256": _canonical_hash(contract["support_certificate"]),
+        "trace_sha256": "t" * 64, "external_capture_artifact_sha256": "c" * 64,
+    }), encoding="utf-8")
+    with pytest.raises(runtime.CalculationBlocked, match="no verified formula"):
+        namespace["run_model"](input_records[3], {})
+    with pytest.raises(runtime.CalculationBlocked, match="external producer inputs"):
+        namespace["run_model"](input_records[1], {"stale": {}})
+    (tmp_path / "variant_v0001.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(runtime.CalculationBlocked, match="bundle asset changed"):
+        namespace["run_model"](input_records[1], {})
+
+
 def test_modular_bundle_runs_named_table_and_grouped_family_driver_in_isolation(tmp_path: Path) -> None:
     source_path = tmp_path / "source.xlsx"
-    source_hash = _workbook(source_path)
+    _workbook(source_path)
+    workbook = load_workbook(source_path)
+    workbook["Main"]["D1"] = "=VLOOKUP(2,RawTable,F1,FALSE)"
+    workbook["Main"]["E2"] = "=A2*100"
+    workbook["Main"]["F1"] = 2
+    workbook.save(source_path)
+    workbook.close()
+    source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
     variables = _input_records()
     formulas = [
         ("Main!C1", "=A1*10"), ("Main!C2", "=A2*10"), ("Main!C3", "=A3*10"),
-        ("Main!D1", "=VLOOKUP(2,RawTable,3,FALSE)"),
+        ("Main!D1", "=VLOOKUP(2,RawTable,F1,FALSE)"),
     ]
     trace = {"source_sha256": source_hash, "names": [
         {"scope": "workbook", "name": "RawTable"}, {"scope": "workbook", "name": "Answer"}],
         "cells": [
             *[{"address": f"Main!A{row}", "sheet": "Main", "role": "source_value"} for row in range(1, 4)],
             *[{"address": f"Main!B{row}", "sheet": "Main", "role": "source_value"} for row in range(1, 4)],
+            {"address": "Main!F1", "sheet": "Main", "role": "source_value"},
             *[{"address": address, "sheet": "Main", "role": "calculated_formula", "formula": formula}
               for address, formula in formulas],
-        ]}
+        ],
+        "edges": [{"consumer": "Main!D1", "prerequisite": "Main!F1", "relationship": "cell_reference"},
+                  {"consumer": "Main!D1", "prerequisite": "Main!A1:E3", "relationship": "lookup_table"}],
+        "lookups": [{"formula_cell": "Main!D1", "function": "VLOOKUP",
+                     "table_range": "Main!A1:E3", "lookup_column": 1, "return_column": 2,
+                     "matched_row": 2, "match_mode": "exact"}]}
     plan = {
         "schema_version": "step3.semantic_plan.v1", "source": {"source_sha256": source_hash},
         "variables": variables,
@@ -124,7 +892,7 @@ def test_modular_bundle_runs_named_table_and_grouped_family_driver_in_isolation(
             "array_instance_count": 0,
         },
         "reference_resolution": {"named_references": [
-            {"name": "RawTable", "kind": "range", "source_ref": "Main!A1:C3",
+            {"name": "RawTable", "kind": "range", "source_ref": "Main!A1:E3",
              "table_binding": {"kind": "column_overlay_table", "key_variable_id": "raw.key",
                                "value_variable_id": "raw.value", "value_column_index": 2,
                                "formula_columns": {"C": "table.value"}}},
@@ -153,12 +921,115 @@ def test_modular_bundle_runs_named_table_and_grouped_family_driver_in_isolation(
         semantic_plan_sha256="p" * 64, source_profile_sha256="f" * 64,
         trace_sha256="t" * 64, trace_path=tmp_path / "trace.json", trace_source="synthetic_fixture",
         scenario_ids=["synthetic"],
+        variable_interface=_variable_interface(source_hash),
     )
 
     bundle = Path(built["bundle"])
     result = _smoke_bundle(bundle, output / "smoke", ["Answer"])
     payload = json.loads(Path(result["result_path"]).read_text(encoding="utf-8"))
-    assert payload["targets"]["Answer"] == 20
+    assert payload["targets"]["Answer"] == 12
+    isolated = tmp_path / "isolated"
+    shutil.copytree(bundle, isolated)
+    assert not list(isolated.glob("*.xlsx"))
+
+    def varied(values: list[int], label: str, axes: list[dict] | None = None) -> subprocess.CompletedProcess[str]:
+        request = isolated / f"{label}.json"
+        request.write_text(json.dumps({"inputs": {"Value": {"values": values,
+                                                               "axes": axes if axes is not None else [{"name": "year", "keys": [1, 2, 3]}]}},
+                                       "external_data": {}}), encoding="utf-8")
+        return subprocess.run([sys.executable, "model.py", "--inputs", str(request),
+                               "--out", str(isolated / f"{label}-result.json")], cwd=isolated,
+                              capture_output=True, text=True, check=False)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = list(pool.map(lambda pair: varied(*pair),
+                                      [([11, 25, 13], "first"), ([11, 20, 13], "second")]))
+    assert first.returncode == second.returncode == 0, (first.stderr, second.stderr)
+    varied_result = json.loads((isolated / "first-result.json").read_text(encoding="utf-8"))
+    baseline_result = json.loads((isolated / "second-result.json").read_text(encoding="utf-8"))
+    assert varied_result["targets"]["Answer"] == 25
+    assert baseline_result["targets"]["Answer"] == 20
+    partial_interface = _variable_interface(source_hash)
+    next(item for item in partial_interface["objects"] if item["variable_id"] == "raw.value")[
+        "mutable_cells"] = [{"indices": [1], "value_type": "number", "allow_blank": False,
+                            "allowed_range": {"status": "enum", "values": [12, 25]}}]
+    partial = build_modular_bundle_files(
+        semantic_plan=plan, source_profile=profile, trace=trace, raw_source_values=raw_values,
+        source_path=source_path, semantic_plan_path=tmp_path / "semantic_plan.json",
+        source_profile_path=tmp_path / "source_profile.json", semantic_map_path=tmp_path / "semantic_map.json",
+        revision_dir=tmp_path / "partial-revision", target_names=["Answer"],
+        path_coverage={"implemented_path_ids": []}, source_sha256=source_hash,
+        design_sha256="d" * 64, semantic_plan_sha256="p" * 64, source_profile_sha256="f" * 64,
+        trace_sha256="t" * 64, trace_path=tmp_path / "trace.json", trace_source="synthetic_fixture",
+        scenario_ids=["synthetic"], variable_interface=partial_interface)
+    partial_bundle = Path(partial["bundle"])
+    partial_request = tmp_path / "partial-request.json"
+    partial_request.write_text(json.dumps({"inputs": {"Value": {"axes": [{"name": "year", "keys": [1, 2, 3]}],
+        "values": [{"indices": [1], "value": 25}]}}, "external_data": {}}), encoding="utf-8")
+    partial_run = subprocess.run([sys.executable, "model.py", "--inputs", str(partial_request),
+                                  "--out", str(tmp_path / "partial-result.json")],
+                                 cwd=partial_bundle, capture_output=True, text=True, check=False)
+    assert partial_run.returncode == 0, partial_run.stderr
+    partial_result = json.loads((tmp_path / "partial-result.json").read_text(encoding="utf-8"))
+    assert partial_result["targets"]["Answer"] == 25
+    assert partial_result["raw_inputs"]["main!B2"] == 25
+    assert json.loads((partial_bundle / "source_values.json").read_text(encoding="utf-8"))[
+        "main!B1"] == 11
+    assert json.loads((partial_bundle / "source_values.json").read_text(encoding="utf-8"))[
+        "main!B3"] == 13
+    partial_request.write_text(json.dumps({"inputs": {"Value": {"axes": [{"name": "year", "keys": [1, 2, 3]}],
+        "values": [{"indices": [0], "value": 25}]}}, "external_data": {}}), encoding="utf-8")
+    rejected_fixed = subprocess.run([sys.executable, "model.py", "--inputs", str(partial_request)],
+                                    cwd=partial_bundle, capture_output=True, text=True, check=False)
+    assert rejected_fixed.returncode != 0 and "indices differ" in rejected_fixed.stderr
+    assert "main!e2" not in {address.casefold() for address in built["manifest"]["formula_addresses"]}
+    assert varied_result["raw_inputs"]["main!F1"] == 2
+    assert json.loads((bundle / "input_layout.json").read_text(encoding="utf-8"))[
+        "variable_contract"]["fixed_trace_source_values"] == {"main!F1": 2}
+    assert varied_result["input_sha256"] != baseline_result["input_sha256"]
+    selector_request = isolated / "selector.json"
+    selector_request.write_text(json.dumps({"inputs": {
+        "Value": {"values": [11, 25, 13], "axes": [{"name": "year", "keys": [1, 2, 3]}]},
+        "Config": {"values": 5, "axes": []}}, "external_data": {}}), encoding="utf-8")
+    unsupported = subprocess.run([sys.executable, "model.py", "--inputs", str(selector_request)],
+                                 cwd=isolated, capture_output=True, text=True, check=False)
+    assert unsupported.returncode != 0 and "unsupported fixed-trace formula or lookup selection: main!F1" in unsupported.stderr
+    selector_request.write_text(json.dumps({"inputs": {
+        "Value": {"values": [11, 25, 13], "axes": [{"name": "year", "keys": [1, 2, 3]}]},
+        "Config": None}, "external_data": {}}), encoding="utf-8")
+    null_optional = subprocess.run([sys.executable, "model.py", "--inputs", str(selector_request)],
+                                   cwd=isolated, capture_output=True, text=True, check=False)
+    assert null_optional.returncode != 0 and "Config must have values and axes" in null_optional.stderr
+    assert varied([11, 25, 13], "repeat").returncode == 0
+    assert json.loads((isolated / "repeat-result.json").read_text(encoding="utf-8"))["input_sha256"] == varied_result["input_sha256"]
+    assert "outside its approved range" in varied([11, 26, 13], "range").stderr
+    assert "invalid number" in varied([11, True, 13], "type").stderr
+    assert "wrong shape" in varied([11, 25], "shape").stderr
+    assert "axes or key order" in varied([11, 25, 13], "axes", [{"name": "other"}]).stderr
+    assert "axes or key order" in varied([11, 25, 13], "reordered", [{"name": "year", "keys": [2, 1, 3]}]).stderr
+    typed_axis = varied([11, 25, 13], "typed-axis", [{"name": "year", "keys": [True, 2, 3]}])
+    assert typed_axis.returncode != 0 and "axes or key order" in typed_axis.stderr
+    assert "duplicate or missing keys" in varied([11, 25, 13], "duplicate", [{"name": "year", "keys": [1, 1, 3]}]).stderr
+    null_request = isolated / "null-request.json"
+    null_request.write_text("null", encoding="utf-8")
+    null_run = subprocess.run([sys.executable, "model.py", "--inputs", str(null_request),
+                               "--out", str(isolated / "null-result.json")], cwd=isolated,
+                              capture_output=True, text=True, check=False)
+    assert null_run.returncode != 0 and "variable request must contain inputs and external_data" in null_run.stderr
+    assert not (isolated / "null-result.json").exists()
+    request = isolated / "missing.json"
+    request.write_text(json.dumps({"inputs": {}, "external_data": {}}), encoding="utf-8")
+    missing = subprocess.run([sys.executable, "model.py", "--inputs", str(request)],
+                             cwd=isolated, capture_output=True, text=True, check=False)
+    assert "required variable input is missing" in missing.stderr
+    request.write_text(json.dumps({"inputs": {"Key": {"values": [1, 2, 3], "axes": [{"name": "year"}]}},
+                                   "external_data": {}}), encoding="utf-8")
+    immutable = subprocess.run([sys.executable, "model.py", "--inputs", str(request)],
+                               cwd=isolated, capture_output=True, text=True, check=False)
+    assert "unknown or immutable variable input" in immutable.stderr
+    source_values_path = isolated / "source_values.json"
+    source_values_path.write_bytes(source_values_path.read_bytes() + b" ")
+    assert "bundle asset changed" in varied([11, 25, 13], "stale").stderr
     assert payload["calculated_variables"]["table.value"] == {
         "shape": [3],
         "demanded_values": [
@@ -168,9 +1039,9 @@ def test_modular_bundle_runs_named_table_and_grouped_family_driver_in_isolation(
         ],
     }
     assert payload["calculated_variables"]["model.answer"]["demanded_values"] == [
-        {"indices": [], "value": 20}]
+        {"indices": [], "value": 12}]
     assert payload["calculated_value_count"] == 4
-    assert payload["cells"] == {"main!C1": 10, "main!C2": 20, "main!C3": 30, "main!D1": 20}
+    assert payload["cells"] == {"main!C1": 10, "main!C2": 20, "main!C3": 30, "main!D1": 12}
     assert built["manifest"]["compiled_variant_count"] == 2
     assert built["manifest"]["array_instance_count"] == built["coverage"]["array_instance_count"] == 0
     assert built["coverage"]["active_formula_member_count"] == 4
@@ -297,6 +1168,36 @@ def test_approved_stored_empty_adapter_metadata_reaches_bundle_and_unapproved_bl
     )
     metadata_file = json.loads((Path(built["bundle"]) / "adapter_metadata.json").read_text(encoding="utf-8"))
     assert metadata_file["groups"]["source.verified_empty"]["values"] == [None]
+
+    # A confirmed catalog can carry an audited adapter blank without a separate
+    # single-cell model-scope region.
+    catalog_blank = {"axis_metadata": [], "source_records": [{
+        "record_id": "terminal", "classification": "adapter_metadata",
+        "source_extents": [{"sheet": "Main", "range": "E1", "source_role": "raw_source"}],
+        "provenance": {"source_workbook_sha256": source_hash},
+    }], "source_scope_notes": {"stored_coordinate_reconciliation": {
+        "source_copy_sha256": source_hash,
+        "historical_empty_coordinates": [{"address": "Main!E1",
+                                          "source_value_status": "stored_blank_no_literal"}],
+    }}}
+    catalog_plan = json.loads(json.dumps(plan))
+    add_adapter_metadata(catalog_plan, catalog_blank, {"allowed_regions": []},
+                         trace, source_path, source_hash, candidate_trace)
+    assert catalog_plan["adapter_metadata_groups"]["source.terminal"]["classification"] == "source_audited_blank"
+    assert _augment_literal_sources(source_path, source_hash, catalog_plan, trace, {})["main!E1"] is None
+
+    stale_catalog = json.loads(json.dumps(catalog_blank))
+    stale_catalog["source_records"][0]["provenance"]["source_workbook_sha256"] = "0" * 64
+    with pytest.raises(CalculationBlocked, match="catalog blank.*source"):
+        add_adapter_metadata(json.loads(json.dumps(plan)), stale_catalog, {"allowed_regions": []},
+                             trace, source_path, source_hash, candidate_trace)
+
+    missing_evidence = {**catalog_blank, "source_scope_notes": {}}
+    missing_plan = json.loads(json.dumps(plan))
+    add_adapter_metadata(missing_plan, missing_evidence, {"allowed_regions": []},
+                         trace, source_path, source_hash, candidate_trace)
+    with pytest.raises(CalculationBlocked, match="catalog metadata source coordinate is unexpectedly blank"):
+        _augment_literal_sources(source_path, source_hash, missing_plan, trace, {})
 
     unapproved_trace = {**trace, "cells": [*trace["cells"], {
         "address": "Main!G1", "sheet": "Main", "role": "source_value", "value": None}]}
@@ -500,6 +1401,76 @@ def test_named_scalar_can_bind_external_coordinate_or_declared_source_literal() 
         runtime.lookup_name(values, "RateLabel")
 
 
+def _indexed_scalar_name_plan() -> dict:
+    return {"variables": [
+        {"variable_id": "raw.matrix", "role": "raw", "shape": [2, 2],
+         "axes": [{"name": "row"}, {"name": "column"}], "source_extents": [{
+             "ref": "Inputs!B2:C3", "role": "raw_source", "coordinate_mapping": {
+                 "kind": "row_column_ordinal", "axes": [
+                     {"axis": "row", "dimension": 0, "source_coordinate": "row",
+                      "origin": 2, "index_origin": 0},
+                     {"axis": "column", "dimension": 1, "source_coordinate": "column",
+                      "origin": "B", "index_origin": 0}]}}]},
+        {"variable_id": "raw.single", "role": "raw", "shape": [], "axes": [],
+         "source_extents": [{"ref": "Inputs!E2", "role": "raw_source",
+                             "coordinate_mapping": {"kind": "scalar", "fixed_axes": []}}]},
+    ], "source_mappings": [], "array_mappings": [], "reference_resolution": {
+        "named_references": [
+            {"name": "Selected", "kind": "scalar", "source_ref": "Inputs!C2",
+             "variable_id": "raw.matrix", "indices": [0, 1]},
+            {"name": "Single", "kind": "scalar", "source_ref": "Inputs!E2",
+             "variable_id": "raw.single"},
+        ]}}
+
+
+def test_indexed_scalar_name_uses_verified_source_coordinate() -> None:
+    plan = _indexed_scalar_name_plan()
+    names = _named_bindings(plan, build_source_cell_index(plan), set())
+    values = {"raw.matrix": [["other", "selected"], ["later", "last"]],
+              "raw.single": 17, "__names__": names}
+
+    assert names["selected"] == {"kind": "coordinate", "variable_id": "raw.matrix", "indices": [0, 1]}
+    assert runtime.lookup_name(values, "Selected") == "selected"
+    assert runtime.match(lambda: runtime.lookup_name(values, "Selected"),
+                         lambda: ["other", "selected"], lambda: 0) == 2
+    assert names["single"] == {"kind": "variable", "variable_id": "raw.single"}
+    assert runtime.lookup_name(values, "Single") == 17
+
+
+@pytest.mark.parametrize("bad_binding", [
+    "wrong_address", "wrong_index", "wrong_variable", "out_of_shape", "bool_index",
+    "malformed_index", "missing_owner", "ambiguous_owner", "formula_owner", "range_ref",
+])
+def test_indexed_scalar_name_rejects_unverified_source_coordinate(bad_binding: str) -> None:
+    plan = _indexed_scalar_name_plan()
+    index = build_source_cell_index(plan)
+    name = plan["reference_resolution"]["named_references"][0]
+    key = ("inputs", 2, 3)
+    if bad_binding == "wrong_address":
+        name["source_ref"] = "Inputs!B2"
+    elif bad_binding == "wrong_index":
+        name["indices"] = [1, 1]
+    elif bad_binding == "wrong_variable":
+        name["variable_id"] = "raw.single"
+    elif bad_binding == "out_of_shape":
+        name["indices"] = [2, 1]
+    elif bad_binding == "bool_index":
+        name["indices"] = [False, 1]
+    elif bad_binding == "malformed_index":
+        name["indices"] = "0,1"
+    elif bad_binding == "missing_owner":
+        index.pop(key)
+    elif bad_binding == "ambiguous_owner":
+        index[key].append(SourceCell("raw.other", (0, 1), ("row", "column"), "raw_source"))
+    elif bad_binding == "formula_owner":
+        index[key] = [SourceCell("raw.matrix", (0, 1), ("row", "column"), "formula_output")]
+    else:
+        name["source_ref"] = "Inputs!B2:C2"
+
+    with pytest.raises(CalculationBlocked, match="named scalar Selected"):
+        _named_bindings(plan, index, set())
+
+
 def test_raw_binding_that_is_now_a_formula_is_rejected(tmp_path: Path) -> None:
     source_path = tmp_path / "source.xlsx"
     source_hash = _workbook(source_path)
@@ -509,6 +1480,18 @@ def test_raw_binding_that_is_now_a_formula_is_rejected(tmp_path: Path) -> None:
          "source_extents": [{"ref": "Main!C1", "role": "raw_input",
                               "coordinate_mapping": {"kind": "scalar", "fixed_axes": []}}]},
     ]}
+    with pytest.raises(CalculationBlocked, match="declared raw source boundary is a formula cell"):
+        _augment_literal_sources(source_path, source_hash, plan, {"cells": []}, {})
+
+
+def test_declared_source_literal_is_read_and_formula_is_rejected(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.xlsx"
+    source_hash = _workbook(source_path)
+    plan = {"variables": [], "adapter_source_literals": ["Main!B2"]}
+    assert _augment_literal_sources(source_path, source_hash, plan, {"cells": []}, {}) == {
+        "main!B2": 12,
+    }
+    plan["adapter_source_literals"] = ["Main!C2"]
     with pytest.raises(CalculationBlocked, match="declared raw source boundary is a formula cell"):
         _augment_literal_sources(source_path, source_hash, plan, {"cells": []}, {})
 

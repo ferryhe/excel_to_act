@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openpyxl import load_workbook
 from openpyxl.utils.cell import get_column_letter, range_boundaries
 
-from excel_to_act.steps.conversion_workflow import hash_file
-from excel_to_act.steps.step3.calculation import CalculationBlocked, _parse_reference
+from excel_to_act.steps.conversion_workflow import hash_bytes, hash_file, json_bytes
+from excel_to_act.steps.step3.calculation import (
+    CalculationBlocked, FormulaEvaluator, _excel_compare, _parse_reference,
+)
 from excel_to_act.steps.step4.modular_compiler import (
     SourceCell,
     build_source_cell_index,
@@ -199,6 +202,50 @@ def add_adapter_metadata(plan: dict[str, Any], catalog: dict[str, Any],
             cells.append({"address": address, "group_id": group_id,
                           "indices": [index], "axes": [axis]})
 
+    # A confirmed catalog may identify a source-owned adapter blank that the
+    # earlier candidate scope did not fence as a separate single cell.
+    notes = catalog.get("source_scope_notes")
+    reconciliation = notes.get("stored_coordinate_reconciliation", {}) if isinstance(notes, dict) else {}
+    declared_blanks = {_address_key(item["address"])
+                       for item in reconciliation.get("historical_empty_coordinates", [])
+                       if isinstance(item, dict)
+                       and item.get("source_value_status") == "stored_blank_no_literal"
+                       and isinstance(item.get("address"), str)}
+    catalog_blanks: set[str] = set()
+    for record in catalog.get("source_records", []):
+        extents = record.get("source_extents", [])
+        if record.get("classification") != "adapter_metadata" or len(extents) != 1:
+            continue
+        extent = extents[0]
+        if extent.get("source_role") != "raw_source":
+            continue
+        reference = _parse_reference(f"{extent.get('sheet', '')}!{extent.get('range', '')}", "Main")
+        if reference is None or not reference.single:
+            continue
+        address = _address_key(_address(reference.sheet, reference.min_row, reference.min_col))
+        if address in declared_blanks:
+            provenance = record.get("provenance")
+            if (reconciliation.get("source_copy_sha256") != source_sha256
+                    or not isinstance(provenance, dict)
+                    or provenance.get("source_workbook_sha256") != source_sha256):
+                raise CalculationBlocked(f"catalog blank source binding is stale: {address}")
+            catalog_blanks.add(address)
+
+    from excel_to_act.steps.step4.discovery import _approved_stored_empty_addresses
+
+    try:
+        scoped_blanks = _approved_stored_empty_addresses(
+            source_path, source_sha256, model_scope, candidate_trace)
+        verified_catalog_blanks = _approved_stored_empty_addresses(
+            source_path, source_sha256,
+            {"allowed_regions": [{"source_ref": address} for address in sorted(catalog_blanks)]},
+            candidate_trace) if catalog_blanks else set()
+    except (OSError, ValueError) as exc:
+        raise CalculationBlocked(str(exc)) from exc
+    if verified_catalog_blanks != catalog_blanks:
+        raise CalculationBlocked("catalog blank is absent from the source candidate trace")
+    approved_blank_addresses = scoped_blanks | verified_catalog_blanks
+
     for record in catalog.get("axis_metadata", []):
         axis_id = record.get("axis_id")
         if not isinstance(axis_id, str):
@@ -227,18 +274,10 @@ def add_adapter_metadata(plan: dict[str, Any], catalog: dict[str, Any],
             addresses.extend(_address(parsed.sheet, row, col)
                              for row in range(parsed.min_row, parsed.max_row + 1)
                              for col in range(parsed.min_col, parsed.max_col + 1))
-        add_group(f"source.{record_id}", addresses, None, classification)
+        audited = len(addresses) == 1 and _address_key(addresses[0]) in verified_catalog_blanks
+        add_group(f"source.{record_id}", addresses, None,
+                  "source_audited_blank" if audited else classification)
 
-    # Scope prose is not proof. Reuse discovery's source-hash, candidate-trace,
-    # exact-single-cell and physical formula-free-blank checks before projection.
-    from excel_to_act.steps.step4.discovery import _approved_stored_empty_addresses
-
-    try:
-        approved_blank_addresses = _approved_stored_empty_addresses(
-            source_path, source_sha256, model_scope, candidate_trace
-        )
-    except (OSError, ValueError) as exc:
-        raise CalculationBlocked(str(exc)) from exc
     active_trace_blanks = {
         _address_key(item["address"])
         for item in trace.get("cells", [])
@@ -247,11 +286,12 @@ def add_adapter_metadata(plan: dict[str, Any], catalog: dict[str, Any],
     }
     if not approved_blank_addresses <= active_trace_blanks:
         raise CalculationBlocked("approved stored-empty coordinate is not a current active-trace blank")
-    add_group("source.verified_empty", sorted(approved_blank_addresses), None, "source_audited_blank")
+    add_group("source.verified_empty", sorted(scoped_blanks - verified_catalog_blanks),
+              None, "source_audited_blank")
     projected_blank_addresses = {
         _address_key(address)
         for group_id, group in groups.items()
-        if group_id == "source.verified_empty"
+        if group["classification"] == "source_audited_blank"
         for address in group["addresses"]
     }
     if projected_blank_addresses != approved_blank_addresses:
@@ -284,6 +324,546 @@ def _raw_literal(value: Any, data_type: str) -> Any:
 def _canonical_hash(value: Any) -> str:
     payload = (json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n")
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _verified_case_layout(cases: Any, mutable: dict[str, Any],
+                          external_bindings: list[dict[str, Any]], source_path: Path,
+                          plan: dict[str, Any], profile: dict[str, Any], base_trace: dict[str, Any],
+                          target_names: list[str], names: dict[str, Any],
+                          source_values: dict[str, Any], variant_sources: list[dict[str, Any]], *,
+                          implementation: dict[str, Any] | None = None,
+                          execution_refiner: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]],
+                                                      list[dict[str, Any]]] | None = None) -> list[dict[str, str]]:
+    """Replay exact requests from source formulas before admitting finite bundle variants."""
+    if not isinstance(cases, list) or not cases:
+        raise CalculationBlocked("exact-case support needs at least one bound request")
+    source_hash = hash_file(source_path)
+    def resolve_name(name: str, _sheet: str, _owner: str) -> str:
+        if name.casefold() not in names:
+            raise CalculationBlocked(f"named reference is not mapped: {name}")
+        return f"runtime.lookup_name(values, {name.casefold()!r})"
+    base_driver = render_grouped_driver(plan, compile_mapped_families(plan, base_trace, resolve_name))
+    base_driver_sha = hashlib.sha256(base_driver.encode("utf-8")).hexdigest()
+    target_refs = {item.get("name"): item.get("source_ref")
+                   for item in plan.get("reference_resolution", {}).get("named_references", [])}
+    proofs: list[dict[str, str]] = []
+    for case in cases:
+        required = {"trace", "raw_request", "public_request", "producer"}
+        if not isinstance(case, dict) or set(case) not in (required, required | {"plan", "profile"}):
+            raise CalculationBlocked("exact-case artifact references are incomplete")
+        artifacts = {}
+        for label in case:
+            ref = case[label]
+            if (not isinstance(ref, dict) or set(ref) != {"path", "sha256"}
+                    or not isinstance(ref["path"], str)
+                    or not isinstance(ref["sha256"], str)):
+                raise CalculationBlocked(f"exact-case {label} reference is malformed")
+            path = Path(ref["path"])
+            if not path.is_file() or hash_file(path) != ref["sha256"]:
+                raise CalculationBlocked(f"exact-case {label} artifact is missing or stale")
+            artifacts[label] = json.loads(path.read_text(encoding="utf-8"))
+        trace, raw_request = artifacts["trace"], artifacts["raw_request"]
+        public, producer = artifacts["public_request"], artifacts["producer"]
+        raw_records = raw_request.get("input_overrides") if isinstance(raw_request, dict) else None
+        if not isinstance(raw_records, list):
+            raise CalculationBlocked("exact-case raw request has no input records")
+        raw = {_address_key(item["qualified_address"]): item["value"] for item in raw_records}
+        if len(raw) != len(raw_records):
+            raise CalculationBlocked("exact-case raw request duplicates a source address")
+        raw_digest = hashlib.sha256(json.dumps(raw_records, sort_keys=True, ensure_ascii=False,
+                                               separators=(",", ":")).encode("utf-8")).hexdigest()
+        if (trace.get("source_sha256") != source_hash or trace.get("input_sha256") != raw_digest
+                or trace.get("request_sha256") != case["raw_request"]["sha256"]
+                or trace.get("producer_sha256") != case["producer"]["sha256"]
+                or producer.get("source_sha256") != source_hash
+                or producer.get("input_sha256") != raw_digest):
+            raise CalculationBlocked("exact-case trace, producer, and raw request bindings differ")
+        if (not isinstance(public, dict) or set(public) != {"inputs", "external_data"}
+                or not isinstance(public["inputs"], dict)
+                or set(public["inputs"]) != set(mutable)
+                or not isinstance(public["external_data"], dict)):
+            raise CalculationBlocked("exact-case public request is incomplete")
+        input_digest = _canonical_hash(public["inputs"])
+        mapped: dict[str, Any] = {}
+        for name, spec in mutable.items():
+            record = public["inputs"][name]
+            if (not isinstance(record, dict) or set(record) != {"axes", "values"}
+                    or _canonical_hash(record["axes"]) != _canonical_hash(spec["axes"])):
+                raise CalculationBlocked(f"exact-case input axes differ: {name}")
+            cells = spec.get("mutable_cells")
+            if cells is not None:
+                values = record["values"]
+                if (not isinstance(values, list) or len(values) != len(cells)
+                        or any(not isinstance(value, dict) or set(value) != {"indices", "value"}
+                               or value["indices"] != cell["indices"]
+                               for value, cell in zip(values, cells))):
+                    raise CalculationBlocked(f"exact-case mutable cells differ: {name}")
+                leaves = {tuple(value["indices"]): value["value"] for value in values}
+            elif not spec["shape"]:
+                leaves = {(): record["values"]}
+            else:
+                def flatten(value: Any, shape: list[int], indices: tuple[int, ...] = ()) -> dict[tuple[int, ...], Any]:
+                    if not shape:
+                        return {indices: value}
+                    if not isinstance(value, list) or len(value) != shape[0]:
+                        raise CalculationBlocked(f"exact-case input shape differs: {name}")
+                    return {key: leaf for position, item in enumerate(value)
+                            for key, leaf in flatten(item, shape[1:], (*indices, position)).items()}
+                leaves = flatten(record["values"], spec["shape"])
+            for binding in spec["bindings"]:
+                mapped[binding["address"]] = leaves[tuple(binding["indices"])]
+        if set(mapped) != set(raw) or any(_canonical_hash(raw[key]) != _canonical_hash(value)
+                                              for key, value in mapped.items()):
+            raise CalculationBlocked("exact-case public and source raw inputs differ")
+        external_data = public["external_data"]
+        if set(external_data) != {item["variable_id"] for item in external_bindings}:
+            raise CalculationBlocked("exact-case external producer set differs")
+        overrides = {}
+        cuts = producer.get("cuts")
+        if not isinstance(cuts, dict):
+            raise CalculationBlocked("exact-case producer has no formula cuts")
+        evaluator = FormulaEvaluator(source_path)
+        try:
+            for address, value in raw.items():
+                ref = _parse_reference(address, "Main")
+                sheet = evaluator.sheet_names[ref.sheet.casefold()]
+                cell = evaluator.workbook[sheet].cell(ref.min_row, ref.min_col)
+                if cell.data_type == "f":
+                    raise CalculationBlocked(f"exact-case raw input is a formula: {address}")
+                cell.value = value
+                if type(cell.value) is not type(value) or cell.value != value:
+                    raise CalculationBlocked(f"exact-case raw input readback differs: {address}")
+            for binding in external_bindings:
+                variable_id, source_range = binding["variable_id"], binding["source_range"]
+                data = external_data[variable_id]
+                cut = cuts.get(source_range)
+                if (not isinstance(data, dict)
+                        or set(data) != {"values", "axes", "source_sha256", "version", "input_sha256"}
+                        or data["source_sha256"] != source_hash
+                        or data["input_sha256"] != input_digest
+                        or not isinstance(cut, dict)
+                        or _canonical_hash(data["values"]) != _canonical_hash(cut.get("values"))
+                        or len(data["values"]) != len(binding["addresses"])):
+                    raise CalculationBlocked(f"exact-case external producer differs: {variable_id}")
+                for address, value in zip(binding["addresses"], data["values"]):
+                    ref = _parse_reference(address, "Main")
+                    sheet = evaluator.sheet_names[ref.sheet.casefold()]
+                    cell = evaluator.workbook[sheet].cell(ref.min_row, ref.min_col)
+                    if cell.data_type != "f":
+                        raise CalculationBlocked(f"exact-case external cut is not a formula: {address}")
+                    formula = cell.value
+                    overrides[address] = {"boundary_variable_id": source_range, "value": value,
+                                          "source_formula": formula,
+                                          "source_formula_sha256": hashlib.sha256(formula.encode()).hexdigest(),
+                                          "capture_artifact_sha256": case["producer"]["sha256"]}
+            evaluator.external_overrides = {
+                evaluator._key(evaluator.sheet_names[_parse_reference(address, "Main").sheet.casefold()],
+                               _parse_reference(address, "Main").min_row,
+                               _parse_reference(address, "Main").min_col): value
+                for address, value in overrides.items()}
+            for name in target_names:
+                ref = _parse_reference(target_refs.get(name, ""), "Main")
+                if ref is None or not ref.single or not ref.sheet:
+                    raise CalculationBlocked(f"exact-case target has no source cell: {name}")
+                evaluator.evaluate_cell(ref.sheet, ref.min_row, ref.min_col, dependency=False)
+            replay = {"cells": list(evaluator.cells.values()), "edges": list(evaluator.edges.values()),
+                      "names": list(evaluator.names.values()), "lookups": evaluator.lookups,
+                      "branches": evaluator.branches, "dynamic_ranges": evaluator.dynamic_ranges}
+            for kind, actual in replay.items():
+                expected = trace.get(kind)
+                if (not isinstance(expected, list)
+                        or _canonical_hash(sorted(actual, key=_canonical_hash))
+                        != _canonical_hash(sorted(expected, key=_canonical_hash))):
+                    raise CalculationBlocked(f"exact-case source {kind} closure differs from trace")
+        finally:
+            evaluator.close()
+        case_plan, case_profile = artifacts.get("plan", plan), artifacts.get("profile", profile)
+        case_names = names
+        case_index = None
+        if "plan" in artifacts:
+            case_index, case_variables = _source_index(case_plan)
+            base_index, base_variables = _source_index(plan)
+            extra_variables = {key: value for key, value in case_variables.items()
+                               if key not in base_variables}
+            if (case_plan.get("source", {}).get("source_sha256") != source_hash
+                    or case_profile.get("source_sha256") != source_hash
+                    or any(case_variables.get(key, {}).get("shape") != value.get("shape")
+                           for key, value in base_variables.items())
+                    or any(value.get("role") != "derived" or value.get("initial_condition") is not None
+                           for value in extra_variables.values())
+                    or _target_bindings(target_names, case_plan) != _target_bindings(target_names, plan)
+                    or case_plan.get("adapter_metadata_groups") != plan.get("adapter_metadata_groups")
+                    or case_plan.get("adapter_metadata_cells") != plan.get("adapter_metadata_cells")):
+                raise CalculationBlocked("exact-case logical shapes, metadata, or source differ from bundle")
+            if _raw_bindings(case_plan, case_index, case_variables) != _raw_bindings(
+                    plan, base_index, base_variables):
+                raise CalculationBlocked("exact-case raw or fixed source bindings differ from bundle")
+            case_values = _augment_literal_sources(source_path, source_hash, case_plan, trace,
+                                                   source_values.copy())
+            case_literals = {_address_key(address): case_values[_address_key(address)]
+                             for address in case_plan.get("adapter_source_literals", [])
+                             if _address_key(address) not in source_values}
+            case_names = _named_bindings(case_plan, case_index,
+                                         set(source_values) | set(case_literals))
+            if not {item["name"].casefold() for item in trace.get("names", [])} <= set(case_names):
+                raise CalculationBlocked("exact-case named source reference is unmapped")
+        validate_family_coverage(case_plan, case_profile, trace)
+        if "plan" not in artifacts:
+            base_formulas = {cell["address"].casefold(): cell["formula"]
+                             for cell in base_trace.get("cells", [])
+                             if cell.get("role") == "calculated_formula"}
+            case_formulas = {cell["address"].casefold(): cell["formula"]
+                             for cell in trace["cells"] if cell.get("role") == "calculated_formula"}
+            if base_formulas != case_formulas:
+                raise CalculationBlocked("exact-case formula members differ from bundled source")
+        def case_resolve_name(name: str, _sheet: str, _owner: str) -> str:
+            if name.casefold() not in case_names:
+                raise CalculationBlocked(f"named reference is not mapped: {name}")
+            return f"runtime.lookup_name(values, {name.casefold()!r})"
+        case_refinements: list[dict[str, Any]] = []
+        if implementation is not None and implementation.get("execution_plan", {}).get("family_execution"):
+            if execution_refiner is None:
+                raise CalculationBlocked("exact-case execution refinement has no current trace validator")
+            case_refinements = execution_refiner(
+                case_plan, implementation,
+                {**trace, "active_trace_sha256": case["trace"]["sha256"]},
+            )
+        compiled = compile_mapped_families(case_plan, trace, case_resolve_name)
+        driver = render_grouped_driver(case_plan, compiled)
+        driver_sha = hashlib.sha256(driver.encode("utf-8")).hexdigest()
+        if "plan" not in artifacts and driver_sha != base_driver_sha:
+            raise CalculationBlocked("exact-case execution order differs from bundled driver")
+        proof = {"input_sha256": input_digest,
+                 "dependency_sha256": _canonical_hash(external_data),
+                 "trace_sha256": case["trace"]["sha256"],
+                 "raw_input_sha256": raw_digest,
+                 "producer_sha256": case["producer"]["sha256"]}
+        if "plan" in artifacts:
+            variant_id = f"v{len(variant_sources) + 1:04d}"
+            metadata = {"source_sha256": source_hash, "driver_sha256": driver_sha,
+                        "trace_sha256": case["trace"]["sha256"],
+                        "plan_sha256": case["plan"]["sha256"],
+                        "profile_sha256": case["profile"]["sha256"],
+                        "execution_refinements": case_refinements,
+                        "named_bindings": case_names,
+                        "extra_variable_shapes": {key: value["shape"] for key, value in extra_variables.items()},
+                        "source_literals": case_literals,
+                        "formula_cells": _formula_cell_bindings(case_plan, trace, case_index)}
+            proof.update({"variant_id": variant_id, "variant_metadata_sha256": _canonical_hash(metadata),
+                          "driver_sha256": driver_sha})
+            variant_sources.append({"variant_id": variant_id, "metadata": metadata,
+                                    "driver": driver, "compiled": compiled})
+        proofs.append(proof)
+    if (len({(item["input_sha256"], item["dependency_sha256"]) for item in proofs}) != len(proofs)
+            or hash_file(source_path) != source_hash):
+        raise CalculationBlocked("exact-case proofs duplicate a request or source changed")
+    return proofs
+
+
+def _bound_private_fixed_literals(record: dict[str, Any], interface: dict[str, Any],
+                                  expected: dict[str, str | None]) -> list[dict[str, Any]]:
+    input_ref = record.get("implementation_input", {})
+    input_path = Path(input_ref.get("path", ""))
+    if not input_path.is_file() or hash_file(input_path) != input_ref.get("sha256"):
+        raise CalculationBlocked("private fixed literal implementation input is missing or stale")
+    implementation = json.loads(input_path.read_text(encoding="utf-8"))
+    binding = implementation.get("binding", {})
+    if (implementation.get("schema_version") != "step4.active_implementation.v1"
+            or not isinstance(binding, dict)
+            or any(binding.get(key) != value for key, value in expected.items())):
+        raise CalculationBlocked("private fixed literals cite stale source or approval evidence")
+    records = implementation.get("private_fixed_literals", [])
+    if records and implementation.get("private_fixed_literals_interface_sha256") != (
+            interface.get("support_certificate", {}).get("approved_interface_sha256")
+            or _canonical_hash(interface)):
+        raise CalculationBlocked("private fixed literals cite a stale interface")
+    return records
+
+
+def _variable_contract_layout(definition: dict[str, Any], raw_bindings: list[dict[str, Any]],
+                              external_bindings: list[dict[str, Any]],
+                              trace_sha256: str, trace: dict[str, Any],
+                              source_values: dict[str, Any], *, source_path: Path | None = None,
+                              semantic_plan: dict[str, Any] | None = None,
+                              source_profile: dict[str, Any] | None = None,
+                              target_names: list[str] | None = None,
+                              names: dict[str, Any] | None = None,
+                              variant_sources: list[dict[str, Any]] | None = None,
+                              capture_artifact_sha256: str | None = None,
+                              private_fixed_literals: list[dict[str, Any]] | None = None,
+                              implementation: dict[str, Any] | None = None,
+                              execution_refiner: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]],
+                                                          list[dict[str, Any]]] | None = None) -> dict[str, Any]:
+    domain = definition.get("support_domain")
+    if (definition.get("schema_version") != "step3.tool_interface.v1"
+            or definition.get("contract_readiness", {}).get("status") != "defined"
+            or not isinstance(domain, dict) or domain.get("status") not in {"fixed_trace", "exact_cases"}
+            or domain.get("active_trace_sha256") != trace_sha256):
+        raise CalculationBlocked("variable-input interface or fixed-trace support domain is incomplete or stale")
+    certificate = definition.get("support_certificate")
+    if domain.get("trace_binding") == "post_discovery":
+        approved = copy.deepcopy(definition)
+        approved.pop("support_certificate", None)
+        approved["support_domain"].pop("active_trace_sha256", None)
+        if (not isinstance(certificate, dict)
+                or certificate.get("schema_version") != "step4.support_certificate.v1"
+                or certificate.get("approved_interface_sha256") != hash_bytes(json_bytes(approved))
+                or certificate.get("design_sha256") != definition.get("bindings", {}).get(
+                    "design", {}).get("artifact", {}).get("json_sha256")
+                or certificate.get("source_sha256") != definition.get("bindings", {}).get(
+                    "source", {}).get("workbook_sha256")
+                or certificate.get("capture_artifact_sha256") != capture_artifact_sha256
+                or certificate.get("active_trace_sha256") != trace_sha256
+                or certificate.get("case_refs_sha256") != hash_bytes(json_bytes(domain.get("cases")))):
+            raise CalculationBlocked("post-discovery support certificate is missing or stale")
+    elif certificate is not None:
+        raise CalculationBlocked("fixed-trace interface cannot carry a post-discovery certificate")
+    objects = {item["variable_id"]: item for item in definition["objects"]}
+    raw_ids = {item["variable_id"] for item in raw_bindings}
+    if any(objects[item]["mutability"] == "unknown" for item in raw_ids & objects.keys()):
+        raise CalculationBlocked("raw source bindings lack complete approved mutability policy")
+    unlisted = raw_ids - objects.keys()
+    fixed_records = private_fixed_literals if private_fixed_literals is not None else []
+    if not isinstance(fixed_records, list):
+        raise CalculationBlocked("private fixed literal ledger is malformed")
+    fixed_by_owner: dict[tuple[str, str, tuple[int, ...]], dict[str, Any]] = {}
+    for record in fixed_records:
+        if (not isinstance(record, dict) or set(record) != {"address", "variable_id", "indices", "value"}
+                or not isinstance(record["address"], str)
+                or not isinstance(record["variable_id"], str)
+                or not isinstance(record["indices"], list)
+                or any(type(index) is not int or index < 0 for index in record["indices"])
+                or type(record["value"]) not in {type(None), str, int, float, bool}
+                or type(record["value"]) is float and not math.isfinite(record["value"])):
+            raise CalculationBlocked("private fixed literal ledger is malformed")
+        key = (_address_key(record["address"]), record["variable_id"], tuple(record["indices"]))
+        if key in fixed_by_owner or record["variable_id"] in objects:
+            raise CalculationBlocked("private fixed literal has duplicate or public ownership")
+        fixed_by_owner[key] = record
+    used_fixed: set[tuple[str, str, tuple[int, ...]]] = set()
+    external_addresses = {_address_key(address) for item in external_bindings
+                          for address in item.get("addresses", [])}
+    if unlisted:
+        records = (semantic_plan or {}).get("variables", {})
+        variables = (records if isinstance(records, dict) else
+                     {item.get("variable_id"): item for item in records if isinstance(item, dict)}
+                     if isinstance(records, list) else {})
+        approved_fixed = {(_address_key(binding["address"]), binding["variable_id"],
+                           tuple(binding["indices"])) for binding in raw_bindings
+                          if binding["variable_id"] in objects
+                          and objects[binding["variable_id"]]["mutability"] == "immutable"}
+        for binding in (item for item in raw_bindings if item["variable_id"] in unlisted):
+            variable = variables.get(binding["variable_id"], {})
+            address = _address_key(binding["address"])
+            key = (address, binding["variable_id"], tuple(binding["indices"]))
+            if key in fixed_by_owner:
+                record = fixed_by_owner[key]
+                initial = variable.get("initial_condition")
+                raw_extent = variable.get("role") == "raw" and any(
+                    extent.get("role") in {"raw_source", "raw_input"}
+                    and address in {_address_key(item) for item in _addresses(extent.get("ref", ""))}
+                    for extent in variable.get("source_extents", []) if isinstance(extent, dict))
+                derived_seed = (variable.get("role") == "derived" and isinstance(initial, dict)
+                                and initial.get("source_role") == "fixed_source_numeric_zero"
+                                and binding["indices"] == [initial.get("logical_index")]
+                                and isinstance(initial.get("seed_ref"), str)
+                                and _address_key(initial["seed_ref"]) == address
+                                and type(record["value"]) is int and record["value"] == 0)
+                if (not (raw_extent or derived_seed) or address not in source_values
+                        or _canonical_hash(source_values[address]) != _canonical_hash(record["value"])
+                        or address in external_addresses
+                        or sum(_address_key(item["address"]) == address for item in raw_bindings) != 1):
+                    raise CalculationBlocked("private fixed literal differs from its current source owner or value")
+                used_fixed.add(key)
+                continue
+            initial = variable.get("initial_condition")
+            if not isinstance(initial, dict):
+                raise CalculationBlocked("raw source bindings lack an approved fixed seed alias")
+            source_id = initial.get("input_variable_id")
+            source_index = initial.get("input_index", [])
+            seed_ref = initial.get("seed_ref")
+            if (variable.get("role") != "derived" or not isinstance(seed_ref, str)
+                    or not isinstance(source_index, list)
+                    or binding["indices"] != [initial.get("logical_index")]
+                    or source_id not in objects or objects[source_id]["mutability"] != "immutable"
+                    or (_address_key(binding["address"]), source_id, tuple(source_index)) not in approved_fixed
+                    or _address_key(seed_ref) != _address_key(binding["address"])
+                    or _address_key(binding["address"]) not in source_values):
+                raise CalculationBlocked("raw source bindings lack an approved fixed seed alias")
+    if used_fixed != set(fixed_by_owner):
+        raise CalculationBlocked("private fixed literal ledger has an unbound source owner")
+    external_ids = {item["variable_id"] for item in external_bindings}
+    if set(domain.get("external_policy", {})) != external_ids:
+        raise CalculationBlocked("each formula-derived external producer needs a same-request policy")
+    if (not external_ids <= objects.keys() or any(
+            definition["source_provenance"]["inputs"][variable_id].get("role")
+            != "formula_derived_external" for variable_id in external_ids)):
+        raise CalculationBlocked("external producer bindings lack approved interface provenance")
+    if any(objects[variable_id]["required"] is not True or objects[variable_id]["mutability"] != "mutable"
+           for variable_id in external_ids):
+        raise CalculationBlocked("same-request external producers must be required mutable inputs")
+    mutable: dict[str, Any] = {}
+    for item in definition["objects"]:
+        if item["mutability"] != "mutable":
+            continue
+        variable_id, name = item["variable_id"], item["logical_name"]
+        if variable_id in external_ids:
+            continue
+        if variable_id not in raw_ids or definition["source_provenance"]["inputs"][variable_id].get("role") != "source_raw":
+            raise CalculationBlocked(f"mutable input is not an approved raw source object: {name}")
+        bindings = [binding for binding in raw_bindings if binding["variable_id"] == variable_id]
+        if any(binding["address"] in {other["address"] for other in raw_bindings
+                                      if other["variable_id"] != variable_id} for binding in bindings):
+            raise CalculationBlocked(f"mutable input shares a raw source cell: {name}")
+        shape = item["shape"]
+        indices = [tuple(binding["indices"]) for binding in bindings]
+        cells = item.get("mutable_cells")
+        selected = ({tuple(cell["indices"]) for cell in cells} if cells is not None else set(indices))
+        if (len(indices) != (math.prod(shape) if shape else 1) and cells is None
+                or len(set(indices)) != len(indices)
+                or any(len(index) != len(shape) or any(
+                    coordinate < 0 or coordinate >= shape[axis]
+                    for axis, coordinate in enumerate(index)) for index in indices)):
+            raise CalculationBlocked(f"mutable input has incomplete or duplicate source-axis bindings: {name}")
+        if cells is not None and (len(selected) != len(cells) or not selected <= set(indices)):
+            raise CalculationBlocked(f"mutable input has missing or duplicate per-cell source bindings: {name}")
+        bindings = [binding for binding in bindings if tuple(binding["indices"]) in selected]
+        mutable[name] = {"variable_id": variable_id, "shape": shape, "axes": item["axes"],
+                         "value_type": item["value_type"], "required": item["required"],
+                         "default_policy": item["default_policy"], "allowed_range": item["allowed_range"],
+                         "allow_blank": item.get("allow_blank", False), "bindings": bindings}
+        if cells is not None:
+            mutable[name]["mutable_cells"] = cells
+    if not mutable:
+        raise CalculationBlocked("approved interface has no mutable raw business input")
+    verified_cases = None
+    if domain["status"] == "exact_cases":
+        if (source_path is None or semantic_plan is None or source_profile is None
+                or target_names is None or names is None):
+            raise CalculationBlocked("exact-case closure needs source, semantic, and target evidence")
+        verified_cases = _verified_case_layout(
+            domain.get("cases"), mutable, external_bindings, source_path,
+            semantic_plan, source_profile, trace, target_names, names, source_values,
+            variant_sources if variant_sources is not None else [],
+            implementation=implementation, execution_refiner=execution_refiner,
+        )
+        if certificate is not None:
+            certificate = {**certificate, "verified_cases_sha256": _canonical_hash(verified_cases)}
+    selection_cells = {_address_key(item["formula_cell"])
+                       for kind in ("lookups", "branches", "dynamic_ranges")
+                       for item in trace.get(kind, []) if isinstance(item, dict)
+                       and isinstance(item.get("formula_cell"), str) and "!" in item["formula_cell"]}
+    control_cells = {_address_key(item["formula_cell"])
+                     for kind in ("branches", "dynamic_ranges")
+                     for item in trace.get(kind, []) if isinstance(item, dict)
+                     and isinstance(item.get("formula_cell"), str) and "!" in item["formula_cell"]}
+    lookups_by_owner: dict[str, list[dict[str, Any]]] = {}
+    for lookup in trace.get("lookups", []):
+        if isinstance(lookup, dict) and isinstance(lookup.get("formula_cell"), str):
+            lookups_by_owner.setdefault(_address_key(lookup["formula_cell"]), []).append(lookup)
+    trace_cells = {_address_key(cell["address"]): cell for cell in trace.get("cells", [])
+                   if isinstance(cell, dict) and isinstance(cell.get("address"), str)}
+    prerequisites: dict[str, list[dict[str, Any]]] = {}
+    for edge in trace.get("edges", []):
+        if isinstance(edge, dict) and isinstance(edge.get("consumer"), str):
+            prerequisites.setdefault(_address_key(edge["consumer"]), []).append(edge)
+    mutable_addresses = {binding["address"] for spec in mutable.values() for binding in spec["bindings"]}
+    external_addresses = {address for binding in external_bindings for address in binding["addresses"]}
+    fixed_trace_values: dict[str, Any] = {}
+    pending, seen = ([(address, address) for address in selection_cells]
+                     if verified_cases is None else []), set()
+    verified_match_ranges: dict[str, set[str]] = {}
+    for owner, lookups in lookups_by_owner.items():
+        for lookup in lookups:
+            if lookup.get("function") != "VLOOKUP":
+                continue
+            table = _parse_reference(lookup.get("table_range", ""), "Main")
+            column = lookup.get("lookup_column")
+            if (table is None or not table.sheet or type(column) is not int
+                    or not 1 <= column <= table.max_col - table.min_col + 1):
+                raise CalculationBlocked("variable-input lookup has no finite saved key column")
+            pending.extend((_address_key(_address(table.sheet, row, table.min_col + column - 1)), owner)
+                           for row in range(table.min_row, table.max_row + 1))
+    while pending:
+        address, owner = pending.pop()
+        if (owner, address) in seen:
+            continue
+        seen.add((owner, address))
+        if address in external_addresses:
+            raise CalculationBlocked(
+                f"variable-input selection depends on an unverified external producer: {address} for {owner}")
+        if address in mutable_addresses:
+            if address not in source_values:
+                raise CalculationBlocked(f"fixed-trace selector has no saved raw value: {address}")
+            fixed_trace_values[address] = source_values[address]
+        if address in lookups_by_owner and (address != owner or owner in control_cells
+                                            or len(lookups_by_owner[address]) > 1):
+            for lookup in lookups_by_owner[address]:
+                if lookup.get("function") == "MATCH":
+                    reference = _parse_reference(lookup.get("lookup_range", ""), "Main")
+                    formula = trace_cells.get(address, {})
+                    if (trace.get("source_sha256") != definition["bindings"]["source"]["workbook_sha256"]
+                            or formula.get("role") != "calculated_formula"
+                            or not isinstance(formula.get("formula"), str)
+                            or "MATCH(" not in formula["formula"].upper()
+                            or lookup.get("match_type") != 0 or reference is None or not reference.sheet
+                            or (reference.min_row != reference.max_row
+                                and reference.min_col != reference.max_col)
+                            or (reference.max_row - reference.min_row + 1)
+                            * (reference.max_col - reference.min_col + 1) > 10_000):
+                        raise CalculationBlocked(f"variable-input MATCH has no verified finite exact range: {address}")
+                    keys = [_address_key(cell) for cell in _addresses(reference.address)]
+                    if any(trace_cells.get(key, {}).get("role") != "source_value"
+                           or type(trace_cells[key].get("value")) not in (str, int, float, bool, type(None))
+                           for key in keys):
+                        raise CalculationBlocked(f"variable-input MATCH keys are not source-bound: {address}")
+                    matches = [index for index, key in enumerate(keys, 1)
+                               if _excel_compare(trace_cells[key]["value"], lookup.get("lookup_value")) == 0]
+                    vlookups = [item for item in lookups_by_owner[address]
+                                if item.get("function") == "VLOOKUP"]
+                    if (not matches or len(vlookups) != 1
+                            or vlookups[0].get("return_column") != matches[0]):
+                        raise CalculationBlocked(f"variable-input MATCH selection is unverified: {address}")
+                    verified_match_ranges.setdefault(address, set()).add(reference.address.casefold())
+                    pending.extend((key, owner) for key in keys)
+                    continue
+                if lookup.get("function") != "VLOOKUP":
+                    raise CalculationBlocked("variable-input selection depends on an unverified lookup result")
+                table = _parse_reference(lookup.get("table_range", ""), "Main")
+                row, column = lookup.get("matched_row"), lookup.get("return_column")
+                if (table is None or not table.sheet or type(row) is not int or type(column) is not int
+                        or not table.min_row <= row <= table.max_row
+                        or not 1 <= column <= table.max_col - table.min_col + 1):
+                    raise CalculationBlocked("variable-input selection has no verified lookup return cell")
+                pending.append((_address_key(_address(table.sheet, row, table.min_col + column - 1)), owner))
+        for edge in prerequisites.get(address, []):
+            if edge.get("relationship") == "lookup_table":
+                continue  # The saved lookup footprint is handled through its key and selected return cells.
+            if (edge.get("relationship") == "range_read"
+                    and isinstance(edge.get("prerequisite"), str)
+                    and edge["prerequisite"].replace("$", "").casefold()
+                    in verified_match_ranges.get(address, set())):
+                continue  # Every key in this exact MATCH range was checked above.
+            if edge.get("relationship") not in {"cell_reference", "array_formula_anchor"}:
+                raise CalculationBlocked(f"variable-input selection has an unsupported dependency: {address}")
+            reference = _parse_reference(edge.get("prerequisite", ""), address.split("!", 1)[0])
+            if reference is None or not reference.single or not reference.sheet:
+                raise CalculationBlocked(f"variable-input selection has an unresolved dependency: {address}")
+            pending.append((_address_key(reference.address), owner))
+    return {"schema_version": "step4.variable_input_contract.v1", "interface_sha256": _canonical_hash(definition),
+            "source_sha256": definition["bindings"]["source"]["workbook_sha256"],
+            "design": definition["bindings"]["design"], "input_boundary": definition["bindings"]["input_boundary"],
+            "support_domain": domain, "mutable": mutable,
+            "private_fixed_literals": fixed_records,
+            "fixed_trace_source_values": fixed_trace_values,
+            **({"verified_cases": verified_cases} if verified_cases is not None else {}),
+            **({"support_certificate": certificate} if certificate is not None else {}),
+            "external_specs": {item["variable_id"]: {"shape": item["shape"], "axes": item["axes"],
+                                "value_type": item["value_type"], "allowed_range": item["allowed_range"],
+                                "allow_blank": item.get("allow_blank", False)}
+                               for item in definition["objects"] if item["variable_id"] in external_ids},
+            "outputs": definition["outputs"],
+            "output_provenance": definition["source_provenance"].get("outputs", {})}
 
 
 def _external_bindings(plan: dict[str, Any], capture: dict[str, Any] | None,
@@ -384,6 +964,9 @@ def _augment_literal_sources(source_path: Path, source_hash: str, plan: dict[str
                 required_literals.add(_address_key(address))
     for binding in _raw_bindings(plan, source_index, variables):
         address = binding["address"]
+        requested.add(address)
+        required_literals.add(_address_key(address))
+    for address in plan.get("adapter_source_literals", []):
         requested.add(address)
         required_literals.add(_address_key(address))
     for record in plan.get("reference_resolution", {}).get("named_references", []):
@@ -567,6 +1150,9 @@ def _named_bindings(plan: dict[str, Any], index: dict[tuple[str, int, int], list
                     raw_addresses: set[str]) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     references = plan.get("reference_resolution", {}).get("named_references", [])
+    variables = plan.get("variables", {})
+    if isinstance(variables, list):
+        variables = {record.get("variable_id"): record for record in variables if isinstance(record, dict)}
     for item in references:
         name = item.get("name")
         if not isinstance(name, str) or not name:
@@ -590,6 +1176,27 @@ def _named_bindings(plan: dict[str, Any], index: dict[tuple[str, int, int], list
         if item.get("kind") == "scalar":
             binding = item.get("binding")
             if binding is None:
+                indices = item.get("indices", [])
+                if not isinstance(indices, list):
+                    raise CalculationBlocked(f"named scalar {name} has an invalid logical binding")
+                if indices:
+                    variable_id, source_ref = item.get("variable_id"), item.get("source_ref")
+                    variable = variables.get(variable_id) if isinstance(variables, dict) else None
+                    shape = variable.get("shape") if isinstance(variable, dict) else None
+                    reference = (_parse_reference(source_ref, "Main")
+                                 if isinstance(source_ref, str) and "!" in source_ref else None)
+                    owners = (index.get((reference.sheet.casefold(), reference.min_row, reference.min_col), [])
+                              if reference is not None and reference.single else [])
+                    if (not isinstance(shape, list) or len(shape) != len(indices)
+                            or any(type(value) is not int or type(size) is not int
+                                   or value < 0 or value >= size
+                                   for value, size in zip(indices, shape))
+                            or len(owners) != 1 or owners[0].role not in {"raw_source", "raw_input"}
+                            or owners[0].variable_id != variable_id
+                            or owners[0].indices != tuple(indices)):
+                        raise CalculationBlocked(f"named scalar {name} lacks an exact source coordinate")
+                    result[key] = {"kind": "coordinate", "variable_id": variable_id, "indices": indices}
+                    continue
                 binding = {"kind": "variable", "variable_id": item.get("variable_id")}
             if not isinstance(binding, dict):
                 raise CalculationBlocked(f"named scalar {name} has a malformed binding")
@@ -704,7 +1311,7 @@ def _assign(values, variable_id, indices, value):
     target[indices[-1]] = value
 
 def build_values(source_values=None, scenario_guard_sha256=None, scenario_ids=None,
-                 metadata_seed_bindings_sha256=None):
+                 metadata_seed_bindings_sha256=None, raw_overrides=None, external_overrides=None):
     base = Path(__file__).resolve().parent
     if source_values is None:
         source_values = json.loads((base / "source_values.json").read_text(encoding="utf-8"))
@@ -719,6 +1326,14 @@ def build_values(source_values=None, scenario_guard_sha256=None, scenario_ids=No
     for address, expected in guard_values.items():
         if address not in source_values or source_values[address] != expected:
             raise runtime.CalculationBlocked(f"saved-scenario source selector changed: {address}")
+    if raw_overrides:
+        contract = layout.get("variable_contract")
+        allowed = ({binding["address"] for spec in contract["mutable"].values()
+                    for binding in spec["bindings"]} if isinstance(contract, dict)
+                   else {item["address"] for item in layout["raw_bindings"]})
+        if not set(raw_overrides) <= allowed:
+            raise runtime.CalculationBlocked("variable input does not map to approved raw bindings")
+        source_values = {**source_values, **raw_overrides}
     values = {"__source_values__": source_values}
     metadata_groups = layout.get("adapter_metadata_groups", {})
     metadata_values = {}
@@ -786,7 +1401,17 @@ def build_values(source_values=None, scenario_guard_sha256=None, scenario_ids=No
             seed_value = seed_value[index]
         _assign(values, variable_id, indices, seed_value)
     external_bindings = layout.get("external_bindings", [])
-    if external_bindings:
+    if external_bindings and external_overrides is not None:
+        if set(external_overrides) != {item["variable_id"] for item in external_bindings}:
+            raise runtime.CalculationBlocked("same-request external input IDs differ from approved bindings")
+        for binding in external_bindings:
+            variable_id = binding["variable_id"]
+            vector = external_overrides[variable_id]
+            if not isinstance(vector, list) or len(vector) != len(binding["indices"]):
+                raise runtime.CalculationBlocked(f"same-request external vector shape changed: {variable_id}")
+            for indices, item in zip(binding["indices"], vector):
+                _assign(values, variable_id, indices, item)
+    elif external_bindings:
         external_path = base / "external_values.json"
         external_payload = json.loads(external_path.read_text(encoding="utf-8"))
         expected_capture = layout.get("external_capture")
@@ -819,21 +1444,25 @@ def build_values(source_values=None, scenario_guard_sha256=None, scenario_ids=No
 
 
 def _model_source(scenario_ids: list[str], scenario_guard_sha256: str,
-                  metadata_seed_bindings_sha256: str) -> str:
-    template = '''"""Run the standalone named-variable model for its approved saved scenario."""
+                  metadata_seed_bindings_sha256: str, variable_contract_sha256: str | None = None) -> str:
+    template = '''"""Run the standalone named-variable model through approved input adapters."""
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib
 import json
+import math
 from pathlib import Path
 import modular_runtime as runtime
-from input_adapter import build_values
+from input_adapter import build_values, _allocate, _canonical_hash
 from pricing import run_pricing
 from formula_families import FAMILY_FUNCTIONS
 
 SCENARIO_IDS = __SCENARIO_IDS__
 SCENARIO_GUARD_SHA256 = __SCENARIO_GUARD_SHA256__
 METADATA_SEED_BINDINGS_SHA256 = __METADATA_SEED_BINDINGS_SHA256__
+VARIABLE_CONTRACT_SHA256 = __VARIABLE_CONTRACT_SHA256__
 
 def _json_value(value):
     if isinstance(value, runtime.ExcelError):
@@ -848,12 +1477,210 @@ def _json_value(value):
         return value
     raise runtime.CalculationBlocked(f"model output cannot serialize {type(value).__name__}")
 
-def run_model():
+def _leaves(value, shape, label):
+    if not shape:
+        if isinstance(value, list):
+            raise runtime.CalculationBlocked(f"{label} has the wrong shape")
+        return [((), value)]
+    if not isinstance(value, list) or len(value) != shape[0]:
+        raise runtime.CalculationBlocked(f"{label} has the wrong shape")
+    return [((position, *indices), leaf)
+            for position, item in enumerate(value)
+            for indices, leaf in _leaves(item, shape[1:], label)]
+
+def _checked_values(value, spec, label, allow_excel_error=False, dependent_value=None):
+    cells = spec.get("mutable_cells")
+    if cells is None:
+        leaves = _leaves(value, spec["shape"], label)
+        policies = [(indices, leaf, spec) for indices, leaf in leaves]
+    else:
+        if not isinstance(value, list) or len(value) != len(cells):
+            raise runtime.CalculationBlocked(f"{label} needs exactly its declared mutable cells")
+        policies = []
+        for record, cell in zip(value, cells):
+            if (not isinstance(record, dict) or set(record) != {"indices", "value"}
+                    or _canonical_hash(record["indices"]) != _canonical_hash(cell["indices"])):
+                raise runtime.CalculationBlocked(f"{label} mutable cell indices differ from the approved contract")
+            policies.append((tuple(cell["indices"]), record["value"], cell))
+    for _indices, leaf, leaf_spec in policies:
+        policy = leaf_spec["allowed_range"]
+        if (allow_excel_error and isinstance(leaf, dict) and set(leaf) == {"excel_error"}
+                and isinstance(leaf["excel_error"], str) and leaf["excel_error"].startswith("#")):
+            continue
+        value_type = leaf_spec["value_type"]
+        valid = (leaf is None and leaf_spec.get("allow_blank") is True
+                 or value_type == "boolean" and type(leaf) is bool
+                 or value_type == "integer" and type(leaf) is int
+                 or value_type == "number" and type(leaf) is int and abs(leaf) < 10**308
+                 or value_type == "number" and type(leaf) is float and math.isfinite(leaf)
+                 or value_type == "string" and type(leaf) is str)
+        if not valid:
+            raise runtime.CalculationBlocked(f"{label} has an invalid {value_type} value")
+        if policy["status"] == "declared" and leaf is not None and (
+                "minimum" in policy and leaf < policy["minimum"] or
+                "maximum" in policy and leaf > policy["maximum"]):
+            raise runtime.CalculationBlocked(f"{label} is outside its approved range")
+        choices = policy.get("values", [])
+        if policy["status"] == "dependent_enum":
+            choices = [*choices, dependent_value]
+        if policy["status"] in ("enum", "dependent_enum") and leaf is not None and not any(
+                type(leaf) is type(choice) and leaf == choice for choice in choices):
+            raise runtime.CalculationBlocked(f"{label} is outside its approved values")
+        if policy["status"] not in ("declared", "enum", "dependent_enum", "unbounded"):
+            raise runtime.CalculationBlocked(f"{label} has no approved range policy")
+    return {indices: leaf for indices, leaf, _spec in policies}
+
+def _checked_axes(actual, spec, label):
+    if not isinstance(actual, list) or len(actual) != len(spec["shape"]):
+        raise runtime.CalculationBlocked(f"{label} axes or key order differ from the approved contract")
+    for dimension, axis in enumerate(actual):
+        keys = axis.get("keys") if isinstance(axis, dict) else None
+        if keys is not None and (not isinstance(keys, list) or len(keys) != spec["shape"][dimension]
+                or len({_canonical_hash(key) for key in keys}) != len(keys)):
+            raise runtime.CalculationBlocked(f"{label} axis has duplicate or missing keys")
+    if _canonical_hash(actual) != _canonical_hash(spec["axes"]):
+        raise runtime.CalculationBlocked(f"{label} axes or key order differ from the approved contract")
+
+def _variable_inputs(layout, inputs, external_data):
+    contract = layout.get("variable_contract")
+    if (not isinstance(contract, dict) or _canonical_hash(contract) != VARIABLE_CONTRACT_SHA256
+            or contract.get("source_sha256") != layout.get("source_sha256")):
+        raise runtime.CalculationBlocked("variable-input contract is absent or stale")
+    if not isinstance(inputs, dict) or not isinstance(external_data, dict):
+        raise runtime.CalculationBlocked("variable inputs and external data must be objects")
+    specs = contract["mutable"]
+    if set(inputs) - set(specs):
+        raise runtime.CalculationBlocked("unknown or immutable variable input: " + ", ".join(sorted(set(inputs) - set(specs))))
+    base = Path(__file__).resolve().parent
+    manifest = json.loads((base / "model_manifest.json").read_text(encoding="utf-8"))
+    files = manifest.get("files")
+    if (not isinstance(files, dict) or not {"model.py", "input_layout.json", "source_values.json",
+                                               "pricing.py", "formula_families.py"} <= set(files)
+            or manifest.get("source_sha256") != contract["source_sha256"]):
+        raise runtime.CalculationBlocked("variable-input bundle manifest is incomplete or stale")
+    for filename, expected in files.items():
+        path = base / filename
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise runtime.CalculationBlocked(f"variable-input bundle asset changed: {filename}")
+    if manifest.get("variable_input_contract_sha256") != VARIABLE_CONTRACT_SHA256:
+        raise runtime.CalculationBlocked("variable-input manifest is stale")
+    if contract.get("private_fixed_literals"):
+        try:
+            fixed = json.loads((base / "private_fixed_literals.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise runtime.CalculationBlocked("private fixed literal asset is missing or malformed") from exc
+        if (fixed.get("schema_version") != "step4.private_fixed_literals.v1"
+                or fixed.get("source_sha256") != contract["source_sha256"]
+                or fixed.get("interface_sha256") != contract["interface_sha256"]
+                or fixed.get("implementation_plan_sha256") != manifest.get("implementation_plan_sha256")
+                or _canonical_hash(fixed.get("records")) != _canonical_hash(contract["private_fixed_literals"])):
+            raise runtime.CalculationBlocked("private fixed literal asset differs from the approved contract")
+    certificate = contract.get("support_certificate")
+    if certificate is not None and (manifest.get("support_certificate_sha256") != _canonical_hash(certificate)
+            or certificate.get("verified_cases_sha256") != _canonical_hash(contract.get("verified_cases"))
+            or certificate.get("active_trace_sha256") != manifest.get("trace_sha256")
+            or certificate.get("capture_artifact_sha256") != manifest.get("external_capture_artifact_sha256")):
+        raise runtime.CalculationBlocked("post-discovery support certificate is stale")
+    source_values = json.loads((base / "source_values.json").read_text(encoding="utf-8"))
+    effective = {}
+    overrides = {}
+    for name, spec in specs.items():
+        if name not in inputs:
+            if spec["required"] or spec["default_policy"]["status"] != "saved":
+                raise runtime.CalculationBlocked(f"required variable input is missing: {name}")
+            baseline = {tuple(binding["indices"]): source_values[binding["address"]]
+                        for binding in spec["bindings"]}
+            record = {"axes": spec["axes"], "values": (baseline[()] if not spec["shape"] else
+                      [baseline[(index,)] for index in range(spec["shape"][0])] if len(spec["shape"]) == 1 else
+                      [[baseline[(row, column)] for column in range(spec["shape"][1])]
+                       for row in range(spec["shape"][0])])}
+        else:
+            record = inputs[name]
+        if not isinstance(record, dict) or set(record) != {"values", "axes"}:
+            raise runtime.CalculationBlocked(f"{name} must have values and axes")
+        _checked_axes(record["axes"], spec, name)
+        effective[name] = record
+    by_id = {spec["variable_id"]: name for name, spec in specs.items()}
+    for name, spec in specs.items():
+        policy = spec["allowed_range"]
+        dependent_value = None
+        if policy["status"] == "dependent_enum":
+            dependency = by_id.get(policy["variable_id"])
+            if dependency is None or specs[dependency]["shape"]:
+                raise runtime.CalculationBlocked(f"{name} has an unsupported dependent enum contract")
+            dependent_value = effective[dependency]["values"]
+        leaves = _checked_values(effective[name]["values"], spec, name,
+                                 dependent_value=dependent_value)
+        for binding in spec["bindings"]:
+            overrides[binding["address"]] = leaves[tuple(binding["indices"])]
+    input_digest = _canonical_hash(effective)
+    for address, saved in contract["fixed_trace_source_values"].items():
+        if _canonical_hash(overrides[address]) != _canonical_hash(saved):
+            raise runtime.CalculationBlocked(f"unsupported fixed-trace formula or lookup selection: {address}")
+    policies = contract["support_domain"]["external_policy"]
+    if set(external_data) != set(policies):
+        raise runtime.CalculationBlocked("same-request external producer inputs are missing or unknown")
+    external_values = {}
+    for variable_id, policy in policies.items():
+        record = external_data[variable_id]
+        if (not isinstance(record, dict) or set(record) != {"values", "axes", "source_sha256", "version", "input_sha256"}
+                or record["source_sha256"] != policy["source_sha256"]
+                or record["version"] != policy["version"] or record["input_sha256"] != input_digest):
+            raise runtime.CalculationBlocked(f"external input is stale or bound to another request: {variable_id}")
+        spec = contract["external_specs"][variable_id]
+        _checked_axes(record["axes"], spec, variable_id)
+        _checked_values(record["values"], spec, variable_id, allow_excel_error=True)
+        external_values[variable_id] = record["values"]
+    dependency_digest = _canonical_hash(external_data)
+    cases = contract.get("verified_cases")
+    if cases is not None:
+        selected = next((case for case in cases
+                         if case["input_sha256"] == input_digest
+                         and case["dependency_sha256"] == dependency_digest), None)
+        if selected is None:
+            raise runtime.CalculationBlocked("request has no verified formula, lookup, and dependency closure")
+        if "variant_id" in selected:
+            contract = {**contract, "selected_variant": selected}
+    return overrides, external_values, input_digest, dependency_digest, contract
+
+def run_model(inputs=None, external_data=None):
     base = Path(__file__).resolve().parent
     layout = json.loads((base / "input_layout.json").read_text(encoding="utf-8"))
+    if inputs is None:
+        if external_data is not None:
+            raise runtime.CalculationBlocked("external data requires a variable-input request")
+        overrides, external_values, input_digest, dependency_digest, contract = None, None, None, None, None
+    else:
+        overrides, external_values, input_digest, dependency_digest, contract = _variable_inputs(
+            layout, inputs, external_data if external_data is not None else {})
     values = build_values(scenario_guard_sha256=SCENARIO_GUARD_SHA256, scenario_ids=SCENARIO_IDS,
-                          metadata_seed_bindings_sha256=METADATA_SEED_BINDINGS_SHA256)
-    values = run_pricing(values, FAMILY_FUNCTIONS)
+                          metadata_seed_bindings_sha256=METADATA_SEED_BINDINGS_SHA256,
+                          raw_overrides=overrides, external_overrides=external_values)
+    selected = contract.get("selected_variant") if contract is not None else None
+    if selected is None:
+        values = run_pricing(values, FAMILY_FUNCTIONS)
+    else:
+        variant_id = selected["variant_id"]
+        metadata = json.loads((base / f"variant_{variant_id}.json").read_text(encoding="utf-8"))
+        if (_canonical_hash(metadata) != selected["variant_metadata_sha256"]
+                or metadata["source_sha256"] != layout["source_sha256"]
+                or metadata["driver_sha256"] != selected["driver_sha256"]
+                or metadata["trace_sha256"] != selected["trace_sha256"]):
+            raise runtime.CalculationBlocked("selected formula variant metadata is stale")
+        if set(metadata["source_literals"]) & set(values["__source_values__"]):
+            raise runtime.CalculationBlocked("selected formula variant source literals overlap existing inputs")
+        values["__source_values__"].update(metadata["source_literals"])
+        for variable_id, shape in metadata["extra_variable_shapes"].items():
+            if variable_id in values:
+                raise runtime.CalculationBlocked("selected formula variant overwrites a logical variable")
+            values[variable_id] = _allocate(shape, f"uninitialized logical value: {variable_id}")
+        values["__names__"] = metadata["named_bindings"]
+        # The manifest hashes every variant; import only the selected driver for this request.
+        variant_families = importlib.import_module(f"formula_families_{variant_id}")
+        variant_pricing = importlib.import_module(f"pricing_{variant_id}")
+        values = variant_pricing.run_pricing(values, variant_families.FAMILY_FUNCTIONS)
+        layout = {**layout, "formula_cells": metadata["formula_cells"],
+                  "variable_shapes": {**layout["variable_shapes"], **metadata["extra_variable_shapes"]}}
     targets = {name: _json_value(runtime.at(values, variable_id, []))
                for name, variable_id in layout["target_bindings"].items()}
     calculated_variables = {}
@@ -878,6 +1705,14 @@ def run_model():
         age_axis = _json_value(values["__adapter_metadata__"][age_record["metadata_group"]])
     return {"schema_version": "step4.modular_model_result.v1", "status": "pass",
             "source_sha256": layout["source_sha256"], "targets": targets,
+            "execution_mode": "variable_input" if contract is not None else "saved_scenario",
+            "raw_inputs": overrides if contract is not None else {},
+            "input_sha256": input_digest, "dependency_sha256": dependency_digest,
+            "interface_sha256": contract["interface_sha256"] if contract is not None else None,
+            "support_domain_sha256": _canonical_hash(contract["support_domain"]) if contract is not None else None,
+            "target_axes": {provenance["selector"]: contract["outputs"]["properties"][name]["x-axes"]
+                            for name, provenance in contract["output_provenance"].items()
+                            if contract is not None and provenance.get("selector") in targets} if contract is not None else {},
             "calculated_variables": calculated_variables, "cells": cells,
             "external_inputs": external_inputs, "external_age_axis": age_axis,
             "calculated_variable_count": len(calculated_variables),
@@ -888,8 +1723,12 @@ def run_model():
 def main():
     parser = argparse.ArgumentParser(description="Run the standalone logical-variable model")
     parser.add_argument("--out", type=Path, default=Path("model_result.json"))
+    parser.add_argument("--inputs", type=Path, help="JSON request with inputs and same-request external_data")
     args = parser.parse_args()
-    result = run_model()
+    request = json.loads(args.inputs.read_text(encoding="utf-8")) if args.inputs is not None else None
+    if args.inputs is not None and (not isinstance(request, dict) or set(request) != {"inputs", "external_data"}):
+        raise runtime.CalculationBlocked("variable request must contain inputs and external_data")
+    result = run_model(request["inputs"], request["external_data"]) if args.inputs is not None else run_model()
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
 
 if __name__ == "__main__":
@@ -897,7 +1736,8 @@ if __name__ == "__main__":
 '''
     return (template.replace("__SCENARIO_IDS__", repr(scenario_ids))
             .replace("__SCENARIO_GUARD_SHA256__", repr(scenario_guard_sha256))
-            .replace("__METADATA_SEED_BINDINGS_SHA256__", repr(metadata_seed_bindings_sha256)))
+            .replace("__METADATA_SEED_BINDINGS_SHA256__", repr(metadata_seed_bindings_sha256))
+            .replace("__VARIABLE_CONTRACT_SHA256__", repr(variable_contract_sha256)))
 
 
 def build_modular_bundle_files(
@@ -927,6 +1767,9 @@ def build_modular_bundle_files(
     implementation_plan_record: dict[str, Any] | None = None,
     implementation_plan_path: Path | None = None,
     implementation_plan_sha256: str | None = None,
+    variable_interface: dict[str, Any] | None = None,
+    execution_refiner: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]],
+                                list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Compile, package, and report a source-bound logical-variable bundle."""
     coverage = validate_family_coverage(semantic_plan, source_profile, trace)
@@ -989,6 +1832,28 @@ def build_modular_bundle_files(
     names = _named_bindings(semantic_plan, index, raw_addresses)
     external_bindings = _external_bindings(semantic_plan, external_capture,
                                            external_capture_artifact_sha256, index)
+    private_fixed_literals: list[dict[str, Any]] = []
+    if variable_interface is not None and implementation_plan_record is not None:
+        expected = {"source_sha256": source_sha256, "stage3_artifact_sha256": design_sha256,
+                    "semantic_plan_sha256": semantic_plan_sha256,
+                    "source_profile_sha256": source_profile_sha256,
+                    "active_trace_sha256": trace_sha256,
+                    "external_capture_sha256": external_capture_artifact_sha256}
+        private_fixed_literals = _bound_private_fixed_literals(
+            implementation_plan_record, variable_interface, expected)
+    variant_sources: list[dict[str, Any]] = []
+    variable_contract = (_variable_contract_layout(variable_interface, raw_bindings,
+                                                    external_bindings, trace_sha256, trace, source_values,
+                                                    source_path=source_path, semantic_plan=semantic_plan,
+                                                    source_profile=source_profile, target_names=target_names,
+                                                    names=names, variant_sources=variant_sources,
+                                                    capture_artifact_sha256=external_capture_artifact_sha256,
+                                                    private_fixed_literals=private_fixed_literals,
+                                                    implementation=implementation_plan_record,
+                                                    execution_refiner=execution_refiner)
+                         if variable_interface is not None else None)
+    if variable_contract is not None and variable_contract["source_sha256"] != source_sha256:
+        raise CalculationBlocked("variable-input interface is bound to another source workbook")
     external_values = external_capture.get("external_values", {}) if external_capture else {}
     external_value_hash = external_capture.get("external_values_sha256") if external_capture else None
     external_capture_hash = external_capture.get("external_capture_sha256") if external_capture else None
@@ -1049,6 +1914,7 @@ def build_modular_bundle_files(
         "formula_cells": formula_cells,
         "named_bindings": names,
         "target_bindings": targets,
+        "variable_contract": variable_contract,
     }
     equation_families = semantic_plan.get("equation_families", [])
     equation_group_count = (len(equation_families) if isinstance(equation_families, (dict, list)) else 0)
@@ -1077,6 +1943,14 @@ def build_modular_bundle_files(
         json.dumps(layout, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     (bundle / "source_values.json").write_text(
         json.dumps(source_values, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    if private_fixed_literals:
+        (bundle / "private_fixed_literals.json").write_text(
+            json.dumps({"schema_version": "step4.private_fixed_literals.v1",
+                        "source_sha256": source_sha256,
+                        "interface_sha256": variable_contract["interface_sha256"],
+                        "implementation_plan_sha256": implementation_plan_sha256,
+                        "records": private_fixed_literals}, indent=2, sort_keys=True,
+                       ensure_ascii=False) + "\n", encoding="utf-8")
     if metadata_payload_groups:
         metadata_payload = {"schema_version": "step4.adapter_metadata.v1",
                             "source_sha256": source_sha256,
@@ -1116,10 +1990,24 @@ def build_modular_bundle_files(
     pricing_source = ("from formula_families import FAMILY_FUNCTIONS\n\n" + driver +
                       "\ndef run(values):\n    return run_pricing(values, FAMILY_FUNCTIONS)\n")
     (bundle / "pricing.py").write_text(pricing_source, encoding="utf-8")
+    for variant in variant_sources:
+        variant_id = variant["variant_id"]
+        functions = variant["compiled"]["functions"]
+        variant_family_source = "import modular_runtime as runtime\n\n" + "\n\n".join(
+            functions[name] for name in sorted(functions))
+        variant_family_source += "\n\nFAMILY_FUNCTIONS = {\n" + "\n".join(
+            f"    {name!r}: {name}," for name in sorted(functions)) + "\n}\n"
+        (bundle / f"formula_families_{variant_id}.py").write_text(
+            variant_family_source, encoding="utf-8")
+        (bundle / f"pricing_{variant_id}.py").write_text(variant["driver"], encoding="utf-8")
+        (bundle / f"variant_{variant_id}.json").write_text(
+            json.dumps(variant["metadata"], indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+            encoding="utf-8")
     metadata_seed_bindings_sha256 = _canonical_hash(metadata_seed_bindings)
     (bundle / "model.py").write_text(
         _model_source(scenario_ids, _canonical_hash(scenario_guard),
-                      metadata_seed_bindings_sha256), encoding="utf-8")
+                      metadata_seed_bindings_sha256,
+                      _canonical_hash(variable_contract) if variable_contract is not None else None), encoding="utf-8")
     (bundle / "family_manifest.json").write_text(
         json.dumps(family_manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     files = {path.name: hash_file(path) for path in sorted(bundle.iterdir()) if path.is_file()}
@@ -1147,6 +2035,7 @@ def build_modular_bundle_files(
         "source_family_count": compiled["source_family_count"],
         "semantic_equation_group_count": family_manifest["semantic_equation_group_count"],
         "compiled_variant_count": compiled["function_count"],
+        "verified_request_variant_count": len(variant_sources),
         "business_input_count": raw_business_input_count + external_business_input_count,
         "raw_business_input_count": raw_business_input_count,
         "external_input_count": sum(len(binding["addresses"]) for binding in external_bindings),
@@ -1175,7 +2064,14 @@ def build_modular_bundle_files(
         "files": files, "runtime_dependencies": ["Python standard library only"],
         "source_workbook_at_runtime": False, "project_package_at_runtime": False,
         "formula_cache_inputs": False,
-        "scope": "approved saved scenario and source-bound logical plan",
+        "scope": ("saved scenario plus exact verified request variants"
+                  if variant_sources else "approved saved scenario plus guarded fixed-trace variable inputs"
+                  if variable_contract is not None else "approved saved scenario and source-bound logical plan"),
+        "variable_input_contract_sha256": (_canonical_hash(variable_contract)
+                                           if variable_contract is not None else None),
+        "support_certificate_sha256": (_canonical_hash(variable_contract["support_certificate"])
+                                       if variable_contract is not None
+                                       and "support_certificate" in variable_contract else None),
     }
     (bundle / "model_manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")

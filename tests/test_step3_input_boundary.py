@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 
 import pytest
 
@@ -99,6 +100,34 @@ def test_source_topology_cut_and_partition_keep_values_out_of_catalog() -> None:
         assert forbidden not in serialized
 
 
+def test_upstream_exclusion_can_keep_a_named_range_column_for_runtime() -> None:
+    trace, fields, targets, binding, catalog = _boundary_fixture()
+    fields["descriptors"]["defined_names"][0]["address"] = "B1:D2"
+    exclusion = catalog["upstream_exclusions"][0]
+    exclusion["source_range"] = "Main!B1:D2"
+    exclusion["excluded_range"] = "Main!C1:C2"
+    cut = input_boundary._cut_report(trace, targets, catalog, fields, binding)
+
+    input_boundary._validate_catalog(catalog, targets, fields, cut)
+    from excel_to_act.steps.step3.profiling import _catalog_upstream_exclusions
+
+    coordinates, _records = _catalog_upstream_exclusions(catalog)
+    assert coordinates == {"main!C1", "main!C2"}
+
+    for reversed_ref in ("Main!C2:C1", "Main!D1:B1"):
+        exclusion["excluded_range"] = reversed_ref
+        with pytest.raises(ValueError, match="reversed"):
+            input_boundary._validate_catalog(catalog, targets, fields, cut)
+
+    exclusion["excluded_range"] = "Main!E1:E2"
+    with pytest.raises(ValueError, match="within the named source range"):
+        input_boundary._validate_catalog(catalog, targets, fields, cut)
+
+    exclusion["excluded_range"] = None
+    with pytest.raises(ValueError, match="within the named source range"):
+        input_boundary._validate_catalog(catalog, targets, fields, cut)
+
+
 @pytest.mark.parametrize("mutation, error", [
     ("formula_as_raw", "includes a formula cell"),
     ("promote_target", "cannot be promoted to an input"),
@@ -144,6 +173,76 @@ def test_catalog_without_historical_trace_is_reviewable_but_closure_stays_unknow
     assert cut["unrepresented_source_coordinate_count"] is None
     assert cut["input_coverage"]["status"] == "target_closure_unproven_without_topology"
     assert cut["input_coverage"]["unassigned_raw_coordinate_count"] is None
+
+
+def test_catalog_accepts_only_source_verified_stored_blank(tmp_path) -> None:
+    _trace, fields, targets, _binding, catalog = _boundary_fixture()
+    catalog.pop("topology_evidence")
+    catalog["source_records"].append({
+        "record_id": "fixed.blank", "group_id": "policy", "classification": "source_constant",
+        "source_extents": [{"sheet": "Main", "range": "K81", "source_role": "raw_source"}],
+    })
+    catalog["source_scope_notes"] = {"stored_coordinate_reconciliation": {
+        "source_copy_sha256": "", "historical_empty_coordinates": [{
+            "address": "Main!K81", "data_type": "n", "source_value_status": "stored_blank_no_literal",
+        }],
+    }}
+    inventory = {"sheets": [{"name": "Main", "cells": [{
+        "address": "A1", "source_location": {"ooxml_part": "xl/worksheets/sheet1.xml"},
+    }]}]}
+    source = tmp_path / "source.xlsx"
+
+    def write_cell(xml: str) -> None:
+        with zipfile.ZipFile(source, "w") as package:
+            package.writestr("xl/worksheets/sheet1.xml", "<worksheet xmlns='http://schemas.openxmlformats.org/spreadsheetml/2006/main'>"
+                             "<sheetData><row r='81'>" + xml + "</row></sheetData></worksheet>")
+
+    write_cell("<c r='K81' s='1'/>")
+    source_sha = input_boundary.conversion.hash_file(source)
+    catalog["source_scope_notes"]["stored_coordinate_reconciliation"]["source_copy_sha256"] = source_sha
+    augmented = input_boundary._with_verified_stored_blanks(catalog, fields, inventory, source, source_sha)
+    cut = input_boundary._source_candidate_report(targets, catalog, augmented)
+    input_boundary._validate_catalog(catalog, targets, augmented, cut)
+    assert fields != augmented
+    assert cut["retained_raw_source_coordinates"] == 3
+
+    with pytest.raises(ValueError, match="checksum"):
+        input_boundary._with_verified_stored_blanks(catalog, fields, inventory, source, "0" * 64)
+    write_cell("<c r='K81' s='1'><v>0</v></c>")
+    catalog["source_scope_notes"]["stored_coordinate_reconciliation"]["source_copy_sha256"] = input_boundary.conversion.hash_file(source)
+    with pytest.raises(ValueError, match="stored blank"):
+        input_boundary._with_verified_stored_blanks(catalog, fields, inventory, source,
+                                                     catalog["source_scope_notes"]["stored_coordinate_reconciliation"]["source_copy_sha256"])
+
+
+def test_input_boundary_rejects_malformed_stored_coordinate_before_reading_it(tmp_path, monkeypatch) -> None:
+    _trace, fields, targets, binding, catalog = _boundary_fixture()
+    catalog["source_scope_notes"] = {"stored_coordinate_reconciliation": {
+        "historical_empty_coordinates": [None],
+    }}
+    targets_path = tmp_path / "targets.json"
+    catalog_path = tmp_path / "catalog.json"
+    targets_path.write_text(json.dumps(targets), encoding="utf-8")
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    analysis = {"binding_sha256": "b" * 64}
+    monkeypatch.setattr(input_boundary.step3, "_load_context", lambda path: (
+        path, analysis, binding, tmp_path, tmp_path / "inventory.json"))
+    monkeypatch.setattr(input_boundary.conversion, "load_workflow", lambda path: (
+        path, {"source": {"step1_source_copy_path": str(tmp_path / "source.xlsx")}}))
+    monkeypatch.setattr(input_boundary, "_require_bound_workflow", lambda *args: None)
+    monkeypatch.setattr(input_boundary.conversion, "require_stage_approved", lambda *args: (None, {"artifact": {}}))
+    monkeypatch.setattr(input_boundary, "_validate_targets", lambda *args: targets)
+    monkeypatch.setattr(input_boundary, "_validate_catalog_identity", lambda *args: None)
+    monkeypatch.setattr(input_boundary.step3, "_read_stage", lambda *args: (fields, "c" * 64))
+    monkeypatch.setattr(input_boundary.step3, "_load_inventory", lambda *args: {"sheets": []})
+    appended = []
+    monkeypatch.setattr(input_boundary.conversion, "append_stage_artifact", lambda *args, **kwargs: appended.append(args))
+
+    result = input_boundary.create_input_boundary(tmp_path, tmp_path, targets_path, catalog_path)
+
+    assert result["status"] == "blocked"
+    assert result["diagnostics"][0]["message"] == "historical empty coordinate must be an object"
+    assert appended == []
 
 
 def test_historical_trace_reports_range_coordinates_absent_from_fields_separately() -> None:

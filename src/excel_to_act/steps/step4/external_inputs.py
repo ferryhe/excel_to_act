@@ -21,6 +21,27 @@ from excel_to_act.steps.conversion_workflow import (
 from excel_to_act.steps.step3.calculation import _parse_reference, capture_excel_oracle
 
 
+def validate_same_request_external_data(data: Any, contract: dict[str, Any],
+                                        input_sha256: str) -> dict[str, Any]:
+    """Keep caller supplied producer values separate from the saved native capture."""
+    policies = contract.get("support_domain", {}).get("external_policy", {})
+    if not isinstance(data, dict) or set(data) != set(policies):
+        raise ValueError("same-request external producer inputs are missing or unknown")
+    values: dict[str, Any] = {}
+    for variable_id, policy in policies.items():
+        record = data[variable_id]
+        spec = contract["external_specs"][variable_id]
+        if (not isinstance(record, dict) or record.get("input_sha256") != input_sha256
+                or record.get("source_sha256") != policy["source_sha256"]
+                or record.get("version") != policy["version"]
+                or record.get("axes") != spec["axes"]
+                or not isinstance(record.get("values"), list)
+                or len(record["values"]) != spec["shape"][0]):
+            raise ValueError(f"external producer is stale or mismatched for this request: {variable_id}")
+        values[variable_id] = record["values"]
+    return values
+
+
 def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
 

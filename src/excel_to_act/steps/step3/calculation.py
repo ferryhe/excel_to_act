@@ -859,10 +859,10 @@ def _formula_signature(formula: Any) -> tuple[tuple[str, str, str], ...] | None:
 
 
 def _matches_value(actual: Any, expected: Any, *, abs_tol: float, rel_tol: float) -> bool:
-    if isinstance(actual, dict) and "excel_error" in actual:
-        actual = actual["excel_error"]
-    if isinstance(expected, dict) and "excel_error" in expected:
-        expected = expected["excel_error"]
+    if isinstance(actual, dict) or isinstance(expected, dict):
+        return (isinstance(actual, dict) and isinstance(expected, dict)
+                and set(actual) == set(expected) == {"excel_error"}
+                and actual["excel_error"] == expected["excel_error"])
     if isinstance(actual, bool) or isinstance(expected, bool):
         return actual is expected
     if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
@@ -1168,12 +1168,16 @@ def _oracle_markdown(result: dict[str, Any]) -> str:
         rows = len(record.get("values", []))
         columns = len(record["values"][0]) if rows else 0
         lines.append(f"- `{address}`: {rows} rows by {columns} columns, with values and formulas in JSON.")
-    lines.extend(["", "Macros executed: `false`; input overrides: `none`; workbook saved: `false`."])
+    lines.extend(["", f"Macros executed: `false`; input overrides: `{len(result.get('input_overrides', []))}`; "
+                  "workbook saved: `false`."])
     return "\n".join(lines) + "\n"
 
 
 def capture_excel_oracle(workbook_path: Path, out_dir: Path, *, targets: list[str],
-                         ranges: list[str], target_shapes: dict[str, list[int]] | None = None) -> dict[str, Any]:
+                         ranges: list[str], target_shapes: dict[str, list[int]] | None = None,
+                         input_overrides: list[dict[str, Any]] | None = None,
+                         input_sha256: str | None = None,
+                         scenario_id: str | None = None) -> dict[str, Any]:
     """Capture requested cells from a private read-only copy using native Excel on Windows."""
     source = workbook_path.expanduser().resolve()
     try:
@@ -1213,6 +1217,7 @@ def capture_excel_oracle(workbook_path: Path, out_dir: Path, *, targets: list[st
         return {"schema_version": "gp.excel_oracle.v1", "tool": "step5.oracle", "status": "blocked",
                 "reason": str(exc)}
     canonical_ranges: list[dict[str, Any]] = []
+    canonical_overrides: list[dict[str, Any]] = []
     total_cells = 0
     try:
         workbook = load_workbook(source, data_only=False, read_only=True, keep_vba=False)
@@ -1239,6 +1244,38 @@ def capture_excel_oracle(workbook_path: Path, out_dir: Path, *, targets: list[st
             unknown = [name for name in canonical_targets if name not in available_names]
             if unknown:
                 raise ValueError(f"unknown defined name(s): {', '.join(unknown)}")
+            if input_overrides is not None and not isinstance(input_overrides, list):
+                raise ValueError("oracle input overrides must be a list")
+            if input_overrides:
+                if (not isinstance(input_sha256, str) or len(input_sha256) != 64
+                        or not isinstance(scenario_id, str) or not scenario_id):
+                    raise ValueError("varied oracle needs an input SHA-256 and scenario ID")
+                seen: set[str] = set()
+                for item in input_overrides:
+                    if not isinstance(item, dict) or set(item) != {"address", "value"}:
+                        raise ValueError("oracle override needs an address and typed literal value")
+                    address, value = item["address"], item["value"]
+                    if not isinstance(address, str):
+                        raise ValueError("oracle override needs a qualified literal cell")
+                    reference = _parse_reference(address, "")
+                    if reference is None or not reference.single or not reference.sheet:
+                        raise ValueError(f"oracle override is not a qualified literal cell: {address}")
+                    title = sheet_titles.get(reference.sheet.casefold())
+                    if title is None:
+                        raise ValueError(f"oracle override sheet does not exist: {reference.sheet}")
+                    local = f"{get_column_letter(reference.min_col)}{reference.min_row}"
+                    key = f"{title.casefold()}!{local}"
+                    if key in seen:
+                        raise ValueError(f"oracle override repeats a source cell: {address}")
+                    seen.add(key)
+                    cell = workbook[title][local]
+                    if cell.data_type == "f":
+                        raise ValueError(f"oracle override is a formula cell: {address}")
+                    if (value is not None and type(value) not in {str, int, float, bool}) or (
+                            type(value) is float and not math.isfinite(value)):
+                        raise ValueError(f"oracle override has an unsupported literal value: {address}")
+                    canonical_overrides.append({"sheet": title, "address": local,
+                                                "qualified_address": f"{title}!{local}", "value": value})
         finally:
             workbook.close()
     except (OSError, ValueError) as exc:
@@ -1246,7 +1283,7 @@ def capture_excel_oracle(workbook_path: Path, out_dir: Path, *, targets: list[st
                 "reason": str(exc)}
 
     resource = Path(str(files("excel_to_act.steps.step5").joinpath("native_excel_oracle.ps1")))
-    primary_addresses = ["C3", "C4", "C6", "C7", "C8", "J48", "O26"]
+    primary_addresses = [] if canonical_overrides else ["C3", "C4", "C6", "C7", "C8", "J48", "O26"]
     try:
         with tempfile.TemporaryDirectory(prefix="step3-excel-oracle-") as temp_name:
             temp_dir = Path(temp_name)
@@ -1257,7 +1294,9 @@ def capture_excel_oracle(workbook_path: Path, out_dir: Path, *, targets: list[st
             copy_hash = _hash_file(copy_path)
             request = {"source_path": str(source), "source_sha256": source_hash, "copy_path": str(copy_path),
                        "targets": canonical_targets, "target_shapes": canonical_shapes, "ranges": canonical_ranges,
-                       "primary_input_addresses": primary_addresses}
+                       "primary_input_addresses": primary_addresses,
+                       "input_overrides": canonical_overrides,
+                       "input_sha256": input_sha256, "scenario_id": scenario_id}
             request_path.write_bytes(_json_bytes(request))
             completed = subprocess.run(
                 [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
@@ -1267,6 +1306,17 @@ def capture_excel_oracle(workbook_path: Path, out_dir: Path, *, targets: list[st
                 detail = (completed.stderr or completed.stdout).strip()
                 raise CalculationBlocked(f"native Excel oracle failed: {detail[-2000:]}")
             payload = json.loads(output_path.read_text(encoding="utf-8"))
+            if canonical_overrides:
+                applied = payload.get("applied_inputs")
+                if not isinstance(applied, dict) or set(applied) != {
+                        item["qualified_address"] for item in canonical_overrides}:
+                    raise CalculationBlocked("native input readback is missing or incomplete")
+                for item in canonical_overrides:
+                    readback = applied[item["qualified_address"]]
+                    if (not isinstance(readback, dict) or readback.get("excel_error")
+                            or isinstance(readback.get("formula"), str) and readback["formula"].startswith("=")
+                            or not _matches_value(readback.get("value"), item["value"], abs_tol=0, rel_tol=0)):
+                        raise CalculationBlocked(f"native input readback mismatch: {item['qualified_address']}")
             if _hash_file(copy_path) != copy_hash or _hash_file(source) != source_hash:
                 raise CalculationBlocked("source workbook or private oracle copy changed during native recalculation")
     except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired, CalculationBlocked) as exc:
@@ -1283,7 +1333,9 @@ def capture_excel_oracle(workbook_path: Path, out_dir: Path, *, targets: list[st
     payload["status"] = "pass"
     payload["requested_targets"] = canonical_targets
     payload["requested_ranges"] = [item["qualified_address"] for item in canonical_ranges]
-    payload["input_overrides"] = []
+    payload["input_overrides"] = canonical_overrides
+    payload["input_sha256"] = input_sha256
+    payload["scenario_id"] = scenario_id
     payload["macros_executed"] = False
     target_cells = {"AnnuityDue": "H1", "PVLoading": "H2", "PVFB": "H3", "GP": "J1"}
     for name, cell in target_cells.items():

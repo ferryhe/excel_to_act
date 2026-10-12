@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 import re
@@ -19,18 +20,95 @@ from excel_to_act.steps.conversion_workflow import (
     design_question_lines,
     display_report_value,
     hash_file,
+    hash_bytes,
+    json_bytes,
     load_workflow,
     read_json,
     require_stage_approved,
 )
-from excel_to_act.steps.step3.calculation import _parse_reference
-from excel_to_act.steps.step4.implementation import load_current_implementation_plan
+from excel_to_act.steps.step3.calculation import CalculationBlocked, _parse_reference
+from excel_to_act.steps.step3.tools.interface import export_tool_interface
+from excel_to_act.steps.step4.implementation import (
+    _apply_family_execution_refinements,
+    load_current_implementation_plan,
+)
 from excel_to_act.steps.step4.modular_bundle import build_modular_bundle_files
 
 
 def _key(address: str) -> str:
     sheet, cell = address.rsplit("!", 1)
     return f"{sheet.casefold()}!{cell.replace('$', '').upper()}"
+
+
+def _bind_current_support_domain(
+    definition: dict[str, Any], *, interface_path: Path, design_sha256: str,
+    source_sha256: str, capture_path: Path, capture_sha256: str,
+    discovery_path: Path | None, trace_path: Path,
+) -> dict[str, Any] | None:
+    """Bind approved exact cases to discovery only after the approved design exists."""
+    domain = definition.get("support_domain")
+    if not isinstance(domain, dict):
+        return None
+    if definition.get("contract_readiness", {}).get("status") != "defined":
+        if domain.get("status") == "exact_cases":
+            raise CalculationBlocked("current exact-case interface contract is blocked")
+        return None
+    design = definition.get("bindings", {}).get("design", {})
+    if (not interface_path.is_file() or hash_file(interface_path) != hash_bytes(json_bytes(definition))
+            or design.get("artifact", {}).get("json_sha256") != design_sha256
+            or definition.get("bindings", {}).get("source", {}).get("workbook_sha256") != source_sha256):
+        raise CalculationBlocked("variable interface is stale for the current design or source")
+    if domain.get("trace_binding") != "post_discovery":
+        if domain.get("active_trace_sha256") == hash_file(trace_path):
+            return definition
+        if domain.get("status") == "exact_cases":
+            raise CalculationBlocked("exact-case interface is stale for the current discovery trace")
+        return None
+    receipts = design.get("review_receipts", {})
+    if (domain.get("status") != "exact_cases" or "active_trace_sha256" in domain
+            or not isinstance(domain.get("cases"), list) or not domain["cases"]
+            or any(receipts.get(name, {}).get("decision") != "approve"
+                   or receipts[name].get("artifact_sha256") != design_sha256
+                   for name in ("agent", "human"))):
+        raise CalculationBlocked("post-discovery support lacks approved exact-case design evidence")
+    if (discovery_path is None or not discovery_path.is_file() or not trace_path.is_file()
+            or not capture_path.is_file() or hash_file(capture_path) != capture_sha256):
+        raise CalculationBlocked("post-discovery support has a missing or stale current capture or trace")
+    trace_sha256 = hash_file(trace_path)
+    try:
+        discovery = read_json(discovery_path)
+        if discovery.get("active_trace_sha256") != trace_sha256:
+            raise CalculationBlocked("post-discovery support differs from the current discovery trace")
+        capture, trace = read_json(capture_path), read_json(trace_path)
+    except (OSError, ValueError) as exc:
+        raise CalculationBlocked("post-discovery support has malformed current evidence") from exc
+    if trace.get("external_capture_sha256") != capture_sha256:
+        raise CalculationBlocked("post-discovery capture differs from the current discovery trace")
+    if (discovery.get("schema_version") != "step4.discovery.v1"
+            or discovery.get("status") != "pass"
+            or discovery.get("source_sha256") != source_sha256
+            or discovery.get("stage3_artifact_sha256") != design_sha256
+            or Path(discovery.get("active_trace_path", "")).resolve() != trace_path.resolve()
+            or discovery.get("active_trace_sha256") != trace_sha256
+            or trace.get("source_sha256") != source_sha256
+            or trace.get("design_sha256") != design_sha256
+            or capture.get("schema_version") != "step4.external_inputs.v1"
+            or capture.get("status") != "pass"
+            or capture.get("source_sha256") != source_sha256
+            or capture.get("stage3", {}).get("artifact_json_sha256") != design_sha256):
+        raise CalculationBlocked("post-discovery support differs from the current design, capture, or trace")
+    bound = copy.deepcopy(definition)
+    bound["support_domain"]["active_trace_sha256"] = trace_sha256
+    bound["support_certificate"] = {
+        "schema_version": "step4.support_certificate.v1",
+        "approved_interface_sha256": hash_file(interface_path),
+        "design_sha256": design_sha256, "source_sha256": source_sha256,
+        "capture_artifact_sha256": capture_sha256,
+        "discovery_artifact_sha256": hash_file(discovery_path),
+        "active_trace_sha256": trace_sha256,
+        "case_refs_sha256": hash_bytes(json_bytes(domain["cases"])),
+    }
+    return bound
 
 
 def _require_modular_design(stage3_payload: dict[str, Any]) -> None:
@@ -343,6 +421,25 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
             or implementation_record is None or implementation_path is None
             or external_capture is None or external_capture_path is None):
         raise ValueError("current modular generation inputs were not loaded")
+    variable_interface = None
+    variable_interface_path = None
+    exact_cases = design.get("tool_interface", {}).get("support_domain", {}).get("status") == "exact_cases"
+    if exact_cases or load_workflow(workflow_root)[1].get("tool_interfaces"):
+        exported = export_tool_interface(workflow_root)
+        if exported.get("status") == "pass":
+            candidate_path = workflow_root / exported["artifact"]["json"]
+            variable_interface = _bind_current_support_domain(
+                read_json(candidate_path), interface_path=candidate_path,
+                design_sha256=stage3_payload["_artifact_sha256"], source_sha256=source_hash,
+                capture_path=external_capture_path,
+                capture_sha256=external_capture_artifact_sha256,
+                discovery_path=discovery_path, trace_path=trace_path)
+            if variable_interface is not None:
+                variable_interface_path = candidate_path
+            elif exact_cases:
+                raise CalculationBlocked("current approved exact-case interface has no verified support domain")
+        elif exact_cases:
+            raise CalculationBlocked("current approved exact-case interface cannot be exported")
     built = build_modular_bundle_files(
         semantic_plan=semantic_plan, source_profile=source_profile, trace=trace,
         raw_source_values=raw_values, source_path=source_path,
@@ -359,6 +456,8 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
         implementation_plan_record=implementation_record,
         implementation_plan_path=implementation_path,
         implementation_plan_sha256=implementation_sha256,
+        variable_interface=variable_interface,
+        execution_refiner=_apply_family_execution_refinements,
     )
     built.update({"discovery_path": discovery_path if discovery is not None else None,
                   "input_files": {"semantic_plan": semantic_plan_path,
@@ -367,6 +466,8 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
                                   "implementation_plan": implementation_path,
                                   "implementation_input": Path(implementation_record["implementation_input"]["path"]),
                                   "external_capture": external_capture_path}})
+    if variable_interface_path is not None:
+        built["input_files"]["tool_interface"] = variable_interface_path
     built["oracle_ranges"] = _modular_oracle_ranges(built["manifest"])
     return built
 
@@ -422,6 +523,7 @@ def generate_model(workflow_dir: Path, trace_path: Path | None = None) -> dict[s
                    "status": "ready_for_review", "workflow": str(root),
                    "source_sha256": built["source_hash"], "design_sha256": stage3_revision["artifact"]["json_sha256"],
                    "scenario_ids": built["manifest"]["scenario_ids"],
+                   "variable_input_contract_sha256": built["manifest"].get("variable_input_contract_sha256"),
                    "trace_sha256": built["trace_hash"],
                    "active_trace": {"path": str(built["trace_path"]), "sha256": hash_file(built["trace_path"]),
                                     "source": built["trace_source"]},
@@ -703,6 +805,9 @@ def _generation_markdown(
         f"- Generated entry point: [model.py](<{Path(entry_point).as_posix()}>); manifest: [model_manifest.json](<{Path(bundle_manifest).as_posix()}>).",
         "- Supported run command from the generated bundle directory: `python model.py --out RESULT.json`.",
     ])
+    if payload.get("variable_input_contract_sha256"):
+        lines.append("- Approved fixed-trace input route: `python model.py --inputs REQUEST.json --out RESULT.json`; "
+                     "the request contains `inputs` and `external_data` objects.")
     if design_link:
         lines.append(f"- Bound Step 3 design: [analysis_design.json](<{Path(design_link).as_posix()}>).")
     lines.extend([
