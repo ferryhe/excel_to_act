@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from click.utils import strip_ansi
 from openpyxl import Workbook
 import pytest
 from typer.testing import CliRunner
@@ -125,8 +126,10 @@ def test_exact_case_profile_plan_and_check_are_supported_cli_routes(tmp_path: Pa
     plan_help = runner.invoke(app, ["step3", "plan", "--help"])
     check_help = runner.invoke(app, ["step3", "check", "--help"])
     assert profile_help.exit_code == plan_help.exit_code == check_help.exit_code == 0
-    assert "--case-manifest" in profile_help.stdout and "--case-id" in profile_help.stdout
-    assert "--case-out" in plan_help.stdout and "--case-plan" in check_help.stdout
+    profile_text = strip_ansi(profile_help.stdout)
+    assert "--case-manifest" in profile_text and "--case-id" in profile_text
+    assert "--case-out" in strip_ansi(plan_help.stdout)
+    assert "--case-plan" in strip_ansi(check_help.stdout)
     missing_case_id = runner.invoke(app, ["step3", "profile", "--analysis", str(tmp_path),
                                           "--case-manifest", str(_write(tmp_path / "manifest.json", {})["path"]),
                                           "--out", str(tmp_path / "out")])
