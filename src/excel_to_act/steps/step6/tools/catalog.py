@@ -8,6 +8,7 @@ def tool_catalog() -> dict[str, Any]:
         {"name": "step6.agent", "command": "step6 agent", "outputs": ["Stage 6 delivery contract"]},
         {"name": "step6.tools", "command": "step6 tools", "outputs": ["Stage 6 commands"]},
         {"name": "workflow.attach", "command": "workflow attach --parent PARENT_DIR --out NEW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256",
+         "inputs": {"parent": "production conversion.workflow.v1 manifest with stage keys 1–6 and current approved Stages 1–5"},
          "outputs": ["separate seven-stage workflow pinned to approved parent Stages 1–5 and the separately verified comparison"]},
         {"name": "workflow.bind-comparison", "command": "workflow bind-comparison --workflow DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256",
          "outputs": ["separately verified exact comparison bound after native Stage 5 approval"]},

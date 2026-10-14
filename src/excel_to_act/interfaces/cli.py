@@ -306,7 +306,8 @@ def workflow_status_command(
 
 @workflow_app.command("attach")
 def workflow_attach(
-    parent: Path = typer.Option(..., "--parent", exists=True, file_okay=False),
+    parent: Path = typer.Option(..., "--parent", exists=True, file_okay=False,
+                                help="Production conversion.workflow.v1 parent with approved Stages 1–5"),
     out: Path = typer.Option(..., "--out", help="New separate seven-stage workflow root"),
     comparison: Path = typer.Option(..., "--comparison", exists=True, dir_okay=False,
                                     help="Approved current native comparison JSON"),

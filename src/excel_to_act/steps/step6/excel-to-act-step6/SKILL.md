@@ -5,7 +5,7 @@ description: "Prepare, review, deliver, or revoke the exact Step 6 internal tool
 
 # Excel-to-Act Step 6
 
-Read `excel-to-act step6 agent`, `excel-to-act step6 tools`, and `excel-to-act workflow status --workflow DIR`. Confirm that Stages 1–5 are current and approved and the comparison matches the exact request. For an approved exact-case Step 5 report, use that report as the comparison for a covered request; other comparisons require an independently verified binding.
+Read `excel-to-act step6 agent`, `excel-to-act step6 tools`, and `excel-to-act workflow status --workflow DIR`. Confirm that Stages 1–5 are current and approved and the comparison matches the exact request. For an approved exact-case Step 5 report, use that report as the comparison for a covered request; other comparisons require an independently verified binding. Attachment accepts a production parent with manifest schema `conversion.workflow.v1`, stage keys `1`–`6`, and approved Stages 1–5.
 
 Use `excel-to-act step6 candidate --workflow DIR --version VERSION --request REQUEST.json --comparison COMPARISON.json`. Review its immutable exact JSON/Markdown pair, package inventory, interface, dependencies, fixed assets, internal version and permission, and isolated smoke. A passing smoke is not acceptance.
 

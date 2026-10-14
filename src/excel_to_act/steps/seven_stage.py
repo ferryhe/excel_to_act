@@ -149,7 +149,7 @@ def create_attached_workflow(root: Path, parent: Path, comparison: Path,
     root = root.expanduser().resolve()
     parent_root, old = load_workflow(parent)
     if old["schema_version"] != "conversion.workflow.v1":
-        raise ValueError("parent must be a six-stage workflow")
+        raise ValueError("parent workflow.json must use schema conversion.workflow.v1")
     if root == parent_root or root.exists() and any(root.iterdir()):
         raise ValueError("seven-stage root must be new and separate from its parent")
     comparison = comparison.expanduser().resolve()

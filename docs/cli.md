@@ -1,6 +1,6 @@
 # CLI guide for the seven-stage conversion workflow
 
-Start a seven-stage workflow with `step1 report --run FINAL_RUN_DIR --out WORKFLOW_DIR`. Each stage produces a JSON artifact and a Markdown handoff for Agent review followed by an explicit human decision. To use approved parent evidence, attach a separate root after verifying that the compatible parent's source, artifacts, and Stage 1–5 approvals are current:
+Start a seven-stage workflow with `step1 report --run FINAL_RUN_DIR --out WORKFLOW_DIR`. Each stage produces a JSON artifact and a Markdown handoff for Agent review followed by an explicit human decision. `workflow attach` requires a parent `workflow.json` with `schema_version: conversion.workflow.v1`, stage keys `1`–`6`, and `mode: production`. Its source, artifacts, and Stage 1–5 approvals must be current. Attach that evidence to a separate root:
 
 ```powershell
 excel-to-act workflow attach --parent PARENT_DIR --out NEW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256

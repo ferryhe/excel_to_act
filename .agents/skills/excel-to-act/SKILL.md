@@ -31,7 +31,7 @@ For the first source checkpoint, pass the promoted directory returned by `step1 
 
 For the implemented `exact_cases` route, use `step3 produce-exact-cases` to verify already captured native evidence and calculate one source trace per request. It does not call Excel or create an approval. Each case needs its own profile and semantic plan/check. In Step 5, use `validate --inputs REQUEST`, then `oracle --validation THAT_VALIDATION`, then `reconcile` for that same request. Only `finalize-cases` with all 32 distinct passing approved case receipts produces the formal Step 5 checkpoint. Do not replace this with one saved-scenario pass or share another request's external data or comparison.
 
-To use approved parent evidence, `workflow attach` creates a separate seven-stage root pinned to a compatible parent and independently verified comparison digest. The CLI checks the parent's format, source, artifacts, and Stage 1–5 approvals. Inherited Stages 1–5 are read-only; the attached workflow requires its own Step 6 and Step 7 reviews.
+To use approved parent evidence, `workflow attach` requires a parent `workflow.json` with `schema_version: conversion.workflow.v1`, stage keys `1`–`6`, and `mode: production`. The CLI checks the source, artifacts, and current Stage 1–5 approvals, then pins the exact parent and independently verified comparison digest in a separate seven-stage root. Inherited Stages 1–5 are read-only; the attached workflow requires its own Step 6 and Step 7 reviews.
 
 ## Preserve acceptance and evidence
 

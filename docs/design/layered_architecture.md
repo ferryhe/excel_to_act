@@ -1,6 +1,6 @@
 # Current architecture and evidence boundaries
 
-The seven-stage workflow carries source-bound artifacts and reviews from extraction to internal delivery and the final report. A native workflow produces and reviews its own evidence. An attached workflow pins compatible, approved parent Stage 1–5 evidence as read-only input and reviews its own Stages 6–7. The stage-local `agent.md` defines the Agent contract; `tools/` provides the executable catalog used by `excel-to-act stepN tools`.
+The seven-stage workflow carries source-bound artifacts and reviews from extraction to internal delivery and the final report. A native workflow produces and reviews its own evidence. An attached workflow pins approved Stage 1–5 evidence from a production `conversion.workflow.v1` parent as read-only input and reviews its own Stages 6–7. The stage-local `agent.md` defines the Agent contract; `tools/` provides the executable catalog used by `excel-to-act stepN tools`.
 
 Implementation paths in the tables are relative to `src/excel_to_act/` unless they begin with another repository path.
 
