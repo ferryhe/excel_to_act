@@ -1,6 +1,6 @@
 # Step 4 Agent Contract: Generate the Approved Python Model
 
-A new native v2 workflow has writable Stage 1–5 checkpoints and requires current Agent and actual-human review. Legacy v1 checkpoints and attached-v2 inherited Stage 1–5 evidence are read-only. Legacy TypeSafe delegation does not authorize current v2 reviews.
+A native seven-stage workflow has writable checkpoints with Agent and actual-human review. Attached workflows inherit approved Stage 1–5 evidence as read-only input and review their own Stages 6–7.
 
 Step 4 emits code for the source-bound design accepted at Stage 3 and runs a bounded standalone smoke check. It does not compare results with Excel. It requires both current Stage 3 confirmations under the active workflow's review policy.
 
@@ -22,7 +22,7 @@ The modular emitter keeps business input variables, accepted external vectors, a
 
 The no-argument entry retains the saved Step 3 guards, including every declared raw input coordinate. A separate `model.py --inputs REQUEST.json` route is emitted only with a complete current Step 3 interface and an approved fixed-trace support domain; it validates logical input values, axes, ranges, source bindings, same-request external values, and bundle files before calculation. The request has `inputs` and `external_data` objects. A different source or unsupported trace/producer change needs its own reviewed design and bindings. Check workbook-specific assumptions before promising reuse. A generated bundle is not a general workbook converter.
 
-Do not alter the source workbook or earlier stage artifacts. The smoke does not prove Excel equivalence; Stage 5 separately validates the generated code and a fresh native Excel result. Review the exact Stage 4 report pair and bundle, then record Agent approval with `workflow confirm --workflow DIR --stage 4 --reviewer agent --decision approve --message TEXT`. Record actual-human approval only after an explicit response. The current v2 CLI disables legacy TypeSafe delegation and live TypeSafe review. Stage 5 cannot start until both required decisions are current.
+Do not alter the source workbook or earlier stage artifacts. The smoke does not prove Excel equivalence; Stage 5 separately validates the generated code and a fresh native Excel result. Review the exact Stage 4 report pair and bundle, then record Agent approval with `workflow confirm --workflow DIR --stage 4 --reviewer agent --decision approve --message TEXT`. Record actual-human approval only after an explicit response. The CLI disables TypeSafe delegation and live TypeSafe review. Stage 5 cannot start until both required decisions are current.
 
 A rejection from any reviewer makes that revision ineligible for later approvals; create a replacement artifact and obtain fresh Agent and actual-human decisions.
 
@@ -32,9 +32,9 @@ Treat `input/` as the source Excel area and `output/` as the home for each new s
 
 Read `stepN tools` and choose the existing actions that answer this case's open questions. Explore from the source and current bound evidence, inspect each action's checks and outputs, then prepare the paired machine-readable JSON and reader-facing Markdown handoff. Review all files named in the handoff and confirm their source and upstream bindings before asking for a decision. Do not continue when a required check fails or an input is stale.
 
-Before entering a stage, run `workflow status` and verify that the stage is currently permitted and every required upstream decision and artifact is current. A successful tool check, report creation, draft CLI action, or clarification does not itself approve a stage or advance the workflow. Keep legacy standalone source-exploration APIs available for discovery; they do not create a workflow approval.
+Before entering a stage, run `workflow status` and verify that the stage is currently permitted and every required upstream decision and artifact is current. A successful tool check, report creation, draft CLI action, or clarification does not itself approve a stage or advance the workflow. Use standalone source-exploration APIs for discovery; record workflow approvals through the source-bound ledger.
 
-The current review order is Agent first, then the actual human on the exact current JSON/Markdown pair. `workflow confirm` records approvals; use `workflow reject` with an explicit `--return-to` route for rejection. Record the human decision only after an explicit response. Legacy TypeSafe delegation and live review commands are disabled in v2. The Step 3 input-boundary checkpoint always requires an actual human decision.
+The current review order is Agent first, then the actual human on the exact current JSON/Markdown pair. `workflow confirm` records approvals; use `workflow reject` with an explicit `--return-to` route for rejection. Record the human decision only after an explicit response. TypeSafe delegation and live review commands are disabled. The Step 3 input-boundary checkpoint always requires an actual human decision.
 
 Ask the user when target, scope, input kind, axis, units, or business interpretation is materially unresolved. Keep unknown facts marked as unknown; do not turn planning into measured execution or claim checks that did not run.
 

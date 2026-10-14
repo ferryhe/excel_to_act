@@ -2185,7 +2185,7 @@ def test_step3_design_reader_front_shows_field_groups_order_and_question_disposi
     assert "Recorded calculation order: False." in front
     assert "**Q_UNKNOWN** — What is the unit? Recorded answer: Not recorded; recorded disposition/status: Not recorded." in front
     assert "actual human reviews it after an explicit response" in front
-    assert "live TypeSafe review commands are disabled in v2" in front
+    assert "live TypeSafe review commands are disabled" in front
     assert "unless a valid, explicitly scoped TypeSafe delegation applies" not in front
     assert json.dumps(payload, sort_keys=True) == before
     design_payload["open_questions"] = None

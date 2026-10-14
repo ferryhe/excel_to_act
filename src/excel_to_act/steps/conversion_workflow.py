@@ -155,22 +155,22 @@ def review_tool_entries(stage: int) -> list[dict[str, Any]]:
     if stage == 3:
         entries.append({"name": "workflow.delegate",
                         "command": "workflow delegate --workflow DIR --authorization AUTH.json",
-                        "inputs": {"authorization": "new publication-scoped authorization required; legacy delegation is disabled"},
+                        "inputs": {"authorization": "TypeSafe delegation is disabled"},
                         "outputs": ["blocked; no delegation is registered"],
                         "next": ["workflow.status"]})
     if stage >= 3:
         entries.append({"name": "workflow.typesafe",
                         "command": f"workflow typesafe --workflow DIR --stage {stage} --request REQUEST.json",
-                        "inputs": {"request": "new publication-scoped authorization required; TypeSafe route is disabled"},
+                        "inputs": {"request": "TypeSafe review is disabled"},
                         "outputs": ["blocked; no TypeSafe review is recorded"],
                         "next": ["workflow.confirm", "workflow.reject"]})
     for entry in entries:
         entry["availability"] = (
-            "current status for native v2, attached v2, and legacy v1"
+            "current status for native workflows, attached workflows, and saved parent evidence"
             if entry["name"] == "workflow.status" else
-            "disabled pending new publication-scoped authorization"
+            "disabled; use Agent and actual-human review"
             if entry["name"] in {"workflow.delegate", "workflow.typesafe"} else
-            "native v2 Stage 1–5 only; attached v2 inherited stages and legacy v1 are read-only")
+            "native workflow Stage 1–5 only; inherited stages and saved parent evidence are read-only")
     return entries
 
 
@@ -224,7 +224,7 @@ def load_workflow(root: Path) -> tuple[Path, dict[str, Any]]:
 def workflow_origin(manifest: dict[str, Any]) -> str:
     if manifest.get("schema_version") == "conversion.workflow.v1":
         if "origin" in manifest or "parent" in manifest:
-            raise ValueError("legacy workflow has an invalid origin")
+            raise ValueError("parent workflow has an invalid origin")
         return "legacy"
     if manifest.get("schema_version") != "conversion.workflow.v2":
         raise ValueError("workflow has an unsupported schema")
@@ -243,7 +243,7 @@ def workflow_origin(manifest: dict[str, Any]) -> str:
 
 def _require_writable(manifest: dict[str, Any]) -> None:
     if manifest["schema_version"] == "conversion.workflow.v1":
-        raise ValueError("legacy six-stage workflows are read-only")
+        raise ValueError("parent workflows are read-only")
 
 
 def _require_upstream_writable(manifest: dict[str, Any]) -> None:
@@ -332,7 +332,7 @@ def register_review_delegation(root: Path, authorization_path: Path) -> dict[str
     root, manifest = load_workflow(root)
     _require_writable(manifest)
     if manifest["schema_version"] == "conversion.workflow.v2":
-        raise ValueError("legacy TypeSafe delegation cannot authorize seven-stage publication")
+        raise ValueError("TypeSafe delegation is disabled for seven-stage workflows")
     if manifest.get("mode") == "synthetic_fixture":
         raise ValueError("TypeSafe delegation cannot be registered for a synthetic workflow")
     path = authorization_path.expanduser().resolve()
@@ -387,7 +387,7 @@ def current_revision(manifest: dict[str, Any], stage: int) -> dict[str, Any] | N
         if parent_manifest["schema_version"] != "conversion.workflow.v1" or hash_file(
             parent_root / MANIFEST_NAME
         ) != parent.get("manifest_sha256"):
-            raise ValueError("pinned legacy parent changed or is missing")
+            raise ValueError("pinned parent changed or is missing")
         return current_revision(parent_manifest, stage)
     stage_value = manifest.get("stages", {}).get(str(stage), {})
     revision = stage_value.get("current_revision", 0)
@@ -1273,7 +1273,7 @@ def workflow_status(root: Path) -> dict[str, Any]:
         from excel_to_act.steps.seven_stage import v2_status
         return v2_status(root, manifest)
     stages = [stage_status(root, manifest, stage) for stage in STAGES]
-    stages[5]["meaning"] = "legacy final report"
+    stages[5]["meaning"] = "saved final report"
     next_stage: int | None = None
     for stage, state in zip(STAGES, stages):
         if stage == 1 and state["status"] in {"approved", "simulated_approved"}:

@@ -874,7 +874,7 @@ def _design_markdown(
         link = boundary_link or boundary.get("artifact", {}).get("json", "Not recorded")
         lines.append(f"- Confirmed input-boundary JSON: [input_boundary.json](<{Path(link).as_posix()}>).")
     lines.extend([
-        "- Next: the Agent reviews this exact JSON/Markdown pair first. After Agent PASS, the actual human reviews it after an explicit response. Legacy TypeSafe delegation and live TypeSafe review commands are disabled in v2.",
+        "- Next: the Agent reviews this exact JSON/Markdown pair first. After Agent PASS, the actual human reviews it after an explicit response. TypeSafe delegation and live TypeSafe review commands are disabled.",
         "- A question that clarifies material target, scope, input kind, axis, units, or business meaning is not a final approval. To reject, route to the responsible current or earlier Step and refresh affected evidence.",
         "- Report creation status and Agent PASS are technical/review states; formal human acceptance remains in the current ledger.", "",
         "## Detailed design evidence", "",

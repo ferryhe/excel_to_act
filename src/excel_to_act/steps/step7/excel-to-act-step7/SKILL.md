@@ -9,7 +9,7 @@ Use this skill when a user asks for the final model-conversion handover report f
 
 ## Use the workflow evidence
 
-Read `excel-to-act step7 agent`, `excel-to-act step7 tools`, and `excel-to-act workflow status --workflow DIR` before acting. Inspect the current reviewer pair and the exact Step 6 acceptance and delivery record. Legacy delegation cannot authorize new publication. Use current accepted Stage 1–6 artifacts and exact delivery readback. Do not assume a delegation exists or carry a reviewer pair, threshold, scenario, target, input count, worksheet, or approval over from another workflow.
+Read `excel-to-act step7 agent`, `excel-to-act step7 tools`, and `excel-to-act workflow status --workflow DIR` before acting. Inspect the current reviewer pair and the exact Step 6 acceptance and delivery record. Use current accepted Stage 1–6 artifacts and exact delivery readback. Do not assume a delegation exists or carry a reviewer pair, threshold, scenario, target, input count, worksheet, or approval over from another workflow.
 
 When report creation is requested and the current workflow permits it, use `excel-to-act step7 report --workflow DIR`. It writes a new report revision; it does not approve or reject that revision. Do not regenerate reports or record decisions merely because this skill is being installed, read, or used as a reference. This skill does not grant approval, delegation, or external-action authority.
 

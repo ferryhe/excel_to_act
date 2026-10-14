@@ -34,6 +34,6 @@ def tool_catalog() -> dict[str, Any]:
             "workflow confirm --workflow DIR --stage 3 --reviewer agent|human --decision approve --message TEXT",
             "workflow reject --workflow DIR --stage 3 --reviewer agent|human --return-to 1|2|3 --message TEXT",
             "The human receipt may be recorded only after an explicit user response; do not infer or fabricate approval.",
-            "The input-boundary subgate always requires both Agent and actual human approval. The current final design also requires Agent and actual human approval. Legacy delegation and TypeSafe CLI routes are disabled pending new publication-scoped authorization.",
+            "The input-boundary subgate always requires both Agent and actual human approval. The current final design also requires Agent and actual human approval. TypeSafe delegation and live TypeSafe review commands are disabled.",
         ],
     }

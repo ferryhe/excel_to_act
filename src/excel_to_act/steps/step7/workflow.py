@@ -1,4 +1,4 @@
-"""Final conversion report copied from the legacy Step 6 renderer."""
+"""Final conversion report from accepted workflow and internal-delivery evidence."""
 
 from __future__ import annotations
 
@@ -139,7 +139,7 @@ def create_conversion_report(workflow_dir: Path) -> dict[str, Any]:
     try:
         report_root, report_manifest = load_workflow(workflow_dir)
         if report_manifest["schema_version"] != "conversion.workflow.v2":
-            raise ValueError("Step 7 report requires a seven-stage workflow; legacy Step 6 is read-only")
+            raise ValueError("Step 7 report requires a seven-stage workflow")
         delivery = require_delivery(report_root)
         root, manifest = require_upstream(report_root, report_manifest)
         workflow, stage5_revision = require_stage_approved(root, 5)
@@ -377,7 +377,7 @@ def create_conversion_report(workflow_dir: Path) -> dict[str, Any]:
 
 
 def _option_selected(option: dict[str, Any]) -> bool:
-    """Accept the current selection field and legacy Step 3 drafts."""
+    """Read the bound selection from supported Step 3 draft shapes."""
     return option.get("selected") is True or option.get("selected_for_draft") is True
 
 

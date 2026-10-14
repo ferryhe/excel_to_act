@@ -54,7 +54,7 @@ def test_bundle_runtime_hashes_and_distribution_scope(tmp_path: Path, with_licen
     with ZipFile(result) as archive:
         files = {name.removeprefix("excel-to-act/"): archive.read(name) for name in archive.namelist()}
     manifest = json.loads(files.pop("release.json"))
-    assert manifest["status"] == "release_candidate"
+    assert manifest["status"] == "packaged"
     assert manifest["license_recorded"] is with_license
     assert manifest["files"] == {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
     assert files[manifest["runtime_wheel"]] == wheel.read_bytes()

@@ -851,7 +851,7 @@ def _generation_markdown(
     if design_link:
         lines.append(f"- Bound Step 3 design: [analysis_design.json](<{Path(design_link).as_posix()}>).")
     lines.extend([
-        "- Next: Agent reviews this exact JSON/Markdown pair first, then the actual human reviews it after an explicit response. Legacy TypeSafe delegation and live TypeSafe review commands are disabled in v2. A successful compile/smoke is technical evidence; it is not Agent PASS or human acceptance.",
+        "- Next: Agent reviews this exact JSON/Markdown pair first, then the actual human reviews it after an explicit response. TypeSafe delegation and live TypeSafe review commands are disabled. A successful compile/smoke is technical evidence; it is not Agent PASS or human acceptance.",
         "- To reject: route the decision to the responsible current or earlier Step, retain this revision, refresh affected reports, and check the ledger before continuing.",
         "- Report status `ready_for_review` describes generated evidence. Current formal acceptance is read from the linked workflow ledger.", "",
         "## Detailed generation evidence", "",

@@ -1,4 +1,4 @@
-"""Bundle the repository skill with a matching wheel for local release review."""
+"""Build a versioned skill distribution with its matching Python runtime."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def build_skill(root: Path, wheel: Path, out: Path) -> Path:
         payload[f"{skill_path}/LICENSE"] = license_path.read_bytes()
     payload["plugin.json"] = (json.dumps(plugin, indent=2) + "\n").encode()
     manifest = {"schema_version": "excel-to-act.skill-release.v1", "version": version,
-                "status": "release_candidate", "license_recorded": license_path.is_file(),
+                "status": "packaged", "license_recorded": license_path.is_file(),
                 "runtime_wheel": f"{skill_path}/runtime/{wheel.name}",
                 "files": {name: hashlib.sha256(data).hexdigest()
                           for name, data in sorted(payload.items())}}

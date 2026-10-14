@@ -5,7 +5,7 @@ description: "Convert .xlsx/.xlsm models into standalone Python tools with the E
 
 # Excel to Act
 
-Use the installed `excel-to-act` CLI as the producer and acceptance ledger. This skill coordinates its existing tools; it does not supply a second compiler, report renderer, or approval system.
+Use the installed `excel-to-act` CLI to produce artifacts, render reports, and record acceptance. This skill coordinates the seven-stage workflow and its review gates.
 
 ## Check the runtime and source
 
@@ -31,13 +31,13 @@ For the first source checkpoint, pass the promoted directory returned by `step1 
 
 For the implemented `exact_cases` route, use `step3 produce-exact-cases` to verify already captured native evidence and calculate one source trace per request. It does not call Excel or create an approval. Each case needs its own profile and semantic plan/check. In Step 5, use `validate --inputs REQUEST`, then `oracle --validation THAT_VALIDATION`, then `reconcile` for that same request. Only `finalize-cases` with all 32 distinct passing approved case receipts produces the formal Step 5 checkpoint. Do not replace this with one saved-scenario pass or share another request's external data or comparison.
 
-For migration, `workflow attach` creates a separate seven-stage root pinned to an approved legacy parent and independently verified comparison digest. Legacy v1 and attached inherited Stages 1–5 are read-only. Their old Step 6 report or delegation is not a new internal-delivery approval.
+To use approved parent evidence, `workflow attach` creates a separate seven-stage root pinned to a compatible parent and independently verified comparison digest. The CLI checks the parent's format, source, artifacts, and Stage 1–5 approvals. Inherited Stages 1–5 are read-only; the attached workflow requires its own Step 6 and Step 7 reviews.
 
 ## Preserve acceptance and evidence
 
 - A technical `pass`, generated report, or successful package invocation is evidence for review, not approval. Read `workflow status` before transitions.
-- Review the exact current JSON/Markdown pair as Agent first. Record a human receipt only for an explicit human response on that same pair. The input boundary always needs an actual human decision; current v2 also requires actual-human decisions at its other stage gates. Do not synthesize, infer, or reuse approvals, including from test fixtures.
-- Use `workflow confirm` and `workflow reject --return-to STAGE` for decisions. Retain rejected revisions and historical packages. Source, artifact, input, or upstream revisions can invalidate downstream acceptance; refresh affected evidence rather than editing an approved report.
+- Review the exact current JSON/Markdown pair as Agent first. Record a human receipt only for an explicit human response on that same pair. Every stage gate and the separate input-boundary checkpoint require actual-human decisions. Do not synthesize, infer, or reuse approvals, including from test fixtures.
+- Use `workflow confirm` and `workflow reject --return-to STAGE` for decisions. Preserve the review and package audit trail. Source, artifact, input, or upstream revisions can invalidate downstream acceptance; refresh affected evidence rather than editing an approved report.
 - Formula caches are never model inputs, and extraction does not execute VBA. Keep declared raw inputs, formula-derived external data, source metadata, and calculation results distinct.
 - Describe only measured scenario coverage, errors, tolerances, and limits. Do not infer business correctness, all-configuration support, a feedback solver, GPU support, or actuarial certification from numerical agreement.
 - This skill authorizes no public upload, production activation, external distribution, or release. Step 6 concerns the separately approved internal model package. Installing or preparing this skill must not start a conversion, write a workflow decision, or deliver a model.

@@ -23,7 +23,7 @@ def create_conversion_report(workflow_dir: Path) -> dict[str, Any]:
     try:
         root, manifest = load_workflow(workflow_dir)
         if manifest["schema_version"] != "conversion.workflow.v1":
-            raise ValueError("legacy Step 6 report requires a six-stage workflow; use Step 7 for v2")
+            raise ValueError("Step 6 report is unavailable for this workflow; use Step 7 after accepted delivery")
         _require_writable(manifest)
         workflow, stage5_revision = require_stage_approved(root, 5)
         stage_refs: dict[str, Any] = {}
@@ -225,7 +225,7 @@ def create_conversion_report(workflow_dir: Path) -> dict[str, Any]:
 
 
 def _option_selected(option: dict[str, Any]) -> bool:
-    """Accept the current selection field and legacy Step 3 drafts."""
+    """Read the bound selection from supported Step 3 draft shapes."""
     return option.get("selected") is True or option.get("selected_for_draft") is True
 
 

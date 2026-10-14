@@ -345,7 +345,7 @@ def discover_active_trace(workflow_dir: Path) -> dict[str, Any]:
                 "Discovery used formula text and raw literals only. External vectors came from the separately bound native FullRebuild capture; discovery itself did not call Excel.",
                 (f"The active formula set is a strict subset of {payload['counts']['candidate_formula_member_count']} reviewed candidates; no formula caches were read."
                  if payload["counts"]["candidate_formula_member_count"] is not None
-                 else "This legacy-compatible trace has no separately bound static candidate profile; no formula caches were read."),
+                 else "This trace has no separately bound static candidate profile; no formula caches were read."),
                 "This trace does not prove Excel equivalence.", "",
                 "## Requested target results", ""]
         rows.extend(f"- `{target_id}` · `{record['selector']}` · `{json.dumps(record['value'], ensure_ascii=False, sort_keys=True)}`"

@@ -1,15 +1,15 @@
 # CLI guide for the seven-stage conversion workflow
 
-The current CLI reads six-stage `conversion.workflow.v1` status and saved artifacts but rejects every write to it. Sections 1–5 below are usable for a new native v2 workflow created by `step1 report --run FINAL_RUN_DIR --out WORKFLOW_DIR`; its Stage 1–5 reports require their own Agent and actual-human decisions. Those writes cannot run against a v1 parent or inherited Stages 1–5 in attached v2. Attach a separate root only when the parent source and Stage 1–5 approvals are current:
+Start a seven-stage workflow with `step1 report --run FINAL_RUN_DIR --out WORKFLOW_DIR`. Each stage produces a JSON artifact and a Markdown handoff for Agent review followed by an explicit human decision. To use approved parent evidence, attach a separate root after verifying that the compatible parent's source, artifacts, and Stage 1–5 approvals are current:
 
 ```powershell
-excel-to-act workflow attach --parent LEGACY_DIR --out NEW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256
+excel-to-act workflow attach --parent PARENT_DIR --out NEW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256
 excel-to-act workflow status --workflow NEW_DIR
 ```
 
-Supply `APPROVED_SHA256` from a separate comparison approval or verification record, independently of the file being attached. The new root pins the exact parent manifest and comparison identity. Old Stage 6 reports, receipts, and TypeSafe delegation have no new publication authority. The Step 3 input-boundary decision remains an actual human decision.
+Supply `APPROVED_SHA256` from a separate comparison approval or verification record, independently of the file being attached. The attached root pins the exact parent manifest and comparison identity. Its inherited Stages 1–5 are read-only; its own Stages 6–7 require separate reviews.
 
-The historical six-stage CLI wrote a JSON artifact and a Markdown report at each stage. By default, each stage requires a separate Agent and human decision for the current report pair; an explicitly authorized TypeSafe review may replace the human reviewer for eligible later design and Stages 4–6. The Step 3 input-catalog subgate always requires an actual Agent and human decision, regardless of delegation. A TypeSafe receipt may be retained as a separate recommendation but cannot approve or reject that subgate. A human decision must come from an explicit user response. Do not create a receipt from an assumption, an earlier approval, or a synthetic test.
+Review the exact current JSON/Markdown pair as Agent first, then record the human decision only after an explicit user response. The Step 3 input catalog has its own review pair before the final design. TypeSafe delegation and live TypeSafe review commands are disabled. Do not create a receipt from an assumption, another report's approval, or a synthetic test.
 
 Use a new workflow directory for a new conversion. The workflow manifest binds source files, stage reports, report revisions, and decisions. When an upstream report or input changes, later approvals become stale and must be reviewed again. `workflow status` shows the next permitted stage.
 
@@ -72,7 +72,7 @@ excel-to-act step3 input-catalog --analysis $analysis --workflow WORKFLOW_DIR --
 excel-to-act workflow status --workflow WORKFLOW_DIR
 ```
 
-`input-catalog` may run without topology evidence. In that mode the result is a source-candidate catalog: target reachability, formula closure, dynamic branches, lookup-selected inputs, and input coverage remain unknown. A historical trace may be cited as a lead, but it does not prove the current boundary. Empty source cells omitted from stored fields must remain distinct from business inputs; blank-read behavior stays open if a future formula trace shows a consumer. Review the exact `input_boundary.json/.md` pair and record both the Agent decision and the human's explicit response. This pair is always required, even when the workflow has a TypeSafe delegation. TypeSafe may provide a separately identified recommendation but cannot approve or reject this checkpoint or supply the human decision. Approval confirms the proposed catalog only and leaves Stage 3 next; it does not approve the final semantic design or release Step 4.
+`input-catalog` may run without topology evidence. In that mode the result is a source-candidate catalog: target reachability, formula closure, dynamic branches, lookup-selected inputs, and input coverage remain unknown. A trace unbound to the current targets may be cited as a lead, but it does not prove the current boundary. Empty source cells omitted from stored fields must remain distinct from business inputs; blank-read behavior stays open if a formula trace shows a consumer. Review the exact `input_boundary.json/.md` pair and record both the Agent decision and the human's explicit response. A recommendation cannot supply either decision. Approval confirms the proposed catalog only and leaves Stage 3 next; it does not approve the final semantic design or release Step 4.
 
 For a first-use workbook, preserve the accepted catalog's original `analysis.json` unchanged. Prepare a fresh continuation analysis using the same source, scope, fields, dependencies, and structural plan, then produce a source-only candidate trace and profile. This avoids changing the analysis file whose hash is bound by the catalog receipt:
 
@@ -156,7 +156,7 @@ The semantic map must declare `selection_basis: exact_case` and bind this case's
 
 ## 4. Generate standalone Python
 
-For each workflow, use its current confirmed input boundary and accepted semantic design. Earlier or rejected bundles remain historical evidence; their approval cannot release a replacement design. Read source-specific parameters and manual checks from the current workflow's bound evidence, not from reusable defaults.
+For each workflow, use its current confirmed input boundary and accepted semantic design. Approvals bind the exact design and bundle; changed evidence requires fresh reviews. Read source-specific parameters and manual checks from the current workflow's bound evidence, not from reusable defaults.
 
 After the Stage 3 report has both current approvals, capture external inputs if required by that design, discover a fresh active trace, and pass implementation preflight before generation:
 
@@ -230,11 +230,11 @@ excel-to-act step6 candidate --workflow NEW_DIR --version VERSION --request REQU
 excel-to-act workflow status --workflow NEW_DIR
 ```
 
-Review the exact candidate JSON/Markdown pair and package ledger. Record an Agent decision, then obtain an explicit human decision on that pair with `workflow confirm --workflow NEW_DIR --stage 6 --reviewer agent|human --decision approve --message TEXT` (one reviewer per call). Smoke success or file presence is not acceptance. The old Stage 6 receipt and old delegation cannot substitute. After current acceptance, run `excel-to-act step6 deliver --workflow NEW_DIR`. It copies the same package, executes its entry, checks the readback and records a separate effective internal delivery. `step6 revoke --workflow NEW_DIR --reason TEXT` makes it inactive while retaining history. No production or public distribution is performed.
+Review the exact package JSON/Markdown pair and package ledger. Record an Agent decision, then obtain an explicit human decision on that pair with `workflow confirm --workflow NEW_DIR --stage 6 --reviewer agent|human --decision approve --message TEXT` (one reviewer per call). Smoke success or file presence is not acceptance. After current acceptance, run `excel-to-act step6 deliver --workflow NEW_DIR`. It copies the same package, executes its entry, checks the readback and records a separate effective internal delivery. `step6 revoke --workflow NEW_DIR --reason TEXT` makes it inactive while preserving package files and review records. This command provides internal delivery.
 
 ## 7. Create the final report
 
-After current Step 6 acceptance and exact delivery/readback, run `excel-to-act step7 report --workflow NEW_DIR`. The copied report renderer preserves the legacy content, provenance and validation behavior and adds the delivered package record. `step7 skill` and `step7 template` expose its packaged resources. Report generation creates a new review pair; it is not approval.
+After current Step 6 acceptance and exact delivery/readback, run `excel-to-act step7 report --workflow NEW_DIR`. The report presents the accepted source, design, validation, provenance, and delivered package record. `step7 skill` and `step7 template` expose its packaged resources. Report generation creates a review pair for Agent and human decisions.
 
 ## Revisions and rejection
 

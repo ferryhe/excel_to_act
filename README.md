@@ -2,9 +2,9 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Use the complete [`excel-to-act` skill](.agents/skills/excel-to-act/SKILL.md) for agent-driven conversion. The [release guide](docs/release.md) covers the versioned skill/plugin ZIP, matching Python wheel, installation, checksums, and publication gates. The Step 6/7 skills packaged in the runtime remain stage-specific resources.
+Use the complete [`excel-to-act` skill](.agents/skills/excel-to-act/SKILL.md) for agent-driven conversion. The [release guide](docs/release.md) covers the versioned skill/plugin ZIP, matching Python wheel, installation, checksums, and publication requirements. The runtime includes dedicated Step 6 delivery and Step 7 reporting skills.
 
-Start a new seven-stage workflow with `step1 report`, or attach one to a current approved six-stage legacy workflow. A native workflow reviews its own Stages 1–5; an attached workflow inherits those stages read-only from the exact pinned legacy parent. Legacy Stage 6 remains its historical final report. New Step 6 packages the approved standalone tool for internal delivery, and Step 7 produces the final conversion report. The CLI reports legacy status but does not write to legacy workflows. The Step 3 input boundary still requires an actual human decision.
+Excel to Act converts Excel models into standalone Python tools through seven reviewed stages: extraction, indexing, input confirmation and design, code generation, validation, internal delivery, and a final conversion report. Start with `step1 report` after extraction is finalized. Each stage requires Agent review followed by an explicit human decision on its exact JSON/Markdown report pair.
 
 ## Workflow
 
@@ -22,7 +22,7 @@ flowchart TD
     S4 --> A4{Agent → human}
     A4 -->|approve| S5[5 · Validate and reconcile]
     S5 --> A5{Agent → human}
-    A5 -->|approve| S6[6 · Package internal candidate]
+    A5 -->|approve| S6[6 · Prepare internal package]
     S6 --> A6{Agent → actual human}
     A6 -->|approve| D[Deliver exact package and verify readback]
     D --> S7[7 · Final conversion report]
@@ -30,7 +30,7 @@ flowchart TD
     A1 & A2 & A3I & A3 & A4 & A5 & A6 & A7 -->|reject| R[Return to a responsible stage · revise · review]
 ```
 
-For a new conversion, use `step1 report --run FINAL_RUN --out NEW_DIR`, then the existing Step 2–5 commands and Agent/human review gates. After its own current approved Step 5, use `workflow bind-comparison --workflow NEW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256`. Supply that digest from a separate verification record. For migration, use `workflow attach --parent LEGACY_DIR --out NEW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256` only after legacy Stages 1–5 and their source are current. The attached root pins the exact legacy manifest and comparison identity. `workflow status --workflow DIR` shows current evidence, effective internal delivery, and the next permitted stage. A candidate smoke or report generation does not approve a stage. The candidate JSON/Markdown pair needs Agent review and an explicit human decision before delivery; old Stage 6 receipts or delegation cannot approve it. Rejected and delivered history remains in the ledger.
+Use `step1 report --run FINAL_RUN --out NEW_DIR`, then follow the Step 2–5 commands and review gates. After Step 5 is approved, bind a matching comparison with `workflow bind-comparison --workflow NEW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256`; obtain the digest from a separate verification record. `workflow status --workflow DIR` shows current evidence, effective internal delivery, and the next permitted stage. Step 6 requires review of its exact package and report pair before delivery, followed by successful execution and readback of the delivered files. The [workflow guide](docs/workflow.md) also describes attaching approved parent evidence as read-only input.
 
 ## CLI and deliverables
 
@@ -49,7 +49,7 @@ Run `excel-to-act stepN tools`, `excel-to-act stepN agent`, or `--help` for curr
 
 Step 3 works backward from declared results and confirms scalar, vector, table, raw, and formula-derived input boundaries. Step 4 generates modular code only for supported, bound designs, after the semantic mapping and implementation preflight pass. Check the current tool catalog and source adapter for formula and input-shape limits; the workflow is not a universal Excel compiler. Formula caches are not model inputs, and extraction does not run VBA. Step 4 smoke evidence proves bundle execution only. Native Excel comparison requires Windows and Microsoft Excel. A tested scenario does not establish all-configuration coverage, actuarial certification, feedback solving, or GPU support.
 
-Primary handoffs lead with the decision, scope, verified results, limits, unresolved choices, links to JSON/Markdown evidence, and the next review action. Detailed provenance and history stay in the evidence appendix. Missing facts are unknown or “Not recorded,” never zero. `workflow.json` is the current acceptance ledger.
+Primary handoffs lead with the decision, scope, verified results, limits, unresolved choices, links to JSON/Markdown evidence, and the next review action. Detailed provenance and review records stay in the evidence appendix. Missing facts are unknown or “Not recorded,” never zero. `workflow.json` is the current acceptance ledger.
 
 ## Use
 
@@ -68,7 +68,7 @@ python "$BUNDLE/model.py" --inputs "REQUEST.json" --out "output/result.json"
 
 ## Development and packaging
 
-Run these commands from the repository root. Clear the generated `build/` directory before every build: setuptools can otherwise include deleted modules or resources left by an earlier build. Keep source files and workflow evidence outside `build/`.
+Run these commands from the repository root. Clear the generated `build/` directory before every build so setuptools packages the current source and resources. Keep source files and workflow evidence outside `build/`.
 
 ```powershell
 python -m pip install -e ".[dev]" build
@@ -78,6 +78,6 @@ if (Test-Path -LiteralPath .\build) { Remove-Item -LiteralPath .\build -Recurse 
 python -m build --outdir output/package-build
 ```
 
-These development builds go to `output/package-build/`. For an immutable release candidate, use the [release guide](docs/release.md), which refuses an existing candidate directory before building. Building a package does not approve or deliver a converted model.
+These development builds go to `output/package-build/`. For a versioned distribution, use the [release guide](docs/release.md), which requires a new output directory before building and preserves each completed package. Building a package does not approve or deliver a converted model.
 
 See the [seven-stage workflow](docs/workflow.md), [CLI guide](docs/cli.md), [generic Agent contracts](docs/design/generic_agent_contracts.md), [result-driven analysis guide](docs/design/result_driven_analysis.md), and [report contract](docs/design/model_conversion_report.md). Source workbooks and run evidence under `input/` and `output/` are local data. The README pair is bilingual; other authored project documentation is in English.
