@@ -54,6 +54,12 @@ where = ["src"]
   "excel-to-act-step6/assets/conversion_report.md",
   "excel-to-act-step6/agents/openai.yaml",
 ]
+"excel_to_act.steps.step7" = [
+  "agent.md",
+  "excel-to-act-step7/SKILL.md",
+  "excel-to-act-step7/assets/conversion_report.md",
+  "excel-to-act-step7/agents/openai.yaml",
+]
 
 [tool.ruff]
 line-length = 100

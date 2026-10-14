@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from excel_to_act.steps.conversion_workflow import review_tool_entries
+
 
 def tool_catalog() -> dict[str, Any]:
     return {"schema_version": "step4.tools.v1", "tools": [
@@ -11,10 +13,7 @@ def tool_catalog() -> dict[str, Any]:
         {"name": "step4.discover", "command": "step4 discover --workflow DIR", "outputs": ["source-bound active-trace discovery for approved targets"]},
         {"name": "step4.plan", "command": "step4 plan --workflow DIR --implementation INPUT.json", "outputs": ["fresh-trace projection", "compiler/schedule preflight", "implementation_plan.json/.md"]},
         {"name": "step4.generate", "command": "step4 generate --workflow DIR [--trace CURRENT_PREFLIGHT_TRACE.json]", "outputs": ["modular standalone Python bundle", "bounded smoke evidence", "generation_report.json/.md"]},
-        {"name": "workflow.typesafe", "command": "workflow typesafe --workflow DIR --stage 4 --request REQUEST.json", "outputs": ["live, current-artifact-bound TypeSafe review evidence"]},
-        {"name": "workflow.confirm", "command": "workflow confirm --workflow DIR --stage 4 --reviewer agent|human|typesafe --decision approve --message TEXT [--evidence REVIEW.json]", "outputs": ["approval receipt; use workflow.reject to reject"]},
-        {"name": "workflow.reject", "command": "workflow reject --workflow DIR --stage 4 --reviewer agent|human|typesafe --return-to 1|2|3|4 --message TEXT [--evidence REVIEW.json]", "outputs": ["rejection receipt routed to the current or an earlier stage"]},
-        {"name": "workflow.status", "command": "workflow status --workflow DIR", "outputs": ["freshness, approvals, and next permitted stage"]},
+        *review_tool_entries(4),
     ], "limits": ["External capture, discovery, implementation planning, and generation require current Stage 3 approval.",
                    "Generation emits modular bundles only and requires a passing current semantic plan/check and implementation preflight; preflight does not approve or advance Stage 4.",
                    "Normally omit --trace; if supplied, it must name the exact latest passing Stage 4 discovery trace bound by the current implementation preflight. Stage 3 traces and older discovery revisions are rejected.",

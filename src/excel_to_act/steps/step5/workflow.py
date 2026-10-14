@@ -17,6 +17,7 @@ from typing import Any
 from openpyxl import load_workbook
 from openpyxl.utils.cell import get_column_letter
 
+from excel_to_act.steps import conversion_workflow as conversion
 from excel_to_act.steps.conversion_workflow import (
     append_stage_artifact,
     design_question_lines,
@@ -27,6 +28,7 @@ from excel_to_act.steps.conversion_workflow import (
     require_stage_approved,
 )
 from excel_to_act.steps.step3.calculation import _formula_signature, _parse_reference, capture_excel_oracle
+from excel_to_act.steps.step3.exact_cases import verify_case_semantic_pair
 from excel_to_act.steps.step4.external_inputs import validate_same_request_external_data
 
 
@@ -145,7 +147,8 @@ def capture_oracle(workflow_dir: Path, targets: list[str] | None = None,
                    validation_path: Path | None = None) -> dict[str, Any]:
     """Capture new native Excel evidence without advancing the Stage 5 checkpoint."""
     try:
-        root, _ = load_workflow(workflow_dir)
+        root, workflow = load_workflow(workflow_dir)
+        conversion._require_upstream_writable(workflow)
         workflow, stage4_revision, report, bundle = _stage4(root)
         overrides = None
         input_sha256 = None
@@ -186,6 +189,10 @@ def capture_oracle(workflow_dir: Path, targets: list[str] | None = None,
         else:
             planned_ranges = (report.get("oracle_ranges") or report.get("comparison_ranges")
                               or (["Premium!B9:CD115"] if "GP" in requested_targets else []))
+            if validation_path is not None and contract.get("support_domain", {}).get("status") == "exact_cases":
+                _case_id, _case_refs, _variant, case_trace = _current_exact_case(
+                    contract, validation, workflow["source"]["workbook_sha256"])
+                planned_ranges = [*planned_ranges, *_case_formula_ranges(case_trace)]
         requested_ranges = list(dict.fromkeys(planned_ranges))
         if not requested_targets and not requested_ranges:
             raise ValueError("request a target name or a finite range")
@@ -363,6 +370,7 @@ def validate_generated(workflow_dir: Path, request_path: Path | None = None) -> 
     """Compile and run the generated bundle in an isolated directory with no workbook."""
     try:
         root, workflow = load_workflow(workflow_dir)
+        conversion._require_upstream_writable(workflow)
         _workflow, stage4_revision, report, bundle = _stage4(root)
         manifest = read_json(bundle / "model_manifest.json")
         failures = _verify_python(bundle, manifest)
@@ -642,8 +650,9 @@ def _active_formula_range_coverage(oracle: dict[str, Any], compared_addresses: l
 
 def _active_formula_details(report: dict[str, Any], manifest: dict[str, Any],
                             source_path: Path | None = None,
-                            source_hash: str | None = None) -> tuple[list[str], dict[str, str]]:
-    trace_ref = report.get("active_trace", {})
+                            source_hash: str | None = None,
+                            case_trace: dict[str, str] | None = None) -> tuple[list[str], dict[str, str]]:
+    trace_ref = case_trace if case_trace is not None else report.get("active_trace", {})
     trace_path_value = trace_ref.get("path") if isinstance(trace_ref, dict) else None
     formula_texts: dict[str, str] = {}
     if isinstance(trace_path_value, str):
@@ -676,7 +685,7 @@ def _active_formula_details(report: dict[str, Any], manifest: dict[str, Any],
     if len(normalized) != len(set(normalized)):
         raise ValueError("Step 4 active formula-member address set contains duplicates")
     declared = manifest.get("active_formula_addresses")
-    if isinstance(declared, list) and set(_address_key(item) for item in declared) != set(normalized):
+    if case_trace is None and isinstance(declared, list) and set(_address_key(item) for item in declared) != set(normalized):
         raise ValueError("model manifest active formula addresses differ from the bound trace")
     if not formula_texts and source_path is not None:
         if not isinstance(source_hash, str) or not source_path.is_file() or hash_file(source_path) != source_hash:
@@ -702,6 +711,68 @@ def _active_formula_details(report: dict[str, Any], manifest: dict[str, Any],
     if formula_texts and set(formula_texts) != set(normalized):
         raise ValueError("bound active formula text set differs from the active address set")
     return addresses, formula_texts
+
+
+def _current_exact_case(contract: dict[str, Any], validation: dict[str, Any],
+                        source_sha: str) -> tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Resolve a variable execution to its one approved, source-bound case trace."""
+    domain = contract.get("support_domain", {})
+    cases, verified = domain.get("cases"), contract.get("verified_cases")
+    if (domain.get("status") != "exact_cases" or not isinstance(cases, list)
+            or not isinstance(verified, list) or len(cases) != 32 or len(verified) != 32):
+        raise ValueError("current variable reconciliation requires the approved exact 32-case contract")
+    matching = [index for index, item in enumerate(verified)
+                if item.get("input_sha256") == validation.get("input_sha256")]
+    if len(matching) != 1:
+        raise ValueError("variable input has no unique approved exact case")
+    index = matching[0]
+    case, variant = cases[index], verified[index]
+    if (not isinstance(case, dict) or not isinstance(variant, dict)
+            or validation.get("request_sha256") != case.get("public_request", {}).get("sha256")
+            or validation.get("dependency_sha256") != variant.get("dependency_sha256")):
+        raise ValueError("variable execution request or dependency belongs to another exact case")
+    for name in ("trace", "raw_request", "public_request", "producer", "profile", "plan"):
+        ref = case.get(name)
+        if not isinstance(ref, dict) or not isinstance(ref.get("path"), str):
+            raise ValueError(f"exact case is missing its {name} reference")
+        path = Path(ref["path"]).resolve()
+        if not path.is_file() or hash_file(path) != ref.get("sha256"):
+            raise ValueError(f"exact case {name} changed or is missing")
+    boundary_sha = contract.get("input_boundary", {}).get("artifact", {}).get("json_sha256")
+    plan, _profile, _nested = verify_case_semantic_pair(case, source_sha, boundary_sha)
+    trace = read_json(Path(case["trace"]["path"]))
+    producer = read_json(Path(case["producer"]["path"]))
+    if (trace.get("source_sha256") != source_sha
+            or trace.get("case_id") != plan["case_identity"]["case_id"]
+            or trace.get("request_sha256") != case["raw_request"]["sha256"]
+            or trace.get("producer_sha256") != case["producer"]["sha256"]
+            or trace.get("input_sha256") != variant.get("raw_input_sha256")
+            or variant.get("trace_sha256") != case["trace"]["sha256"]
+            or variant.get("producer_sha256") != case["producer"]["sha256"]
+            or producer.get("source_sha256") != source_sha):
+        raise ValueError("exact case trace, request, producer or variant identity differs")
+    return trace["case_id"], case, variant, trace
+
+
+def _case_formula_ranges(trace: dict[str, Any]) -> list[str]:
+    """Capture the exact case's formula sheets as finite native readback ranges."""
+    bounds: dict[str, list[int]] = {}
+    for cell in trace.get("cells", []):
+        if cell.get("role") not in {"calculated_formula", "calculated_array_formula"}:
+            continue
+        reference = _parse_reference(cell.get("address"), "")
+        if reference is None or not reference.sheet or not reference.single:
+            raise ValueError("exact-case trace contains an unqualified formula cell")
+        extent = bounds.setdefault(reference.sheet, [reference.min_row, reference.min_col,
+                                                       reference.max_row, reference.max_col])
+        extent[0] = min(extent[0], reference.min_row)
+        extent[1] = min(extent[1], reference.min_col)
+        extent[2] = max(extent[2], reference.max_row)
+        extent[3] = max(extent[3], reference.max_col)
+    if not bounds:
+        raise ValueError("exact-case trace has no formula cells to capture")
+    return [f"{sheet}!{get_column_letter(first_col)}{first_row}:{get_column_letter(last_col)}{last_row}"
+            for sheet, (first_row, first_col, last_row, last_col) in sorted(bounds.items())]
 
 
 def _active_formula_addresses(report: dict[str, Any], manifest: dict[str, Any]) -> list[str]:
@@ -1003,6 +1074,7 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
     """Write the Stage 5 comparison report from standalone output and a valid oracle."""
     try:
         root, workflow = load_workflow(workflow_dir)
+        conversion._require_upstream_writable(workflow)
         workflow_manifest, stage4_revision, report, bundle = _stage4(root)
         stage5_root = (root / "stage5").resolve()
         validation_path, oracle_path = validation_path.resolve(), oracle_path.resolve()
@@ -1075,8 +1147,20 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
         generated_manifest = read_json(bundle / "model_manifest.json")
         native_formula_values, captured_ranges = _oracle_range_cells(oracle)
         source_workbook = Path(workflow["source"]["workbook_path"]).resolve()
+        contract = read_json(bundle / "input_layout.json").get("variable_contract") if variable_mode else None
+        case_id = None
+        case_refs = None
+        case_variant = None
+        case_trace = None
+        if variable_mode:
+            if not isinstance(contract, dict):
+                raise ValueError("approved exact-case variable contract is missing")
+            if contract.get("support_domain", {}).get("status") == "exact_cases":
+                case_id, case_refs, case_variant, case_trace = _current_exact_case(
+                    contract, validation, workflow["source"]["workbook_sha256"])
         active_formula_addresses, expected_formula_texts = _active_formula_details(
-            report, generated_manifest, source_workbook, workflow["source"]["workbook_sha256"])
+            report, generated_manifest, source_workbook, workflow["source"]["workbook_sha256"],
+            case_refs["trace"] if case_refs is not None else None)
         external_metrics, external_mismatches = _compare_external_boundary(
             generated_manifest, bundle, model_result, native_formula_values, abs_tol, rel_tol,
             source_workbook, variable_mode)
@@ -1105,7 +1189,7 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
         active_formula_range_coverage = _active_formula_range_coverage(oracle, comparison_addresses)
         status = "ready_for_review" if not mismatches and compared_targets == len(expected_targets) else "not_ready"
         trace_path = Path(report.get("active_trace", {}).get("path", ""))
-        active_trace = read_json(trace_path) if trace_path.is_file() else {}
+        active_trace = case_trace if case_trace is not None else (read_json(trace_path) if trace_path.is_file() else {})
         stage4_paths = report.get("path_coverage", {})
         implementation_evidence = stage4_paths.get("implementation_evidence", [])
         runtime_evidence: list[dict[str, Any]] = []
@@ -1209,9 +1293,14 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
                    "mismatch_count": len(mismatches), "mismatch_examples": mismatches[:50],
                    "formula_cache_inputs": False, "standalone_project_imports": False}
         if variable_mode:
-            contract = read_json(bundle / "input_layout.json").get("variable_contract")
-            if not isinstance(contract, dict) or contract["support_domain"]["tolerances"] != payload["tolerances"]:
+            if contract["support_domain"]["tolerances"] != payload["tolerances"]:
                 raise ValueError("varied reconciliation tolerances differ from approved support domain")
+            if case_id is not None:
+                payload["exact_case"] = {"case_id": case_id, "references": case_refs,
+                                         "variant": case_variant,
+                                         "formula_member_count": len(active_formula_addresses)}
+                payload["stage4_bundle_manifest_sha256"] = hash_file(bundle / "model_manifest.json")
+                payload["stage3_design_sha256"] = contract["design"]["artifact"]["json_sha256"]
             payload["case_definition_sha256"] = hashlib.sha256(json.dumps({
                 "source": payload["source_sha256"], "stage4": payload["stage4_artifact_sha256"],
                 "support_domain": contract["support_domain"], "targets": sorted(expected_targets),
@@ -1247,6 +1336,214 @@ def reconcile(workflow_dir: Path, validation_path: Path, oracle_path: Path,
                 "compared": payload["compared"], "mismatch_count": payload["mismatch_count"]}
     except Exception as exc:
         return {"schema_version": "step5.validation_report.v1", "tool": "step5.reconcile",
+                "status": "blocked", "reason": str(exc)}
+
+
+def _verify_case_receipts(root: Path, paths: list[Path], contract: dict[str, Any],
+                          source_sha: str, stage4_sha: str, manifest_sha: str,
+                          target_names: list[str], bundle_files: dict[str, str]
+                          ) -> tuple[list[dict[str, Any]], dict[str, Path]]:
+    """Recheck every exact-case receipt and its live native, package and source lineage."""
+    cases = contract.get("support_domain", {}).get("cases")
+    variants = contract.get("verified_cases")
+    if (not isinstance(cases, list) or not isinstance(variants, list)
+            or len(cases) != 32 or len(variants) != 32 or len(paths) != 32):
+        raise ValueError("formal Step 5 needs exactly 32 approved cases and 32 receipts")
+    if len({item.get("input_sha256") for item in variants}) != 32:
+        raise ValueError("approved Step 4 contract duplicates an exact input")
+    expected_ids: set[str] = set()
+    for case in cases:
+        plan_path = Path(case["plan"]["path"])
+        if not plan_path.is_file() or hash_file(plan_path) != case["plan"]["sha256"]:
+            raise ValueError("approved exact-case plan is missing or changed")
+        expected_ids.add(read_json(plan_path)["case_identity"]["case_id"])
+    if len(expected_ids) != 32:
+        raise ValueError("approved exact-case contract duplicates a case ID")
+    records: list[dict[str, Any]] = []
+    inputs: dict[str, Path] = {}
+    observed: set[str] = set()
+    stage5_root = root / "stage5"
+    for path in paths:
+        path = path.resolve()
+        if not _inside(path, stage5_root / "cases") or path.name != "case_report.json" or not path.is_file():
+            raise ValueError("case receipt must be an existing Stage 5 case_report.json")
+        receipt = read_json(path)
+        validation_ref = receipt.get("standalone_validation", {})
+        validation_path = Path(validation_ref.get("path", "")).resolve()
+        if (not _inside(validation_path, stage5_root) or not validation_path.is_file()
+                or hash_file(validation_path) != validation_ref.get("sha256")):
+            raise ValueError("exact-case standalone validation changed or is missing")
+        validation = read_json(validation_path)
+        case_id, case, variant, trace = _current_exact_case(contract, validation, source_sha)
+        if case_id in observed or case_id not in expected_ids:
+            raise ValueError(f"duplicate or unsupported exact case: {case_id}")
+        observed.add(case_id)
+        exact = receipt.get("exact_case", {})
+        comparison = receipt.get("compared", {})
+        formula_addresses = {_address_key(cell["address"]) for cell in trace["cells"]
+                             if cell.get("role") in {"calculated_formula", "calculated_array_formula"}}
+        compared = comparison.get("comparison_addresses")
+        if (receipt.get("schema_version") != "step5.validation_report.v1"
+                or receipt.get("execution_mode") != "variable_input"
+                or receipt.get("status") != "ready_for_review"
+                or receipt.get("native_verified_exact_input") is not True
+                or receipt.get("mismatch_count") != 0
+                or receipt.get("source_sha256") != source_sha
+                or receipt.get("stage4_artifact_sha256") != stage4_sha
+                or receipt.get("stage4_bundle_manifest_sha256") != manifest_sha
+                or receipt.get("stage3_design_sha256") != contract["design"]["artifact"]["json_sha256"]
+                or receipt.get("input_sha256") != variant["input_sha256"]
+                or receipt.get("dependency_sha256") != variant["dependency_sha256"]
+                or receipt.get("tolerances") != contract["support_domain"]["tolerances"]
+                or receipt.get("formula_cache_inputs") is not False
+                or receipt.get("standalone_project_imports") is not False
+                or exact.get("case_id") != case_id or exact.get("references") != case
+                or exact.get("variant") != variant
+                or exact.get("formula_member_count") != len(formula_addresses)
+                or not isinstance(compared, list)
+                or len(compared) != len(formula_addresses)
+                or {_address_key(item) for item in compared} != formula_addresses
+                or comparison.get("active_formula_members") != len(formula_addresses)
+                or comparison.get("active_formula_identity_matches") != len(formula_addresses)
+                or comparison.get("named_targets") != len(target_names)
+                or comparison.get("required_targets") != len(target_names)):
+            raise ValueError(f"{case_id}: current receipt did not compare its own complete formula set")
+        result_path = Path(validation.get("result_path", "")).resolve()
+        request_path = validation_path.parent / "input_request.json"
+        if (validation.get("schema_version") != "step5.execution_validation.v1"
+                or validation.get("status") != "pass"
+                or validation.get("compile_pass") is not True
+                or validation.get("standalone_run_pass") is not True
+                or validation.get("source_sha256") != source_sha
+                or validation.get("stage4_artifact_sha256") != stage4_sha
+                or validation.get("request_sha256") != case["public_request"]["sha256"]
+                or validation.get("bundle_files") != bundle_files
+                or validation.get("result_sha256") != validation_ref.get("result_sha256")
+                or not _inside(result_path, stage5_root) or not result_path.is_file()
+                or hash_file(result_path) != validation.get("result_sha256")
+                or not request_path.is_file() or hash_file(request_path) != validation["request_sha256"]):
+            raise ValueError(f"{case_id}: package result or exact request is stale")
+        model = read_json(result_path)
+        if (model.get("status") != "pass" or model.get("input_sha256") != variant["input_sha256"]
+                or model.get("dependency_sha256") != variant["dependency_sha256"]):
+            raise ValueError(f"{case_id}: isolated model result belongs to another request")
+        oracle_ref = receipt.get("oracle", {})
+        oracle_path = Path(oracle_ref.get("path", "")).resolve()
+        if (not _inside(oracle_path, stage5_root) or not oracle_path.is_file()
+                or hash_file(oracle_path) != oracle_ref.get("sha256")):
+            raise ValueError(f"{case_id}: native oracle is missing or changed")
+        oracle = _preflight_oracle(read_json(oracle_path), source_sha, stage4_sha, variant["input_sha256"])
+        if (oracle.get("validation_sha256") != validation_ref["sha256"]
+                or oracle.get("engine") != "Microsoft Excel"
+                or oracle.get("source_copy_sha256") != source_sha
+                or oracle.get("macros_executed") is not False):
+            raise ValueError(f"{case_id}: native oracle does not bind this exact execution")
+        native_cells, _selectors = _oracle_range_cells(oracle)
+        formulas = { _address_key(cell["address"]): cell["formula"] for cell in trace["cells"]
+                     if cell.get("role") in {"calculated_formula", "calculated_array_formula"}}
+        model_cells = model.get("cells")
+        if not isinstance(model_cells, dict):
+            raise ValueError(f"{case_id}: isolated model has no formula-cell output")
+        tolerances = contract["support_domain"]["tolerances"]
+        formula_results = _compare_active_formula_members(
+            sorted(formula_addresses), native_cells,
+            {_address_key(address): value for address, value in model_cells.items()},
+            formulas, tolerances["absolute"], tolerances["relative"])
+        target_results, target_mismatches, target_count = _compare_named_targets(
+            set(target_names), model.get("targets"), oracle.get("named_targets"), {},
+            tolerances["absolute"], tolerances["relative"])
+        if (formula_results[0] != len(formula_addresses)
+                or formula_results[1] != len(formula_addresses)
+                or formula_results[4] or target_mismatches or target_count != len(target_names)
+                or receipt.get("target_results") != target_results):
+            raise ValueError(f"{case_id}: current native/model formula or GP values do not reconcile")
+        record = {"case_id": case_id, "input_sha256": variant["input_sha256"],
+                  "request_sha256": case["public_request"]["sha256"],
+                  "trace_sha256": case["trace"]["sha256"],
+                  "profile_sha256": case["profile"]["sha256"],
+                  "plan_sha256": case["plan"]["sha256"],
+                  "producer_sha256": case["producer"]["sha256"],
+                  "report": {"path": str(path), "sha256": hash_file(path)},
+                  "validation": {"path": str(validation_path), "sha256": validation_ref["sha256"]},
+                  "model_result": {"path": str(result_path), "sha256": validation["result_sha256"]},
+                  "native_oracle": {"path": str(oracle_path), "sha256": oracle_ref["sha256"]},
+                  "formula_member_count": len(formula_addresses)}
+        records.append(record)
+        prefix = f"exact_case_{len(records):02d}"
+        inputs.update({f"{prefix}_{name}": file for name, file in
+                       (("report", path), ("validation", validation_path), ("model_result", result_path),
+                        ("native_oracle", oracle_path), ("public_request", request_path))})
+        for name, ref in case.items():
+            inputs[f"{prefix}_{name}"] = Path(ref["path"])
+        plan = read_json(Path(case["plan"]["path"]))
+        profile = read_json(Path(case["profile"]["path"]))
+        for name, ref in (("semantic_map", plan.get("semantic_map_input")),
+                          ("case_manifest", plan.get("case_identity", {}).get("case_manifest")),
+                          ("inventory", profile.get("inventory"))):
+            if not isinstance(ref, dict) or not Path(ref.get("path", "")).is_file() \
+                    or hash_file(Path(ref["path"])) != ref.get("sha256"):
+                raise ValueError(f"{case_id}: nested {name} is missing or changed")
+            inputs[f"{prefix}_{name}"] = Path(ref["path"])
+    if observed != expected_ids:
+        raise ValueError("formal Stage 5 omits approved exact cases")
+    return sorted(records, key=lambda item: item["case_id"]), inputs
+
+
+def finalize_cases(workflow_dir: Path, case_reports: list[Path]) -> dict[str, Any]:
+    """Append one formal Stage 5 pair after every approved exact-case receipt passes."""
+    try:
+        root, workflow = load_workflow(workflow_dir)
+        conversion._require_upstream_writable(workflow)
+        _manifest, stage4_revision, stage4, bundle = _stage4(root)
+        model_manifest = read_json(bundle / "model_manifest.json")
+        contract = read_json(bundle / "input_layout.json").get("variable_contract")
+        if not isinstance(contract, dict) or contract.get("support_domain", {}).get("status") != "exact_cases":
+            raise ValueError("formal exact-case Stage 5 needs a current approved exact-case contract")
+        source_sha = workflow["source"]["workbook_sha256"]
+        stage4_sha = stage4_revision["artifact"]["json_sha256"]
+        manifest_sha = hash_file(bundle / "model_manifest.json")
+        targets = stage4.get("target_names", [])
+        records, input_files = _verify_case_receipts(
+            root, case_reports, contract, source_sha, stage4_sha, manifest_sha,
+            targets, stage4["bundle"]["files"])
+        input_files.update({"source_workbook": Path(workflow["source"]["workbook_path"]),
+                            "bundle_manifest": bundle / "model_manifest.json",
+                            **{f"generated:{name}": bundle / name for name in stage4["bundle"]["files"]}})
+        if hash_file(input_files["source_workbook"]) != source_sha:
+            raise ValueError("source workbook changed before formal Stage 5 finalization")
+        payload = {"schema_version": "step5.validation_report.v1", "tool": "step5.finalize-cases",
+                   "status": "ready_for_review", "execution_mode": "exact_cases",
+                   "source_sha256": source_sha, "stage4_artifact_sha256": stage4_sha,
+                   "stage4_bundle_manifest_sha256": manifest_sha,
+                   "stage4_bundle_manifest_path": str(bundle / "model_manifest.json"),
+                   "stage3_design_sha256": contract["design"]["artifact"]["json_sha256"],
+                   "support_certificate_sha256": model_manifest["support_certificate_sha256"],
+                   "variable_input_contract_sha256": model_manifest["variable_input_contract_sha256"],
+                   "tolerances": contract["support_domain"]["tolerances"],
+                   "case_count": len(records), "cases": records,
+                   "compared": {"exact_cases": len(records),
+                                "active_formula_members": sum(item["formula_member_count"] for item in records),
+                                "required_active_formula_members": sum(item["formula_member_count"] for item in records),
+                                "named_targets": len(targets) * len(records),
+                                "required_targets": len(targets) * len(records)},
+                   "mismatch_count": 0, "formula_cache_inputs": False,
+                   "standalone_project_imports": False}
+        markdown = "\n".join(["# Stage 5 exact-case validation", "",
+                              "Status: **Ready for independent review**", "",
+                              f"Source SHA-256: `{source_sha}`",
+                              f"Approved Stage 4 report: `{stage4_sha}`",
+                              f"Exact native and isolated cases: {len(records)} / 32",
+                              f"Formula members compared per case: {payload['compared']['active_formula_members']} total",
+                              f"Tolerances: {payload['tolerances']}", "",
+                              "Each case has its own request, formula trace, package validation and Excel oracle.",
+                              "No Agent or human decision is recorded by this report.", ""])
+        revision = append_stage_artifact(root, 5, "validation_report.json", payload, markdown,
+                                         input_files=input_files, input_stages={4: stage4_sha})
+        return {"schema_version": payload["schema_version"], "tool": payload["tool"],
+                "status": "pass", "workflow": str(root), "revision": revision["revision"],
+                "artifact": revision["artifact"], "case_count": len(records), "mismatch_count": 0}
+    except Exception as exc:
+        return {"schema_version": "step5.validation_report.v1", "tool": "step5.finalize-cases",
                 "status": "blocked", "reason": str(exc)}
 
 

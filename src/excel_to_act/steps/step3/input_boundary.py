@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from itertools import product
+import hashlib
 import json
 from math import prod
 from pathlib import Path
@@ -11,6 +13,7 @@ from typing import Any
 import xml.etree.ElementTree as ET
 from zipfile import ZipFile
 
+from openpyxl import load_workbook
 from openpyxl.utils.cell import get_column_letter, range_boundaries
 
 from excel_to_act.steps import conversion_workflow as conversion
@@ -20,6 +23,7 @@ from excel_to_act.steps.step3 import workflow as step3
 _TARGETS_SCHEMA = "step3.input_targets.v1"
 _CATALOG_SCHEMA = "step3.input_boundary.input.v1"
 _BOUNDARY_SCHEMA = "step3.input_boundary.v1"
+_SAMPLE_SCHEMA = "step3.sample_boundary.v1"
 _VALUE_KEYS = {"value", "values", "cached_value", "cached_values", "formula_cache_values"}
 
 
@@ -31,7 +35,7 @@ def _reject_unlisted_fields(value: Any, allowed: set[str], label: str) -> None:
         raise ValueError(f"{label} contains unsupported fields: {', '.join(extra)}")
 
 
-def _validate_scope_notes(notes: Any) -> None:
+def _validate_scope_notes(notes: Any, source_sha256: str) -> None:
     _reject_unlisted_fields(notes, {
         "note", "non_retained_historical_candidates", "stored_coordinate_reconciliation",
         "historical_raw_candidate_sha256", "historical_trace_candidate", "excluded_formula_extents",
@@ -80,8 +84,8 @@ def _validate_scope_notes(notes: Any) -> None:
                 "old_trace_raw_coordinate_count", "empty_source_coordinate_count", "coordinates",
             }, "stored_coordinate_audit")
             for key in ("path", "sha256", "source_sha256"):
-                if key in audit and not isinstance(audit[key], str):
-                    raise ValueError(f"stored_coordinate_audit.{key} must be text")
+                if not isinstance(audit.get(key), str) or not audit[key].strip():
+                    raise ValueError(f"stored_coordinate_audit.{key} must be non-empty text")
             for key in ("current_retained_raw_coordinate_count", "old_trace_raw_coordinate_count",
                         "empty_source_coordinate_count"):
                 value = audit.get(key)
@@ -100,6 +104,16 @@ def _validate_scope_notes(notes: Any) -> None:
                 for key in ("formula_present", "literal_content_present", "stored_cell_element_present"):
                     if not isinstance(coordinate.get(key), bool):
                         raise ValueError(f"stored coordinate audit {key} must be boolean")
+            audit_path = Path(audit["path"]).expanduser().resolve()
+            if (not _is_sha256(audit["sha256"]) or audit["source_sha256"] != source_sha256
+                    or not audit_path.is_file() or conversion.hash_file(audit_path) != audit["sha256"]):
+                raise ValueError("stored_coordinate_audit file or source identity does not match")
+            audit_file = conversion.read_json(audit_path)
+            if (not isinstance(audit_file, dict) or any(
+                    audit_file.get(key) != audit[key] for key in (
+                        "source_sha256", "current_retained_raw_coordinate_count",
+                        "old_trace_raw_coordinate_count", "empty_source_coordinate_count", "coordinates"))):
+                raise ValueError("stored_coordinate_audit content does not match the declared audit")
 
 
 def _with_verified_stored_blanks(catalog: dict[str, Any], fields: dict[str, Any],
@@ -150,8 +164,9 @@ def create_input_boundary(
 ) -> dict[str, Any]:
     """Validate a grouped catalog and submit it as a separate Stage 3 checkpoint."""
     try:
-        analysis_dir, analysis, binding, _step1_root, _inventory_path = step3._load_context(analysis_dir)
         workflow_root, manifest = conversion.load_workflow(workflow_dir)
+        conversion._require_upstream_writable(manifest)
+        analysis_dir, analysis, binding, _step1_root, _inventory_path = step3._load_context(analysis_dir)
         _require_bound_workflow(analysis, binding, workflow_root, manifest)
         _stage2 = conversion.require_stage_approved(workflow_root, 2)[1]
 
@@ -166,7 +181,7 @@ def create_input_boundary(
         target_selection = _validate_targets(targets, binding, analysis["binding_sha256"])
         _validate_catalog_identity(catalog, binding, target_selection)
         if "source_scope_notes" in catalog:
-            _validate_scope_notes(catalog["source_scope_notes"])
+            _validate_scope_notes(catalog["source_scope_notes"], binding["source"]["source_sha256"])
 
         fields, fields_sha = step3._read_stage(analysis_dir, analysis, "fields")
         dependencies, dependencies_sha = step3._read_stage(analysis_dir, analysis, "dependencies")
@@ -193,6 +208,11 @@ def create_input_boundary(
             cut_report = _source_candidate_report(target_selection, catalog, fields)
         groups, variables, axis_metadata, source_records, exclusions, policy = _validate_catalog(
             catalog, target_selection, fields, cut_report)
+        sample_boundary = None
+        if "sample_boundary" in catalog:
+            sample_boundary = _validate_sample_boundary(
+                catalog["sample_boundary"], variables, axis_metadata, Path(source_copy),
+                binding["source"]["source_sha256"])
         if cut_report["topology_available"]:
             cut_report["input_coverage"].update({
                 "assigned_raw_coordinate_count": len(cut_report["_reachable_raw_keys"]),
@@ -227,6 +247,7 @@ def create_input_boundary(
             "upstream_exclusions": exclusions,
             "value_source_policy": policy,
             "source_scope_notes": catalog.get("source_scope_notes", {}),
+            "sample_boundary": sample_boundary,
             "topology_evidence": ({"use": "source_topology_only", "sha256": trace_sha}
                                   if trace_path is not None else None),
         }
@@ -251,6 +272,7 @@ def create_input_boundary(
             "open_questions": catalog.get("open_questions", []),
             "value_source_policy": policy,
             "source_scope_notes": catalog.get("source_scope_notes", {}),
+            "sample_boundary": sample_boundary,
             "boundary_sha256": boundary_sha,
             "counts": counts,
             "input_coverage": cut_report["input_coverage"],
@@ -274,6 +296,8 @@ def create_input_boundary(
                                 "topology_status": cut_report["status"]},
         }
         markdown = _boundary_markdown(payload)
+        audit = catalog.get("source_scope_notes", {}).get("stored_coordinate_reconciliation", {}).get(
+            "stored_coordinate_audit")
         revision = conversion.append_stage_artifact(
             workflow_root, 3, "input_boundary.json", payload, markdown,
             input_files={
@@ -283,7 +307,13 @@ def create_input_boundary(
                 "execution_plan_json": analysis_dir / "execution_plan.json",
                 "targets_input": targets_path,
                 "catalog_input": catalog_path,
+                **({"stored_coordinate_audit": Path(audit["path"])} if audit is not None else {}),
                 **({"topology_trace": trace_path} if trace_path is not None else {}),
+                **({f"sample_request_{index:02d}": Path(case["path"])
+                    for index, case in enumerate(sample_boundary["request_cases"])}
+                   if sample_boundary is not None else {}),
+                **({"sample_fixed_literal_contract": Path(sample_boundary["fixed_literal_contract"]["path"])}
+                   if sample_boundary is not None else {}),
             },
             input_stages={2: _stage2["artifact"]},
         )
@@ -294,6 +324,260 @@ def create_input_boundary(
     except Exception as exc:
         return {"schema_version": _BOUNDARY_SCHEMA, "tool": "step3.input-catalog", "status": "blocked",
                 "diagnostics": [{"code": "input_boundary_invalid", "severity": "error", "message": str(exc)}]}
+
+
+def _validate_sample_boundary(sample: Any, variables: list[dict[str, Any]],
+                              axis_metadata: list[dict[str, Any]],
+                              workbook_path: Path, source_sha256: str) -> dict[str, Any]:
+    """Check an external, source-bound supported request subset of the broader catalog."""
+    _reject_unlisted_fields(sample, {"schema_version", "source_workbook_sha256", "request_cases",
+                                    "case_axes", "request_fields", "external_vectors",
+                                    "fixed_source_fields", "fixed_source_literals",
+                                    "fixed_literal_contract"}, "sample_boundary")
+    if sample.get("schema_version") != _SAMPLE_SCHEMA or sample.get("source_workbook_sha256") != source_sha256:
+        raise ValueError("sample boundary schema or source workbook SHA-256 does not match")
+    if not workbook_path.is_file() or conversion.hash_file(workbook_path) != source_sha256:
+        raise ValueError("sample boundary source workbook is missing or changed")
+    cases, fields, vectors = (sample.get(key) for key in
+                            ("request_cases", "request_fields", "external_vectors"))
+    fixed_fields, literals = sample.get("fixed_source_fields"), sample.get("fixed_source_literals")
+    if any(not isinstance(items, list) or not items for items in
+           (cases, fields, vectors, fixed_fields, literals)):
+        raise ValueError("sample boundary requires nonempty request, vector, and fixed-source lists")
+    contract_ref = sample.get("fixed_literal_contract")
+    _reject_unlisted_fields(contract_ref, {"path", "sha256"}, "fixed literal contract")
+    contract_path = Path(contract_ref.get("path", "")).expanduser().resolve()
+    if (not _is_sha256(contract_ref.get("sha256")) or not contract_path.is_file()
+            or conversion.hash_file(contract_path) != contract_ref["sha256"]):
+        raise ValueError("fixed literal contract is missing or its SHA-256 changed")
+    contract = conversion.read_json(contract_path)
+    if (not isinstance(contract, dict)
+            or contract.get("schema_version") != "step4.private_fixed_literals.v1"
+            or contract.get("source_sha256") != source_sha256
+            or not _is_sha256(contract.get("implementation_plan_sha256"))
+            or not _is_sha256(contract.get("interface_sha256"))
+            or not isinstance(contract.get("records"), list)):
+        raise ValueError("fixed literal contract has wrong schema or source binding")
+    expected_literals: set[str] = set()
+    for record in contract["records"]:
+        if (not isinstance(record, dict) or set(record) != {"address", "indices", "value", "variable_id"}
+                or not isinstance(record["address"], str)
+                or _reference_bounds(record["address"]) is None
+                or not isinstance(record["indices"], list)
+                or not isinstance(record["variable_id"], str) or not record["variable_id"]):
+            raise ValueError("fixed literal contract contains a malformed source record")
+        key = _address_key(record["address"])
+        if key in expected_literals:
+            raise ValueError("fixed literal contract contains duplicate source addresses")
+        expected_literals.add(key)
+    if (any(not isinstance(item, dict) or not isinstance(item.get("address"), str) for item in literals)
+            or {_address_key(item["address"]) for item in literals} != expected_literals):
+        raise ValueError("fixed source literal addresses differ from the bound source closure")
+    variables_by_id = {item["variable_id"]: item for item in variables}
+    field_names: set[str] = set()
+    field_cells: set[str] = set()
+    request_ids: set[str] = set()
+    for field in fields:
+        _reject_unlisted_fields(field, {"name", "variable_id", "source_cells", "fixed_source_literal"},
+                                "sample request field")
+        name, variable_id, cells = field.get("name"), field.get("variable_id"), field.get("source_cells")
+        variable = variables_by_id.get(variable_id)
+        if not isinstance(name, str) or not name or name in field_names or variable is None:
+            raise ValueError("sample request field name or source variable is missing or duplicated")
+        if variable.get("logical_name") != name or variable.get("role") != "source_raw":
+            raise ValueError(f"sample request field {name} does not match a raw source variable")
+        if ("fixed_source_literal" in field) != (variable.get("logical_role") == "fixed_source"):
+            raise ValueError(f"sample request field {name} has inconsistent fixed-source classification")
+        if not isinstance(cells, list) or not cells or any(not isinstance(cell, str) for cell in cells):
+            raise ValueError(f"sample request field {name} needs exact source cells")
+        keys = [_address_key(cell) for cell in cells]
+        catalog_keys = {key for key, _ in _variable_coordinates(variable)}
+        if len(set(keys)) != len(keys) or not set(keys) <= catalog_keys or field_cells.intersection(keys):
+            raise ValueError(f"sample request field {name} has duplicate or unbound source cells")
+        if variable.get("kind") == "scalar" and set(keys) != catalog_keys:
+            raise ValueError(f"sample scalar field {name} must bind its exact source cell")
+        field_names.add(name)
+        field_cells.update(keys)
+        request_ids.add(variable_id)
+    axes = sample.get("case_axes")
+    if not isinstance(axes, dict) or not axes or not set(axes) <= field_names:
+        raise ValueError("sample case axes must name request fields")
+    for name, values in axes.items():
+        if not isinstance(values, list) or not values or len({json.dumps(v, sort_keys=True) for v in values}) != len(values):
+            raise ValueError(f"sample case axis {name} has invalid or duplicate values")
+    expected_axes = set(product(*([json.dumps(v, sort_keys=True) for v in axes[name]] for name in axes)))
+    if len(cases) != len(expected_axes):
+        raise ValueError("sample requests do not cover the declared Cartesian case axes")
+    seen_paths: set[str] = set()
+    actual_axes: set[tuple[str, ...]] = set()
+    for case in cases:
+        _reject_unlisted_fields(case, {"path", "sha256"}, "sample request case")
+        path_value, digest = case.get("path"), case.get("sha256")
+        if not isinstance(path_value, str) or not _is_sha256(digest):
+            raise ValueError("sample request path or SHA-256 is invalid")
+        path = Path(path_value).expanduser().resolve()
+        if str(path) in seen_paths or not path.is_file() or conversion.hash_file(path) != digest:
+            raise ValueError("sample request is duplicate, missing, or its SHA-256 changed")
+        seen_paths.add(str(path))
+        request = conversion.read_json(path)
+        inputs, external = request.get("inputs"), request.get("external_data")
+        if not isinstance(inputs, dict) or set(inputs) != field_names or not isinstance(external, dict):
+            raise ValueError("sample request fields or external vectors do not match the declared boundary")
+        if any(not isinstance(inputs[name], dict) for name in axes):
+            raise ValueError("sample case axis has a malformed request field")
+        actual_axes.add(tuple(json.dumps(inputs[name].get("values"), sort_keys=True) for name in axes))
+        selected: set[str] = set()
+        for field in fields:
+            name, variable = field["name"], variables_by_id[field["variable_id"]]
+            item = inputs[name]
+            if not isinstance(item, dict):
+                raise ValueError(f"sample request field {name} is malformed")
+            if set(item) != {"axes", "values"} or not isinstance(item["axes"], list):
+                raise ValueError(f"sample request field {name} has malformed values or axes")
+            if variable.get("kind") == "table":
+                shape = variable.get("shape")
+                declared_axes = variable.get("axes")
+                if (not isinstance(shape, list) or not isinstance(declared_axes, list)
+                        or len(item["axes"]) != len(shape) or len(declared_axes) != len(shape)
+                        or any(not isinstance(axis, dict) or set(axis) != {"name", "role", "keys"}
+                               or {key: axis[key] for key in ("name", "role")} != declared_axes[index]
+                               or not isinstance(axis["keys"], list) or len(axis["keys"]) != size
+                               or len({json.dumps(key, sort_keys=True) for key in axis["keys"]}) != size
+                               for index, (axis, size) in enumerate(zip(item["axes"], shape)))):
+                    raise ValueError(f"sample table {name} has incompatible sparse-table axes or shape")
+                mapping = {tuple(entry["logical_index"]): _address_key(entry["source_cell"])
+                           for entry in variable.get("coordinate_map", [])}
+                entries = item.get("values")
+                if (not isinstance(entries, list) or any(not isinstance(entry, dict)
+                        or set(entry) != {"indices", "value"} or not isinstance(entry["indices"], list)
+                        or len(entry["indices"]) != len(shape)
+                        or any(type(index) is not int or index < 0 or index >= size
+                               for index, size in zip(entry["indices"], shape)) for entry in entries)):
+                    raise ValueError(f"sample table {name} lacks sparse entries")
+                selected_cells = [mapping.get(tuple(entry.get("indices", []))) for entry in entries
+                                  if isinstance(entry, dict)]
+                if (len(selected_cells) != len(entries) or None in selected_cells
+                        or len(set(selected_cells)) != len(selected_cells)):
+                    raise ValueError(f"sample table {name} has unbound sparse indices")
+                selected.update(selected_cells)
+            else:
+                if item["axes"] != [] or isinstance(item.get("values"), (list, dict)):
+                    raise ValueError(f"sample scalar {name} has a non-scalar request value")
+                selected.update(_address_key(cell) for cell in field["source_cells"])
+            if "fixed_source_literal" in field and item.get("values") != field["fixed_source_literal"]:
+                raise ValueError(f"sample fixed request field {name} changed across cases")
+        if selected != field_cells:
+            raise ValueError("sample request sparse cells do not equal declared request cells")
+        if set(external) != {item["name"] for item in vectors}:
+            raise ValueError("sample external vector names do not match")
+        input_digest = hashlib.sha256((json.dumps(
+            inputs, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")).hexdigest()
+        for vector in vectors:
+            item = external[vector["name"]]
+            variable = variables_by_id.get(vector.get("variable_id"))
+            if (not isinstance(item, dict) or item.get("source_sha256") != source_sha256
+                    or variable is None
+                    or set(item) != {"source_sha256", "input_sha256", "version", "axes", "values"}
+                    or item.get("input_sha256") != input_digest
+                    or item.get("version") != vector.get("producer_version")
+                    or not isinstance(item.get("values"), list)
+                    or len(item["values"]) != len(vector["age_keys"])
+                    or item.get("axes") != [{**axis, "keys": vector["age_keys"]}
+                                            for axis in variable.get("axes", [])]):
+                raise ValueError(f"sample external vector {vector['name']} has wrong source or age keys")
+    if actual_axes != expected_axes:
+        raise ValueError("sample requests do not exercise the declared Cartesian case axes")
+    vector_names: set[str] = set()
+    for vector in vectors:
+        _reject_unlisted_fields(vector, {"name", "variable_id", "source_extent", "age_extent",
+                                         "age_keys", "producer_version"},
+                                "sample external vector")
+        name, variable = vector.get("name"), variables_by_id.get(vector.get("variable_id"))
+        keys = vector.get("age_keys")
+        key_axes = [axis for axis in variable.get("axes", []) if axis.get("role") == "key"] if variable else []
+        catalog_axes = [axis for axis in axis_metadata if key_axes and axis.get("axis_id") == key_axes[0].get("axis_id")]
+        expected_extent = (f"{catalog_axes[0]['source_extents'][0]['sheet']}!"
+                           f"{catalog_axes[0]['source_extents'][0]['range']}") if (len(catalog_axes) == 1
+                           and len(catalog_axes[0].get("source_extents", [])) == 1) else None
+        if (not isinstance(name, str) or name in vector_names or variable is None
+                or variable.get("variable_id") != name or variable.get("role") != "formula_derived_external"
+                or not isinstance(vector.get("producer_version"), str) or not vector["producer_version"]
+                or len(key_axes) != 1 or len(variable.get("axes", [])) != 1
+                or not isinstance(keys, list) or not keys or expected_extent is None
+                or _address_key(vector.get("age_extent", "")) != _address_key(expected_extent)
+                or catalog_axes[0].get("shape") != [len(keys)]
+                or [_address_key(cell) for cell in [vector.get("source_extent", "")]] !=
+                [_address_key(f"{item['sheet']}!{item['range']}") for item in variable["source_extents"]]
+                or len(_extent_coordinates({"sheet": vector["age_extent"].rsplit("!", 1)[0],
+                                            "range": vector["age_extent"].rsplit("!", 1)[1]})) != len(keys)):
+            raise ValueError("sample external vector does not match the source catalog or age extent")
+        vector_names.add(name)
+    workbook = load_workbook(workbook_path, data_only=False, read_only=False,
+                             keep_vba=workbook_path.suffix.casefold() == ".xlsm")
+    try:
+        checked_literals: set[str] = set()
+        for vector in vectors:
+            bounds = _reference_bounds(vector["age_extent"])
+            if bounds is None:
+                raise ValueError("sample vector age extent is malformed")
+            min_col, min_row, max_col, max_row, sheet_name = bounds
+            sheet = next((workbook[name] for name in workbook.sheetnames if name.casefold() == sheet_name.casefold()), None)
+            if (sheet is None or min_col != max_col or
+                    [sheet.cell(row, min_col).value for row in range(min_row, max_row + 1)] != vector["age_keys"] or
+                    any(sheet.cell(row, min_col).data_type == "f" for row in range(min_row, max_row + 1))):
+                raise ValueError("sample vector age keys differ from the source workbook axis")
+        for entry in [*fixed_fields, *literals]:
+            allowed = {"name", "address", "source_literal"} if entry in fixed_fields else {
+                "address", "source_literal", "present"}
+            _reject_unlisted_fields(entry, allowed, "fixed source literal")
+            address = entry.get("address")
+            bounds = _reference_bounds(address) if isinstance(address, str) else None
+            if bounds is None or bounds[0] != bounds[2] or bounds[1] != bounds[3]:
+                raise ValueError("fixed source literal needs a qualified single cell")
+            col, row, _, _, sheet_name = bounds
+            sheet = next((workbook[name] for name in workbook.sheetnames if name.casefold() == sheet_name.casefold()), None)
+            cell = sheet._cells.get((row, col)) if sheet is not None else None
+            actual = cell.value if cell is not None else None
+            expected = entry.get("source_literal")
+            key = _address_key(address)
+            if (key in checked_literals or cell is not None and cell.data_type == "f"
+                    or type(actual) is not type(expected) and not (
+                        isinstance(actual, (int, float)) and not isinstance(actual, bool)
+                        and isinstance(expected, (int, float)) and not isinstance(expected, bool))
+                    or actual != expected or "present" in entry and entry["present"] is not (cell is not None)):
+                raise ValueError(f"fixed source literal mismatch at {address}")
+            checked_literals.add(key)
+            if entry in literals and not any(
+                    _address_key(record["address"]) == key and record["value"] == expected
+                    for record in contract["records"]):
+                raise ValueError(f"fixed source literal differs from the bound source closure at {address}")
+            if entry in fixed_fields:
+                matching = [item for item in variables if item.get("logical_name") == entry.get("name")]
+                if (len(matching) != 1 or matching[0].get("logical_role") != "fixed_source"
+                        or key not in {cell_key for cell_key, _ in _variable_coordinates(matching[0])}):
+                    raise ValueError(f"fixed source field {entry.get('name')} is not catalog-bound")
+        for field in fields:
+            if "fixed_source_literal" in field and not any(
+                entry.get("name") == field["name"]
+                and _address_key(entry["address"]) in {_address_key(cell) for cell in field["source_cells"]}
+                and entry["source_literal"] == field["fixed_source_literal"]
+                for entry in fixed_fields
+            ):
+                raise ValueError("fixed request field lacks a matching checked source literal")
+    finally:
+        workbook.close()
+    if conversion.hash_file(workbook_path) != source_sha256:
+        raise ValueError("sample boundary source workbook changed during literal checks")
+    return {**sample, "request_case_count": len(cases), "request_field_count": len(fields),
+            "request_raw_cell_count": len(field_cells), "external_vector_count": len(vectors),
+            "fixed_source_literal_count": len(literals), "request_variable_ids": sorted(request_ids),
+            "fixed_variable_ids": sorted({item["variable_id"] for item in variables
+                                          if any(_address_key(address) in checked_literals
+                                                 for _key, address in _variable_coordinates(item))} - request_ids),
+            "internal_variable_ids": sorted(set(variables_by_id) - request_ids - {
+                item["variable_id"] for item in variables
+                if any(_address_key(address) in checked_literals
+                       for _key, address in _variable_coordinates(item))})}
 
 
 def _require_bound_workflow(analysis: dict[str, Any], binding: dict[str, Any],
@@ -408,6 +692,7 @@ def _validate_catalog(catalog: dict[str, Any], targets: dict[str, Any], fields: 
         "schema_version", "source", "scenario", "target_selection", "groups", "variables",
         "axis_metadata", "source_records", "upstream_exclusions", "value_source_policy",
         "open_questions", "source_scope_notes", "topology_evidence", "draft_status", "scope_note",
+        "sample_boundary",
     }, "catalog")
     groups = catalog.get("groups")
     variables = catalog.get("variables")
@@ -460,7 +745,7 @@ def _validate_catalog(catalog: dict[str, Any], targets: dict[str, Any], fields: 
         elif not question.strip():
             raise ValueError(f"open_questions[{index}] must be non-empty text")
     if "source_scope_notes" in catalog:
-        _validate_scope_notes(catalog["source_scope_notes"])
+        _validate_scope_notes(catalog["source_scope_notes"], targets["source"]["workbook_sha256"])
     for key in ("draft_status", "scope_note"):
         if key in catalog and not isinstance(catalog[key], str):
             raise ValueError(f"catalog {key} must be text")
@@ -737,7 +1022,7 @@ def _validate_variable(variable: Any, group_ids: set[str], target_ids: set[str])
         raise ValueError(f"variable {variable_id} role must be source_raw or formula_derived_external")
     if kind not in {"scalar", "vector", "table"}:
         raise ValueError(f"variable {variable_id} kind must be scalar, vector, or table")
-    if variable.get("logical_role") not in {"business_input", "series", "configuration_table", "other"}:
+    if variable.get("logical_role") not in {"business_input", "series", "configuration_table", "fixed_source", "other"}:
         raise ValueError(f"variable {variable_id} needs an explicit logical_role")
     shape, axes = variable.get("shape"), variable.get("axes")
     if not isinstance(shape, list) or any(isinstance(size, bool) or not isinstance(size, int) or size <= 0 for size in shape):
@@ -1248,7 +1533,7 @@ def _boundary_evidence_markdown(payload: dict[str, Any]) -> str:
                 "source_constant_coordinate_count", "pending_classification_coordinate_count",
                 "source_record_group_count"):
         lines.append(f"| {key.replace('_', ' ')} | {counts[key]} |")
-    lines.extend(["", "## Logical groups", "", "| Group | Classification | Logical inputs |", "|---|---|---|"])
+    lines.extend(["", "## Source catalog groups", "", "| Group | Classification | Source objects |", "|---|---|---|"])
     for group in payload["groups"]:
         members = [item["logical_name"] for item in payload["variables"] if item["group_id"] == group["group_id"]]
         lines.append(f"| {_markdown_table_cell(group['name'])} (`{_markdown_table_cell(group['group_id'])}`) | "
@@ -1283,16 +1568,27 @@ def _boundary_evidence_markdown(payload: dict[str, Any]) -> str:
                       "No trace was supplied, so unrepresented coordinates and blank-read semantics have not been measured. Unknown coverage is not zero.",
                       "This catalog can be reviewed before Step 4 discovery. Confirmation records proposed inputs only; it does not certify completeness or release Step 4."])
     notes = payload.get("source_scope_notes", {})
-    if isinstance(notes, dict) and notes.get("note"):
-        lines.extend(["", f"Source scope note: {notes['note']}"])
+    if isinstance(notes, dict):
+        if notes.get("note"):
+            lines.extend(["", f"Source scope note: {notes['note']}"])
         if notes.get("non_retained_historical_candidates"):
             lines.append("Historical candidate coordinates absent from current retained fields: " + ", ".join(f"`{item}`" for item in notes["non_retained_historical_candidates"]))
         absence = notes.get("stored_coordinate_reconciliation", notes.get("physical_absence_evidence", {}))
-        if isinstance(absence, dict) and absence.get("historical_empty_coordinates"):
-            audit = absence.get("stored_coordinate_audit", {})
-            lines.append(f"The source-coordinate audit `{audit.get('path')}` (SHA-256 `{audit.get('sha256')}`) is bound to the same workbook SHA. It reconciles {audit.get('old_trace_raw_coordinate_count')} historical raw candidates against {audit.get('current_retained_raw_coordinate_count')} current retained raw coordinates and identifies {audit.get('empty_source_coordinate_count')} stored-but-empty source cells:")
-            lines.append(", ".join(f"`{item['address']}` (cell element present; no formula or literal content)" for item in audit.get("coordinates", [])))
-            lines.append(absence["interpretation"])
+        if isinstance(absence, dict):
+            audit = absence.get("stored_coordinate_audit")
+            empty_coordinates = absence.get("historical_empty_coordinates")
+            if audit is not None:
+                lines.append(f"The source-coordinate audit `{audit['path']}` (SHA-256 `{audit['sha256']}`) is bound to the same workbook SHA. It reconciles {audit['old_trace_raw_coordinate_count']} historical raw candidates against {audit['current_retained_raw_coordinate_count']} current retained raw coordinates and identifies {audit['empty_source_coordinate_count']} stored-but-empty source cells:")
+                if audit.get("coordinates"):
+                    lines.append(", ".join(f"`{item['address']}` (cell element present; no formula or literal content)" for item in audit["coordinates"]))
+            elif empty_coordinates:
+                lines.append("No separate source-coordinate audit or reconciliation counts are attached. "
+                             "Current-source verification records these stored blank cells: " +
+                             ", ".join(f"`{item['address']}` (cell element present; no formula or literal content)"
+                                       for item in empty_coordinates))
+            if empty_coordinates:
+                lines.append(absence.get("interpretation") or
+                             "No interpretation was supplied. Later blank-read semantics remain unresolved.")
         historical = notes.get("historical_trace_candidate")
         if isinstance(historical, dict):
             lines.append(f"Historical trace `{historical['path']}` (SHA-256 `{historical['sha256']}`) is retained as a lead only: {historical['use']}.")
@@ -1338,27 +1634,62 @@ def _boundary_markdown(
     variables = payload.get("variables")
     variables = variables if isinstance(variables, list) else []
     objects = [
-        ("Logical input objects", counts.get("logical_input_object_count")),
+        ("Source catalog objects", counts.get("logical_input_object_count")),
         ("Scalar objects", counts.get("scalar_field_count")),
         ("Vector objects", counts.get("vector_object_count")),
         ("Table objects", counts.get("table_count")),
-        ("Raw input objects", counts.get("source_raw_variable_count")),
+        ("Raw source objects", counts.get("source_raw_variable_count")),
         ("Formula-derived external objects", counts.get("formula_derived_external_variable_count")),
     ]
     lines = [
         "# Step 3 Input Boundary", "",
         "## What this checkpoint asks you to confirm", "",
-        "The proposed logical inputs, their source roles and shapes, and the current source-bound boundary evidence. "
+        "The supported request fields, broader source roles and shapes, and current source-bound evidence. "
         "Confirmation records these input assumptions; it does not approve the final Step 3 design or release Step 4.", "",
         "## Purpose and scope", "",
         f"Bound source run: `{conversion.display_report_value(source.get('run_id'))}`; source ID: "
         f"`{conversion.display_report_value(source.get('source_id'))}`. Scenario: `{conversion.display_report_value(scenario.get('scenario_id'))}`. "
         "The source scenario and requested targets are listed below; formula caches are not inputs.", "",
         "## Verified results", "",
-        "Counts describe logical business objects. A cell coordinate or mapped table slot is source provenance, not a separate business input.", "",
+        "Counts below describe the broader source catalog, not caller-mutable request fields. "
+        "A cell coordinate or mapped table slot is source provenance, not a separate business input.", "",
         "| Measure | Count |", "|---|---:|"]
     lines.extend(f"| {label} | {conversion.display_report_value(value)} |" for label, value in objects)
-    lines.extend(["", "### Logical input groups and source roles", ""])
+    sample = payload.get("sample_boundary")
+    if isinstance(sample, dict):
+        lines.extend(["", "## Supported request and fixed source boundary", "",
+                      f"Current workbook SHA-256: `{sample['source_workbook_sha256']}`. "
+                      f"Exact request cases: {sample['request_case_count']}; named request fields: "
+                      f"{sample['request_field_count']}; selected raw request cells: "
+                      f"{sample['request_raw_cell_count']}; external vectors: "
+                      f"{sample['external_vector_count']}; separately checked fixed source literals: "
+                      f"{sample['fixed_source_literal_count']}.", "",
+                      "Request axes and complete Cartesian membership are recorded in the machine checkpoint. "
+                      "Fixed contract fields carried by requests are not extra mutable inputs. "
+                      f"Separate fixed-literal source ledger: `{sample['fixed_literal_contract']['path']}` "
+                      f"(SHA-256 `{sample['fixed_literal_contract']['sha256']}`).", "",
+                      "| Request field | Exact source cells | Scope |", "|---|---|---|"])
+        for field in sample["request_fields"]:
+            scope = (f"fixed to `{field['fixed_source_literal']}`" if "fixed_source_literal" in field
+                     else "request-selected within the stated case axes")
+            lines.append(f"| {_markdown_table_cell(field['name'])} | "
+                         f"{_markdown_table_cell(', '.join(field['source_cells']))} | {scope} |")
+        lines.extend(["", "External vector source/age extents:", ""])
+        for vector in sample["external_vectors"]:
+            lines.append(f"- `{vector['name']}`: {vector['source_extent']}; age keys "
+                         f"{vector['age_extent']} ({len(vector['age_keys'])} values per request); "
+                         f"producer version `{vector['producer_version']}`.")
+        lines.extend(["", "Fixed source fields:", ""])
+        for entry in sample["fixed_source_fields"]:
+            lines.append(f"- `{entry['name']}` at `{entry['address']}` = "
+                         f"`{json.dumps(entry['source_literal'], ensure_ascii=False)}` (formula-mode source literal).")
+        lines.extend(["", "Exact fixed source literals (including physical presence):", ""])
+        for entry in sample["fixed_source_literals"]:
+            lines.append(f"- `{entry['address']}` = `{json.dumps(entry['source_literal'], ensure_ascii=False)}`; "
+                         f"physical cell present: `{str(entry['present']).lower()}`.")
+        lines.extend(["", f"Broader internal source catalog objects: "
+                      f"{len(sample['internal_variable_ids'])}; their IDs remain in the machine checkpoint.", ""])
+    lines.extend(["", "### Source catalog groups and roles", ""])
     groups = payload.get("groups")
     groups = groups if isinstance(groups, list) else []
     for group in groups:
@@ -1371,7 +1702,7 @@ def _boundary_markdown(
         records = [item for item in source_records if isinstance(item, dict) and item.get("group_id") == group_id]
         lines.append(
             f"**{conversion.display_report_value(group.get('name', group_id))}** — {conversion.display_report_value(group.get('classification'))}; "
-            f"{len(members)} logical objects, {len(records)} source-record groups."
+            f"{len(members)} source objects, {len(records)} source-record groups."
         )
         for variable in members:
             extents = [f"{conversion.display_report_value(item.get('sheet'))}!{conversion.display_report_value(item.get('range'))}"
@@ -1419,7 +1750,7 @@ def _boundary_markdown(
             )
     if variables:
         kinds = sorted({conversion.display_report_value(item.get("kind")) for item in variables if isinstance(item, dict)})
-        lines.extend(["", f"Recorded logical input kinds: {', '.join(kinds) if kinds else 'Not recorded'}."])
+        lines.extend(["", f"Recorded source catalog kinds: {', '.join(kinds) if kinds else 'Not recorded'}."])
     topology_available = cut.get("topology_available")
     if topology_available is True:
         lines.append(

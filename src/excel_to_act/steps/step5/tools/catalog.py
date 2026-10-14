@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from excel_to_act.steps.conversion_workflow import review_tool_entries
+
 
 def tool_catalog() -> dict[str, Any]:
     return {"schema_version": "step5.tools.v1", "tools": [
@@ -10,10 +12,8 @@ def tool_catalog() -> dict[str, Any]:
         {"name": "step5.oracle", "command": "step5 oracle --workflow DIR [--validation VARIABLE_VALIDATION.json] [--target NAME] [--range SHEET!A1:B2]", "outputs": ["Stage 5 native evidence (does not advance the stage)"]},
         {"name": "step5.validate", "command": "step5 validate --workflow DIR [--inputs REQUEST.json]", "outputs": ["isolated generated-code execution evidence"]},
         {"name": "step5.reconcile", "command": "step5 reconcile --workflow DIR --validation FILE --oracle FILE", "outputs": ["validation_report.json/.md"]},
-        {"name": "workflow.typesafe", "command": "workflow typesafe --workflow DIR --stage 5 --request REQUEST.json", "outputs": ["live, current-artifact-bound TypeSafe review evidence"]},
-        {"name": "workflow.confirm", "command": "workflow confirm --workflow DIR --stage 5 --reviewer agent|human|typesafe --decision approve --message TEXT [--evidence REVIEW.json]", "outputs": ["approval receipt; use workflow.reject to reject"]},
-        {"name": "workflow.reject", "command": "workflow reject --workflow DIR --stage 5 --reviewer agent|human|typesafe --return-to 1|2|3|4|5 --message TEXT [--evidence REVIEW.json]", "outputs": ["rejection receipt routed to the current or an earlier stage"]},
-        {"name": "workflow.status", "command": "workflow status --workflow DIR", "outputs": ["freshness, approvals, and next permitted stage"]},
+        {"name": "step5.finalize-cases", "command": "step5 finalize-cases --workflow DIR --case-report FILE (repeat 32 times)", "outputs": ["formal exact-case validation_report.json/.md"]},
+        *review_tool_entries(5),
     ], "limits": ["Native Excel capture requires Windows and Microsoft Excel.",
                    "Step 5 uses only generated code and a fresh native Excel oracle; it does not calculate with formula caches.",
                    "Variable cases require --inputs on validate, then --validation on oracle, then reconcile with that exact validation and oracle; case receipts bind the input digest without changing the saved-scenario Stage 5 checkpoint.",

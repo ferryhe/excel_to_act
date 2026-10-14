@@ -1,19 +1,27 @@
 ---
 name: excel-to-act-step6
-description: "Use when creating, finalizing, or reviewing the final human-readable Step 6 model-conversion report from accepted Excel-to-Act workflow evidence; not for general report writing."
+description: "Use for current Step 6 internal tool delivery; historical v1 Step 6 reports are read-only."
 ---
 
 # Excel-to-Act Step 6
 
-Use this skill when a user asks for the final model-conversion handover report for an Excel-to-Act workflow, or asks you to review that report. The canonical CLI renderer produces the JSON evidence and Markdown report as a bound pair; this skill supplies the reporting and review scaffold, not a second schema or renderer.
+For a current seven-stage workflow, read `excel-to-act step6 agent`, `excel-to-act step6 tools`, and `excel-to-act workflow status --workflow DIR`. After current approved Stages 1–5 and a separately bound exact comparison, use `excel-to-act step6 candidate --workflow DIR --version VERSION --request REQUEST.json --comparison COMPARISON.json`. Review its immutable exact JSON/Markdown pair, package inventory, interface, dependencies, fixed assets, internal version and permission, and isolated smoke. A passing smoke is not acceptance.
+
+Record Agent review, then obtain an actual human decision on the exact pair. Old Step 6 approvals or TypeSafe delegation cannot authorize this delivery. Only after genuine current approval, use `excel-to-act step6 deliver --workflow DIR` to deliver the same package and verify exact delivery/readback. A failed readback cannot leave an effective new delivery. Use `excel-to-act step7 report --workflow DIR` for the current final report only after Step 6 remains approved and that exact delivery/readback is valid; report creation is not approval. This route is internal only.
+
+## Historical v1 report reference (read-only)
+
+Existing six-stage Step 6 final reports remain readable with their original meaning. The current CLI is read-only for v1, and its `step6 report` command rejects both v1 and v2. The following report standard is retained for interpreting historical reports; use the copied `excel-to-act-step7` skill for current final reports.
+
+Historical reports used the canonical CLI renderer's bound JSON evidence and Markdown report. This retained reporting and review scaffold is not a second schema or renderer.
 
 ## Use the workflow evidence
 
-Read `excel-to-act step6 agent`, `excel-to-act step6 tools`, and `excel-to-act workflow status --workflow DIR` before acting. Inspect the current workflow's reviewer configuration and active delegation record; follow its exact stage scope, reviewer pair, authorization, and threshold. Use the accepted Stage 1–5 artifacts and current freshness state. Do not assume a delegation exists or carry a reviewer pair, threshold, scenario, target, input count, worksheet, or approval over from another workflow.
+When reading a saved v1 report, inspect its recorded reviewer configuration and delegation with their original stage scope, reviewer pair, authorization, and threshold. Use its accepted Stage 1–5 artifacts and recorded freshness state. Do not carry a reviewer pair, threshold, scenario, target, input count, worksheet, or approval into v2.
 
-When report creation is requested and the current workflow permits it, use `excel-to-act step6 report --workflow DIR`. It writes a new report revision; it does not approve or reject that revision. Do not regenerate reports or record decisions merely because this skill is being installed, read, or used as a reference. This skill does not grant approval, delegation, or external-action authority.
+The historical `excel-to-act step6 report --workflow DIR` created a report revision without approving it. That write route is now disabled. Do not regenerate a historical report or record decisions merely because this skill is read or used as a reference. This skill grants no approval, delegation, or external-action authority.
 
-Use `excel-to-act step6 template` to print the Markdown scaffold when drafting or checking report coverage. Treat the template as a writing aid. Keep the canonical renderer's JSON/Markdown pair and schema authoritative; do not replace their evidence with a manually completed template.
+The retained `assets/conversion_report.md` is the historical Markdown scaffold. Use `excel-to-act step7 template` for current report coverage. Keep the canonical renderer's JSON/Markdown pair and schema authoritative; do not replace their evidence with a manually completed template.
 
 ## Report and review standard
 
@@ -25,6 +33,6 @@ State material extraction limits, comparison differences, and unresolved busines
 
 Use input-catalog facts only after the accepted source binding and every recorded catalog digest match. If a required source digest or artifact is absent, invalid, or stale, report those facts as unavailable. Preserve source values, identifiers, formulas, and provenance exactly; write new instructions and narrative in English.
 
-Include practical bundle and run links, then point readers to the current workflow acceptance ledger for later Agent, TypeSafe, or human decisions. The report is generated ready for review and remains immutable after decisions are recorded; do not edit it to add approval state. Follow the current Step 6 review contract for any actual decision or return/revision.
+Historical reports include practical bundle and run links and point readers to their acceptance ledger for later Agent, TypeSafe, or human decisions. A saved report remains immutable after decisions are recorded; do not edit it to add approval state. Current Step 7 decisions follow the current Agent and actual-human review contract.
 
 For the fuller section checklist and example table structure, read [the conversion report scaffold](assets/conversion_report.md). The CLI renderer remains the source of the final report structure and evidence.

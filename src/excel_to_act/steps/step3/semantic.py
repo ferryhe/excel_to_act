@@ -28,6 +28,8 @@ def build_semantic_plan(analysis_dir: Path, semantic_map_path: Path) -> dict[str
         input_value = workflow._read_json(semantic_map_path)
         plan = _build_plan(input_value, semantic_map_path, analysis_dir, manifest, binding, fields, dependencies,
                            fields_sha, dependencies_sha, inventory, root)
+        if plan["selection_basis"] == "exact_case":
+            raise ValueError("exact-case plans require an independent --case-out directory")
         markdown = _plan_markdown(plan)
         plan["report_md_sha256"] = workflow._hash_bytes(markdown.encode("utf-8"))
         digest = workflow._record_stage(analysis_dir, manifest, "semantic_plan", plan)
@@ -40,6 +42,78 @@ def build_semantic_plan(analysis_dir: Path, semantic_map_path: Path) -> dict[str
     except Exception as exc:
         return {"tool": "step3.plan", "status": "blocked",
                 "diagnostics": [{"code": "semantic_map_invalid", "severity": "error", "message": str(exc)}]}
+
+
+def build_case_semantic_plan(analysis_dir: Path, semantic_map_path: Path,
+                             out_dir: Path) -> dict[str, Any]:
+    """Write a checked semantic plan for one sealed case outside the analysis root."""
+    try:
+        analysis_dir, manifest, binding, root, inventory_path = workflow._load_context(analysis_dir)
+        from excel_to_act.steps.step3.input_boundary import require_confirmed_boundary_for_analysis
+
+        require_confirmed_boundary_for_analysis(analysis_dir, manifest, binding)
+        fields, fields_sha = workflow._read_stage(analysis_dir, manifest, "fields")
+        dependencies, dependencies_sha = workflow._read_stage(analysis_dir, manifest, "dependencies")
+        semantic_map_path = semantic_map_path.expanduser().resolve()
+        out_dir = out_dir.expanduser().resolve()
+        from excel_to_act.steps.conversion_workflow import load_workflow
+
+        workflow_root, _workflow_manifest = load_workflow(Path(binding["workflow_path"]))
+        if (not semantic_map_path.is_file() or out_dir == analysis_dir
+                or out_dir.is_relative_to(analysis_dir) or out_dir == root
+                or out_dir.is_relative_to(root) or out_dir == workflow_root
+                or out_dir.is_relative_to(workflow_root)):
+            raise ValueError("case semantic map or independent output directory is invalid")
+        plan = _build_plan(workflow._read_json(semantic_map_path), semantic_map_path, analysis_dir,
+                           manifest, binding, fields, dependencies, fields_sha, dependencies_sha,
+                           workflow._read_json(inventory_path), root)
+        if plan["selection_basis"] != "exact_case":
+            raise ValueError("case semantic map must select one exact case")
+        markdown = _plan_markdown(plan)
+        plan["report_md_sha256"] = workflow._hash_bytes(markdown.encode("utf-8"))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        json_path, md_path = out_dir / "semantic_plan.json", out_dir / "semantic_plan.md"
+        if json_path.exists() or md_path.exists():
+            raise ValueError("case semantic plan output already exists")
+        workflow._write_bytes(json_path, workflow._json_bytes(plan))
+        workflow._write_bytes(md_path, markdown.encode("utf-8"))
+        return {"tool": "step3.plan", "status": "pass", "semantic_plan": str(json_path),
+                "sha256": workflow._hash_file(json_path), "markdown": str(md_path),
+                "report_md_sha256": plan["report_md_sha256"], "coverage": plan["coverage"]}
+    except Exception as exc:
+        return {"tool": "step3.plan", "status": "blocked", "reason": str(exc)}
+
+
+def validate_case_semantic_plan(analysis_dir: Path, plan_path: Path) -> dict[str, Any]:
+    """Rebuild a case plan from its hashed map and current source evidence."""
+    try:
+        analysis_dir, manifest, binding, root, inventory_path = workflow._load_context(analysis_dir)
+        from excel_to_act.steps.step3.input_boundary import require_confirmed_boundary_for_analysis
+
+        require_confirmed_boundary_for_analysis(analysis_dir, manifest, binding)
+        fields, fields_sha = workflow._read_stage(analysis_dir, manifest, "fields")
+        dependencies, dependencies_sha = workflow._read_stage(analysis_dir, manifest, "dependencies")
+        plan_path = plan_path.expanduser().resolve()
+        plan = workflow._read_json(plan_path)
+        if plan.get("selection_basis") != "exact_case":
+            raise ValueError("case semantic check needs an exact-case plan")
+        md_path = plan_path.with_suffix(".md")
+        if not md_path.is_file() or workflow._hash_file(md_path) != plan.get("report_md_sha256"):
+            raise ValueError("case semantic plan Markdown is missing or stale")
+        map_ref = plan.get("semantic_map_input", {})
+        map_path = Path(map_ref.get("path", "")).expanduser().resolve()
+        if not map_path.is_file() or workflow._hash_file(map_path) != map_ref.get("sha256"):
+            raise ValueError("case semantic map is missing or stale")
+        expected = _build_plan(workflow._read_json(map_path), map_path, analysis_dir,
+                               manifest, binding, fields, dependencies, fields_sha,
+                               dependencies_sha, workflow._read_json(inventory_path), root)
+        if expected.get("plan_fingerprint") != plan.get("plan_fingerprint"):
+            raise ValueError("case semantic plan differs from its current map or source evidence")
+        return {"tool": "step3.check", "status": "pass", "case_id": plan["case_identity"]["case_id"],
+                "semantic_plan": str(plan_path), "sha256": workflow._hash_file(plan_path),
+                "coverage": plan["coverage"]}
+    except Exception as exc:
+        return {"tool": "step3.check", "status": "blocked", "reason": str(exc)}
 
 
 def validate_semantic_plan(analysis_dir: Path, semantic_plan_path: Path | None = None) -> dict[str, Any]:
@@ -117,15 +191,18 @@ def _build_plan(value: Any, input_path: Path, analysis_dir: Path, manifest: dict
         raise ValueError("semantic map source or current Step 3 artifact hashes do not match")
 
     selection_basis = value.get("selection_basis", "active_trace")
-    if selection_basis not in {"active_trace", "static_candidate"}:
-        raise ValueError("semantic map selection_basis must be active_trace or static_candidate")
+    if selection_basis not in {"active_trace", "static_candidate", "exact_case"}:
+        raise ValueError("semantic map selection_basis is unsupported")
     candidate = selection_basis == "static_candidate"
+    exact_case = selection_basis == "exact_case"
     profile_ref, profile = _read_evidence(value.get("source_family_profile"), "source family profile", input_path.parent)
-    trace_field = "source_candidate_trace" if candidate else "active_trace"
+    trace_field = "exact_case_trace" if exact_case else "source_candidate_trace" if candidate else "active_trace"
     trace_ref, trace = _read_evidence(value.get(trace_field),
                                       "source-candidate formula trace" if candidate else "active formula trace",
                                       input_path.parent)
-    expected_profile_schema = "gp.source_candidate_family_profile.v1" if candidate else "gp.source_family_profile.v1"
+    expected_profile_schema = ("step3.exact_case_family_profile.v1" if exact_case else
+                               "gp.source_candidate_family_profile.v1" if candidate else
+                               "gp.source_family_profile.v1")
     if profile.get("schema_version") != expected_profile_schema or profile.get("status") != "pass":
         raise ValueError("source family profile is not a passing supported profile")
     if profile.get("source_sha256") != source_binding["source_sha256"] or profile.get("binding_sha256") != manifest["binding_sha256"]:
@@ -134,6 +211,30 @@ def _build_plan(value: Any, input_path: Path, analysis_dir: Path, manifest: dict
         raise ValueError("source family profile was built from a different inventory")
     if trace.get("source_sha256") != source_binding["source_sha256"]:
         raise ValueError("formula trace belongs to another workbook source")
+    case_identity = None
+    if exact_case:
+        from excel_to_act.steps.conversion_workflow import load_workflow
+        from excel_to_act.steps.step3.exact_cases import load_bound_case
+        from excel_to_act.steps.step3.input_boundary import confirmed_boundary_reference
+
+        workflow_root, workflow_manifest = load_workflow(Path(binding["workflow_path"]))
+        _boundary_ref, boundary_path, _boundary_md = confirmed_boundary_reference(
+            workflow_root, workflow_manifest)
+        case_manifest, case_id = value.get("case_manifest"), value.get("case_id")
+        if (not isinstance(case_manifest, dict) or set(case_manifest) != {"path", "sha256"}
+                or not isinstance(case_id, str) or not case_id):
+            raise ValueError("exact-case semantic map needs a bound case manifest and case ID")
+        manifest_path = Path(case_manifest["path"]).expanduser().resolve()
+        if not manifest_path.is_file() or workflow._hash_file(manifest_path) != case_manifest["sha256"]:
+            raise ValueError("exact-case semantic map case manifest is missing or stale")
+        source_path = Path(workflow_manifest["source"]["step1_source_copy_path"])
+        case_identity, _case_trace, _case_artifacts = load_bound_case(
+            manifest_path, case_id, source_path, boundary_path)
+        if (profile.get("case_identity") != case_identity
+                or trace_ref != case_identity["trace"]
+                or profile.get("exact_case_trace") != trace_ref
+                or profile.get("selection_basis") != "exact_case"):
+            raise ValueError(f"exact-case {case_id} profile or trace belongs to another case")
     if candidate:
         from excel_to_act.steps.step3.profiling import _validate_candidate_trace_binding
 
@@ -146,7 +247,7 @@ def _build_plan(value: Any, input_path: Path, analysis_dir: Path, manifest: dict
         if (profile.get("candidate_scope") != trace.get("candidate_scope")
                 or profile.get("model_scope") != trace.get("model_scope")):
             raise ValueError("candidate profile and trace model-scope evidence differ")
-    else:
+    elif not exact_case:
         if trace.get("native_excel_called") is not False or trace.get("formula_cache_inputs") is not False:
             raise ValueError("active trace must be source-only and must not use formula caches")
         if profile.get("selection_basis") != "active_trace":
@@ -231,9 +332,10 @@ def _build_plan(value: Any, input_path: Path, analysis_dir: Path, manifest: dict
 
     modules = _validate_modules(value.get("modules"))
     variables = _validate_variables(value.get("variables"))
-    if candidate:
+    if candidate or exact_case:
         external_boundary_variables = _validate_external_boundary_variables(
-            variables, binding, manifest, trace
+            variables, binding, manifest, trace,
+            case_identity["boundary_sha256"] if exact_case else None,
         )
     else:
         if any(item.get("role") == "external" for item in variables.values()):
@@ -251,6 +353,8 @@ def _build_plan(value: Any, input_path: Path, analysis_dir: Path, manifest: dict
     if reference_resolution is not None:
         execution_plan = _validate_execution_plan(value.get("execution_plan"), modules,
                                                   set(families_by_id), variables, source_mappings)
+    if exact_case and (reference_resolution is None or execution_plan is None):
+        raise ValueError("exact-case semantic map needs source reference resolution and ordered execution passes")
     expected_family_ids = set(families_by_id)
     assigned_family_ids = {item["source_family_id"] for item in source_mappings}
     if assigned_family_ids != expected_family_ids:
@@ -321,6 +425,8 @@ def _build_plan(value: Any, input_path: Path, analysis_dir: Path, manifest: dict
               "readiness": {"static_mapping_complete": True, "semantic_review_required": True,
                             "generation_ready": False, "runtime_verified": False,
                             "native_reconciled": False, "gpu_executable": False}}
+    if case_identity is not None:
+        result["case_identity"] = case_identity
     if candidate and trace.get("model_scope") is not None:
         scope_ref = trace["model_scope"]
         result["candidate_scope"] = trace["candidate_scope"]
@@ -652,6 +758,7 @@ def _validate_variables(value: Any) -> dict[str, dict[str, Any]]:
 def _validate_external_boundary_variables(
     variables: dict[str, dict[str, Any]], binding: dict[str, Any], manifest: dict[str, Any],
     candidate_trace: dict[str, Any],
+    case_boundary_sha256: str | None = None,
 ) -> list[dict[str, Any]]:
     """Bind formula-derived external variables to the separately confirmed catalog."""
     from excel_to_act.steps.conversion_workflow import load_workflow
@@ -662,10 +769,13 @@ def _validate_external_boundary_variables(
         raise ValueError("external boundary variables require a workflow-bound input catalog")
     workflow_root, workflow_manifest = load_workflow(Path(workflow_path))
     boundary_reference, boundary_path, _boundary_md = confirmed_boundary_reference(workflow_root, workflow_manifest)
-    declared_reference = candidate_trace.get("input_boundary", {})
-    for key in ("revision", "boundary_sha256", "artifact", "review_receipts"):
-        if declared_reference.get(key) != boundary_reference.get(key):
-            raise ValueError("external semantic variables cite a stale input-boundary revision")
+    if case_boundary_sha256 is None:
+        declared_reference = candidate_trace.get("input_boundary", {})
+        for key in ("revision", "boundary_sha256", "artifact", "review_receipts"):
+            if declared_reference.get(key) != boundary_reference.get(key):
+                raise ValueError("external semantic variables cite a stale input-boundary revision")
+    elif workflow._hash_file(boundary_path) != case_boundary_sha256:
+        raise ValueError("external semantic variables cite another exact-case boundary")
     boundary = workflow._read_json(boundary_path)
     expected_source = {"source_id": binding["source"]["source_id"],
                        "run_id": binding["source"]["run_id"],
@@ -1491,7 +1601,9 @@ def _plan_markdown(plan: dict[str, Any]) -> str:
             f"- Semantic equation families: {coverage['semantic_family_count']} from {coverage['source_family_count']} source candidates",
             f"- Array instances: {coverage['array_instance_count']} in {coverage['array_family_count']} array families",
         ]
-        summary = "This artifact maps the checked historical active formula set to named variables, modules, and equation families. It does not execute formulas or prove semantic correctness."
+        summary = ("This artifact maps one sealed request trace to named variables, modules, and equation families. It does not prove semantic correctness or Stage 5 acceptance."
+                   if plan.get("selection_basis") == "exact_case" else
+                   "This artifact maps the checked historical active formula set to named variables, modules, and equation families. It does not execute formulas or prove semantic correctness.")
     lines = ["# Step 3 Semantic Map", "", "Status: **Complete static mapping draft; review required**", "",
              f"Source `{plan['source']['source_id']}` · run `{plan['source']['run_id']}` · SHA-256 `{plan['source']['source_sha256']}`",
              f"Binding SHA-256 `{plan['source']['binding_sha256']}`", "",

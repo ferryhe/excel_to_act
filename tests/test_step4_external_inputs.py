@@ -415,7 +415,8 @@ def test_step4_capture_external_cli_has_no_user_range_override(tmp_path: Path, m
     workflow, _source = _external_workflow(tmp_path)
     monkeypatch.setattr(external_inputs, "capture_excel_oracle", _mock_oracle)
     result = CliRunner().invoke(app, ["step4", "capture-external", "--workflow", str(workflow)])
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    assert result.exit_code == 2
+    assert "read-only" in result.output
+    payload = external_inputs.capture_external_inputs(workflow)
     assert payload["status"] == "pass"
     assert payload["external_coordinate_count"] == 530

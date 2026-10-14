@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
+from heapq import heappop, heappush
 import re
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -1476,6 +1477,173 @@ def _render_single_family(
                          f"(values, {list(call['bindings'])!r})")
         return lines
     raise CalculationBlocked(f"non-scalar family lacks a schedulable logical axis: {family_id}")
+
+
+def render_cell_ordered_driver(semantic_plan: dict[str, Any], compilation: dict[str, Any],
+                               trace: dict[str, Any]) -> str:
+    """Use checked cell dependencies when a whole-family loop has a false cycle."""
+    mappings = {item["source_family_id"]: item for item in semantic_plan.get("source_mappings", [])}
+    variables = semantic_plan.get("variables", {})
+    if isinstance(variables, list):
+        variables = {item["variable_id"]: item for item in variables}
+    schedule = compilation["execution_schedule"]
+    contexts = schedule["family_contexts"]
+    functions = compilation["source_family_to_function"]
+    bindings = compilation.get("source_family_bindings", {})
+    exceptions = {(item["source_family_id"], _address_key(item["address"])): item
+                  for item in compilation.get("member_function_exceptions", [])}
+    arrays = {instance["anchor_source_family_id"]: instance
+              for group in semantic_plan.get("array_mappings", [])
+              for instance in group.get("instances", [])}
+    source_index = build_source_cell_index(semantic_plan)
+    calls: dict[str, tuple[str, dict[str, Any]]] = {}
+    for family_id, mapping in mappings.items():
+        for call in _member_calls(family_id, mappings, contexts, functions,
+                                  bindings, exceptions, source_index):
+            key = _address_key(call["address"])
+            if key in calls:
+                raise CalculationBlocked(f"case formula has duplicate logical ownership: {key}")
+            calls[key] = (family_id, call)
+    formula_cells = {_address_key(cell["address"]): cell for cell in trace.get("cells", [])
+                     if cell.get("role") == "calculated_formula"}
+    followers = {_address_key(edge["consumer"]): _address_key(edge["prerequisite"])
+                 for edge in trace.get("edges", []) if edge.get("relationship") == "array_formula_anchor"}
+    expected_followers = {_address_key(cell["address"]) for cell in trace.get("cells", [])
+                          if cell.get("role") == "calculated_array_formula"}
+    if set(calls) != set(formula_cells) or set(followers) != expected_followers or not set(followers.values()) <= set(calls):
+        raise CalculationBlocked("case cell schedule differs from mapped formula or array members")
+
+    by_sheet: dict[str, dict[int, dict[int, str]]] = {}
+    for address in set(calls) | set(followers):
+        ref = _parse_reference(address, "Main")
+        by_sheet.setdefault(ref.sheet.casefold(), {}).setdefault(ref.min_row, {})[ref.min_col] = address
+
+    def referenced_cells(source_ref: str, owner: str) -> list[str]:
+        ref = _parse_reference(source_ref, owner.split("!", 1)[0])
+        if ref is None:
+            raise CalculationBlocked(f"case trace has an invalid formula prerequisite: {source_ref}")
+        rows = by_sheet.get(ref.sheet.casefold(), {})
+        return [address for row in range(ref.min_row, ref.max_row + 1)
+                for col, address in rows.get(row, {}).items()
+                if ref.min_col <= col <= ref.max_col]
+
+    lookups: dict[str, list[dict[str, Any]]] = {}
+    for item in trace.get("lookups", []):
+        lookups.setdefault(_address_key(item["formula_cell"]), []).append(item)
+    dependencies: dict[str, set[str]] = {address: set() for address in calls}
+    for edge in trace.get("edges", []):
+        consumer = _address_key(edge["consumer"])
+        if consumer not in calls:
+            continue
+        relationship = edge.get("relationship")
+        if relationship in {"cell_reference", "range_read"}:
+            prerequisites = referenced_cells(edge["prerequisite"], consumer)
+        elif relationship == "lookup_table":
+            prerequisites = []
+            for lookup in lookups.get(consumer, []):
+                if lookup.get("table_range", "").casefold() != edge["prerequisite"].casefold():
+                    continue
+                ref = _parse_reference(lookup["table_range"], consumer.split("!", 1)[0])
+                row, column = lookup.get("matched_row"), lookup.get("return_column")
+                if (ref is None or row is not None and not isinstance(row, int)
+                        or not isinstance(column, int)):
+                    raise CalculationBlocked("case lookup has malformed source selection")
+                if (row is not None and not ref.min_row <= row <= ref.max_row
+                        or not 1 <= column <= ref.max_col - ref.min_col + 1):
+                    raise CalculationBlocked("case lookup selected a cell outside its source range")
+                sheet_rows = by_sheet.get(ref.sheet.casefold(), {})
+                for key_row in range(ref.min_row, (row if row is not None else ref.max_row) + 1):
+                    key_cell = sheet_rows.get(key_row, {}).get(ref.min_col)
+                    if key_cell is not None:
+                        prerequisites.append(key_cell)
+                if row is not None:
+                    selected = sheet_rows.get(row, {}).get(ref.min_col + column - 1)
+                    if selected is not None:
+                        prerequisites.append(selected)
+        else:
+            continue
+        for prerequisite in prerequisites:
+            owner = followers.get(prerequisite, prerequisite)
+            if owner in calls and owner != consumer:
+                dependencies[consumer].add(owner)
+
+    passes = semantic_plan.get("execution_plan", {}).get("passes", [])
+    pass_rank = {item["pass_id"]: item["order"] for item in passes}
+    family_pass = schedule["family_pass"]
+    family_rank = schedule["family_rank"]
+    def priority(address: str) -> tuple[int, int, str]:
+        family_id = calls[address][0]
+        return (pass_rank[family_pass[family_id]], family_rank[family_id], address)
+    dependents: dict[str, set[str]] = {address: set() for address in calls}
+    for consumer, prerequisites in dependencies.items():
+        for prerequisite in prerequisites:
+            dependents[prerequisite].add(consumer)
+    ready: list[tuple[int, int, str]] = []
+    for address, prerequisites in dependencies.items():
+        if not prerequisites:
+            heappush(ready, priority(address))
+    order: list[str] = []
+    while ready:
+        _pass, _rank, address = heappop(ready)
+        order.append(address)
+        for consumer in dependents[address]:
+            dependencies[consumer].discard(address)
+            if not dependencies[consumer]:
+                heappush(ready, priority(consumer))
+    if len(order) != len(calls):
+        raise CalculationBlocked("same-case formula cell dependency cycle")
+    if any(priority(left)[0] > priority(right)[0] for left, right in zip(order, order[1:])):
+        raise CalculationBlocked("case cell execution crosses an approved pass boundary")
+
+    lines = ["import modular_runtime as runtime", "", "def run_pricing(values, family_functions):",
+             '    """Run one exact case in its checked source-cell dependency order."""']
+    for address in order:
+        family_id, call = calls[address]
+        if family_id in arrays:
+            instance = arrays[family_id]
+            anchor = _address_key(instance["anchor"])
+            if address != anchor or instance.get("variable_id") != call["variable_id"]:
+                raise CalculationBlocked("case array anchor differs from its logical owner")
+            ref = _parse_reference(instance["array_ref"], anchor.split("!", 1)[0])
+            if ref is None or instance.get("shape") != [ref.max_row - ref.min_row + 1,
+                                                         ref.max_col - ref.min_col + 1]:
+                raise CalculationBlocked("case array geometry differs from its source range")
+            function_name = call["function_name"]
+            args = ", ".join(str(index) for index in call["indices"])
+            lines.append(f"    _array = family_functions[{function_name!r}](values, "
+                         f"{list(call['bindings'])!r}{', ' + args if args else ''})")
+            rows, columns = instance["shape"]
+            lines.append(f"    if (not isinstance(_array, list) or len(_array) != {rows} "
+                         f"or any(not isinstance(_row, list) or len(_row) != {columns} for _row in _array)):")
+            lines.append("        raise runtime.CalculationBlocked('case array result differs from source geometry')")
+            for member in [instance["anchor"], *instance.get("source_members", [])]:
+                member_ref = _parse_reference(member, anchor.split("!", 1)[0])
+                if (member_ref is None or not member_ref.single
+                        or member_ref.sheet.casefold() != ref.sheet.casefold()
+                        or not ref.min_row <= member_ref.min_row <= ref.max_row
+                        or not ref.min_col <= member_ref.min_col <= ref.max_col):
+                    raise CalculationBlocked("case array member is outside its source geometry")
+                members = [item for item in source_index.get((member_ref.sheet.casefold(),
+                                                               member_ref.min_row, member_ref.min_col), [])
+                           if item.variable_id == call["variable_id"]]
+                if len(members) != 1:
+                    raise CalculationBlocked("case array member lacks unique logical ownership")
+                target = f"values[{call['variable_id']!r}]"
+                for index in members[0].indices:
+                    target += f"[{index}]"
+                lines.append(f"    {target} = _array[{member_ref.min_row - ref.min_row}]"
+                             f"[{member_ref.min_col - ref.min_col}]")
+            continue
+        target = f"values[{call['variable_id']!r}]"
+        for index in call["indices"]:
+            target += f"[{index}]"
+        arguments = ", ".join(str(index) for index in call["indices"])
+        lines.append(f"    {target} = family_functions[{call['function_name']!r}](values, "
+                     f"{list(call['bindings'])!r}{', ' + arguments if arguments else ''})")
+    lines.append("    return values")
+    source = "\n".join(lines) + "\n"
+    compile(source, "pricing.py", "exec")
+    return source
 
 
 def _validate_emitted_schedule(emitted: dict[str, Any], schedule: dict[str, Any],

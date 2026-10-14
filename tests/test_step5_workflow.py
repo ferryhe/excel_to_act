@@ -6,6 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 
+import pytest
+
 from openpyxl import Workbook
 
 from excel_to_act.steps.conversion_workflow import (
@@ -34,6 +36,163 @@ from excel_to_act.steps.step5.workflow import (
     validate_generated,
 )
 from excel_to_act.steps.step5 import workflow as step5_workflow
+
+
+def test_exact_case_formula_trace_replaces_saved_scenario_members(tmp_path: Path) -> None:
+    trace = tmp_path / "case-trace.json"
+    trace.write_text(json.dumps({"source_sha256": "source", "cells": [
+        {"address": "Premium!F20", "role": "calculated_formula", "formula": "=A1+1"},
+        {"address": "Premium!G20", "role": "calculated_array_formula", "formula": "=SUM(A1:A2)"},
+    ]}), encoding="utf-8")
+    report = {"source_sha256": "source", "active_trace": {"path": str(tmp_path / "missing.json")}}
+    manifest = {"active_formula_addresses": ["Premium!A1"]}
+    ref = {"path": str(trace), "sha256": hash_file(trace)}
+    addresses, formulas = _active_formula_details(report, manifest, case_trace=ref)
+    assert addresses == ["Premium!F20", "Premium!G20"]
+    assert set(formulas) == {"premium!F20", "premium!G20"}
+    assert step5_workflow._case_formula_ranges(json.loads(trace.read_text())) == ["Premium!F20:G20"]
+    with pytest.raises(ValueError, match="changed"):
+        _active_formula_details(report, manifest, case_trace={**ref, "sha256": "stale"})
+
+
+def _synthetic_receipt_set(tmp_path: Path, monkeypatch) -> tuple[dict, list[Path]]:
+    """Small synthetic receipt set; no workbook or real acceptance evidence."""
+    root = tmp_path / "workflow"
+    cases, variants, reports = [], [], []
+    by_input = {}
+
+    def put(path: Path, value: dict) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
+
+    for index in range(32):
+        case_id = f"case-{index:02d}"
+        input_sha = f"{index + 1:064x}"
+        dependency_sha = f"{index + 101:064x}"
+        case_root = tmp_path / "source-cases" / case_id
+        refs = {}
+        for label in ("trace", "raw_request", "public_request", "producer", "profile", "plan"):
+            value = {"case_identity": {"case_id": case_id}} if label == "plan" else {"case_id": case_id}
+            path = put(case_root / f"{label}.json", value)
+            refs[label] = {"path": str(path), "sha256": hash_file(path)}
+        nested_refs = {}
+        for label in ("semantic_map", "case_manifest", "inventory"):
+            path = put(case_root / f"{label}.json", {"case_id": case_id})
+            nested_refs[label] = {"path": str(path), "sha256": hash_file(path)}
+        plan_path = Path(refs["plan"]["path"])
+        put(plan_path, {"case_identity": {"case_id": case_id,
+                                          "case_manifest": nested_refs["case_manifest"]},
+                        "semantic_map_input": nested_refs["semantic_map"]})
+        refs["plan"]["sha256"] = hash_file(plan_path)
+        profile_path = Path(refs["profile"]["path"])
+        put(profile_path, {"case_id": case_id, "inventory": nested_refs["inventory"]})
+        refs["profile"]["sha256"] = hash_file(profile_path)
+        cases.append(refs)
+        variant = {"input_sha256": input_sha, "dependency_sha256": dependency_sha}
+        variants.append(variant)
+        formula_address = f"Premium!A{index + 1}"
+        trace = {"cells": [{"address": formula_address, "role": "calculated_formula", "formula": "=1+1"}]}
+        by_input[input_sha] = (case_id, refs, variant, trace)
+        execution = root / "stage5" / "execution" / case_id
+        request = put(execution / "input_request.json", {"case_id": case_id})
+        refs["public_request"]["sha256"] = hash_file(request)
+        model = put(execution / "model_result.json", {"status": "pass", "input_sha256": input_sha,
+                                                      "dependency_sha256": dependency_sha,
+                                                      "cells": {formula_address: 2}, "targets": {"GP": 7}})
+        validation = put(execution / "execution_validation.json", {
+            "schema_version": "step5.execution_validation.v1", "status": "pass",
+            "compile_pass": True, "standalone_run_pass": True, "source_sha256": "source",
+            "stage4_artifact_sha256": "stage4", "input_sha256": input_sha,
+            "dependency_sha256": dependency_sha, "request_sha256": hash_file(request),
+            "bundle_files": {"model.py": "synthetic-hash"},
+            "result_path": str(model), "result_sha256": hash_file(model),
+        })
+        oracle = put(root / "stage5" / "oracle" / case_id / "excel_oracle.json", {
+            "engine": "Microsoft Excel", "source_copy_sha256": "source",
+            "macros_executed": False, "validation_sha256": hash_file(validation),
+            "named_targets": {"GP": {"value": 7}},
+            "ranges": {formula_address: {"qualified_address": formula_address,
+                                        "values": [[2]], "formulas": [["=1+1"]],
+                                        "excel_errors": [[None]]}},
+        })
+        report = put(root / "stage5" / "cases" / case_id / "case_report.json", {
+            "schema_version": "step5.validation_report.v1", "execution_mode": "variable_input",
+            "status": "ready_for_review", "native_verified_exact_input": True,
+            "mismatch_count": 0, "source_sha256": "source",
+            "stage4_artifact_sha256": "stage4", "stage4_bundle_manifest_sha256": "manifest",
+            "stage3_design_sha256": "design", "input_sha256": input_sha,
+            "dependency_sha256": dependency_sha, "tolerances": {"absolute": 1e-12, "relative": 1e-12},
+            "formula_cache_inputs": False, "standalone_project_imports": False,
+            "exact_case": {"case_id": case_id, "references": refs, "variant": variant,
+                           "formula_member_count": 1},
+            "compared": {"comparison_addresses": [formula_address], "active_formula_members": 1,
+                         "active_formula_identity_matches": 1, "named_targets": 1, "required_targets": 1},
+            "target_results": {"GP": {"model": 7, "excel": 7, "matched": True}},
+            "standalone_validation": {"path": str(validation), "sha256": hash_file(validation),
+                                      "result_sha256": hash_file(model)},
+            "oracle": {"path": str(oracle), "sha256": hash_file(oracle)},
+        })
+        reports.append(report)
+    monkeypatch.setattr(step5_workflow, "_current_exact_case",
+                        lambda _contract, validation, _source: by_input[validation["input_sha256"]])
+    monkeypatch.setattr(step5_workflow, "_preflight_oracle",
+                        lambda oracle, _source, _stage4, _input: oracle)
+    contract = {"design": {"artifact": {"json_sha256": "design"}},
+                "support_domain": {"cases": cases, "status": "exact_cases",
+                                   "tolerances": {"absolute": 1e-12, "relative": 1e-12}},
+                "verified_cases": variants}
+    return contract, reports
+
+
+def test_exact_case_finalization_requires_all_current_distinct_receipts(tmp_path: Path, monkeypatch) -> None:
+    contract, reports = _synthetic_receipt_set(tmp_path, monkeypatch)
+    root = tmp_path / "workflow"
+    records, inputs = step5_workflow._verify_case_receipts(
+        root, reports, contract, "source", "stage4", "manifest", ["GP"],
+        {"model.py": "synthetic-hash"})
+    assert len(records) == 32 and len({record["trace_sha256"] for record in records}) == 32
+    assert len([name for name in inputs if name.endswith("_native_oracle")]) == 32
+    for bad in (reports[:-1], [*reports[:-1], reports[0]]):
+        with pytest.raises(ValueError, match="32|duplicate"):
+            step5_workflow._verify_case_receipts(root, bad, contract, "source", "stage4", "manifest", ["GP"],
+                                                 {"model.py": "synthetic-hash"})
+    first = json.loads(reports[0].read_text())
+    first["compared"]["comparison_addresses"] = ["Premium!B1"]
+    reports[0].write_text(json.dumps(first), encoding="utf-8")
+    with pytest.raises(ValueError, match="complete formula set"):
+        step5_workflow._verify_case_receipts(root, reports, contract, "source", "stage4", "manifest", ["GP"],
+                                             {"model.py": "synthetic-hash"})
+    first["compared"]["comparison_addresses"] = ["Premium!A1"]
+    first["tolerances"]["absolute"] = 0
+    reports[0].write_text(json.dumps(first), encoding="utf-8")
+    with pytest.raises(ValueError, match="complete formula set"):
+        step5_workflow._verify_case_receipts(root, reports, contract, "source", "stage4", "manifest", ["GP"],
+                                             {"model.py": "synthetic-hash"})
+    first["tolerances"]["absolute"] = 1e-12
+    first["exact_case"]["references"] = contract["support_domain"]["cases"][1]
+    reports[0].write_text(json.dumps(first), encoding="utf-8")
+    with pytest.raises(ValueError, match="complete formula set"):
+        step5_workflow._verify_case_receipts(root, reports, contract, "source", "stage4", "manifest", ["GP"],
+                                             {"model.py": "synthetic-hash"})
+    first["exact_case"]["references"] = contract["support_domain"]["cases"][0]
+    oracle_path = Path(first["oracle"]["path"])
+    oracle = json.loads(oracle_path.read_text())
+    oracle["ranges"]["Premium!A1"]["values"] = [[3]]
+    oracle_path.write_text(json.dumps(oracle), encoding="utf-8")
+    first["oracle"]["sha256"] = hash_file(oracle_path)
+    reports[0].write_text(json.dumps(first), encoding="utf-8")
+    with pytest.raises(ValueError, match="do not reconcile"):
+        step5_workflow._verify_case_receipts(root, reports, contract, "source", "stage4", "manifest", ["GP"],
+                                             {"model.py": "synthetic-hash"})
+
+
+def test_exact_case_finalization_rejects_changed_package_file_ledger(tmp_path: Path, monkeypatch) -> None:
+    contract, reports = _synthetic_receipt_set(tmp_path, monkeypatch)
+    root = tmp_path / "workflow"
+    with pytest.raises(ValueError, match="package result or exact request"):
+        step5_workflow._verify_case_receipts(root, reports, contract, "source", "stage4", "manifest", ["GP"],
+                                             {"model.py": "different-package-hash"})
 
 
 def test_step5_evidence_directories_are_reserved_exclusively(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ from importlib.resources import files
 
 from openpyxl import load_workbook
 
+from excel_to_act.steps import conversion_workflow as conversion
 from excel_to_act.steps.conversion_workflow import (
     hash_file,
     load_workflow,
@@ -367,6 +368,7 @@ def capture_external_inputs(workflow_dir: Path) -> dict[str, Any]:
     attempt_dir: Path | None = None
     created_attempt = False
     try:
+        conversion._require_upstream_writable(load_workflow(workflow_dir)[1])
         context = _step3_context(workflow_dir)
         root = context["root"]
         source_path = context["source_path"]

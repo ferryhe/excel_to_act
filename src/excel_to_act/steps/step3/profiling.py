@@ -32,8 +32,16 @@ def profile_source_candidates(analysis_dir: Path, trace_path: Path, out_dir: Pat
     return _profile_source_families(analysis_dir, trace_path, out_dir, candidate=True)
 
 
+def profile_exact_case(analysis_dir: Path, case_manifest: Path, case_id: str,
+                       out_dir: Path) -> dict[str, Any]:
+    """Profile one sealed request trace without sharing its evidence with another case."""
+    return _profile_source_families(analysis_dir, case_manifest, out_dir,
+                                    candidate=False, case_id=case_id)
+
+
 def _profile_source_families(
     analysis_dir: Path, trace_path: Path, out_dir: Path, *, candidate: bool,
+    case_id: str | None = None,
 ) -> dict[str, Any]:
     try:
         analysis_dir, manifest, binding, step1_root, inventory_path = workflow._load_context(analysis_dir)
@@ -41,6 +49,19 @@ def _profile_source_families(
             from excel_to_act.steps.step3.input_boundary import require_confirmed_boundary_for_analysis
 
             require_confirmed_boundary_for_analysis(analysis_dir, manifest, binding)
+        case_identity = None
+        if case_id is not None:
+            from excel_to_act.steps.conversion_workflow import load_workflow
+            from excel_to_act.steps.step3.exact_cases import load_bound_case
+            from excel_to_act.steps.step3.input_boundary import confirmed_boundary_reference
+
+            workflow_root, workflow_manifest = load_workflow(Path(binding["workflow_path"]))
+            _boundary_ref, boundary_path, _boundary_md = confirmed_boundary_reference(
+                workflow_root, workflow_manifest)
+            source_path = Path(workflow_manifest["source"]["step1_source_copy_path"])
+            case_identity, _case_trace, _artifacts = load_bound_case(
+                trace_path, case_id, source_path, boundary_path)
+            trace_path = Path(case_identity["trace"]["path"])
         trace_path = trace_path.expanduser().resolve()
         out_dir = out_dir.expanduser().resolve()
         if not trace_path.is_file():
@@ -49,18 +70,19 @@ def _profile_source_families(
             raise ValueError("profile output must be outside the bound Step 3 analysis directory")
         if out_dir == step1_root or out_dir.is_relative_to(step1_root):
             raise ValueError("profile output must be outside the read-only Step 1 source root")
-        if candidate:
+        if candidate or case_id is not None:
             from excel_to_act.steps.conversion_workflow import load_workflow
 
             workflow_root, _workflow_manifest = load_workflow(Path(binding["workflow_path"]))
             protected = [workflow_root]
             if out_dir in protected or any(out_dir.is_relative_to(item) for item in protected):
-                raise ValueError("candidate profile output must be outside its bound workflow")
+                raise ValueError("profile output must be outside its bound workflow")
 
         inventory = workflow._load_inventory(inventory_path)
         trace = workflow._read_json(trace_path)
         expected_trace_schema = _CANDIDATE_TRACE_SCHEMA if candidate else None
         accepted_trace_schemas = ({expected_trace_schema} if candidate else
+                                  {"step3.exact_case_trace.v1"} if case_id is not None else
                                   {"step4.discovery_trace.v1", "gp.active_trace.v1"})
         if not isinstance(trace, dict) or trace.get("schema_version") not in accepted_trace_schemas:
             label = "source-candidate trace" if candidate else "source-bound active trace"
@@ -79,7 +101,8 @@ def _profile_source_families(
                 if any(out_dir == item or out_dir.is_relative_to(item) or item.is_relative_to(out_dir)
                        for item in protected_scope_inputs):
                     raise ValueError("candidate profile output must be outside its model-scope and full-trace inputs")
-        elif trace.get("native_excel_called") is not False or trace.get("formula_cache_inputs") is not False:
+        elif case_id is None and (trace.get("native_excel_called") is not False
+                                  or trace.get("formula_cache_inputs") is not False):
             raise ValueError("trace must be source-only and must not use formula caches")
         records = trace.get("cells")
         if not isinstance(records, list):
@@ -145,14 +168,17 @@ def _profile_source_families(
             sheet_formulas[family["sheet"]] += family["member_count"]
             sheet_families[family["sheet"]] += 1
         trace_sha = workflow._hash_file(trace_path)
-        schema = _CANDIDATE_PROFILE_SCHEMA if candidate else "gp.source_family_profile.v1"
-        trace_key = "source_candidate_trace" if candidate else "historical_selection_trace"
+        schema = ("step3.exact_case_family_profile.v1" if case_id is not None else
+                  _CANDIDATE_PROFILE_SCHEMA if candidate else "gp.source_family_profile.v1")
+        trace_key = ("exact_case_trace" if case_id is not None else
+                     "source_candidate_trace" if candidate else "historical_selection_trace")
         payload = {
             "schema_version": schema, "status": "pass",
             "source_sha256": source_sha, "binding_sha256": manifest["binding_sha256"],
             "inventory": {"path": str(inventory_path), "sha256": workflow._hash_file(inventory_path)},
             trace_key: {"path": str(trace_path), "sha256": trace_sha},
-            "selection_basis": "static_candidate" if candidate else "active_trace",
+            "selection_basis": ("exact_case" if case_id is not None else
+                                "static_candidate" if candidate else "active_trace"),
             "policy": {
                 "formula_calculation_performed": False, "native_excel_called": False,
                 "formula_cache_used": False, "trace_computed_values_read": False,
@@ -180,8 +206,11 @@ def _profile_source_families(
                 payload["summary"]["scope_frontier_count"] = trace["summary"].get("scope_frontier_count", 0)
                 payload["summary"]["proposed_formula_start_count"] = trace["summary"].get(
                     "proposed_formula_start_count", 0)
+        if case_identity is not None:
+            payload["case_identity"] = case_identity
         markdown = _profile_markdown(payload)
-        basename = "source_candidate_family_profile" if candidate else "source_family_profile"
+        basename = ("exact_case_family_profile" if case_id is not None else
+                    "source_candidate_family_profile" if candidate else "source_family_profile")
         json_path, md_path = out_dir / f"{basename}.json", out_dir / f"{basename}.md"
         json_bytes = workflow._json_bytes(payload)
         md_bytes = markdown.encode("utf-8")
@@ -1380,8 +1409,10 @@ def _local_address(sheet: str, address: str) -> str:
 def _profile_markdown(payload: dict[str, Any]) -> str:
     summary = payload["summary"]
     candidate = payload.get("selection_basis") == "static_candidate"
-    trace_key = "source_candidate_trace" if candidate else "historical_selection_trace"
-    title = "Source Candidate Formula-Family Profile" if candidate else "Source Formula-Family Profile"
+    trace_key = ("exact_case_trace" if payload.get("selection_basis") == "exact_case" else
+                 "source_candidate_trace" if candidate else "historical_selection_trace")
+    title = ("Exact-Case Formula-Family Profile" if payload.get("selection_basis") == "exact_case" else
+             "Source Candidate Formula-Family Profile" if candidate else "Source Formula-Family Profile")
     selection = "Static candidate formulas" if candidate else "Selected ordinary formulas"
     closure = (f" Unknown paths: {summary['unresolved_path_count']}; candidate closure remains unknown."
                if candidate else "")

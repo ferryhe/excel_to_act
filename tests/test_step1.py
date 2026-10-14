@@ -24,15 +24,34 @@ from typer.testing import CliRunner
 from excel_to_act.interfaces.cli import app
 from excel_to_act.ingest.openpyxl_reader import OpenpyxlWorkbookReader
 from excel_to_act.inventory.extractor import OpenpyxlInventoryExtractor
-from excel_to_act.schemas import CellInventory, CompletenessReport, Handoff, RunMetadata, WorkbookManifest
+from excel_to_act.schemas import CellInventory, CompletenessReport, Handoff, RangeInventory, RunMetadata, SourceLocation, WorkbookManifest
 from excel_to_act.steps.step1.source_scan import SourceScanError, scan_step1_source
 from excel_to_act.store.local_store import LocalArtifactStore
-from excel_to_act.steps.step1.workflow import _hash_file, auto_recover, convert_directory, execute_tool, finalize_run
+from excel_to_act.steps.step1.workflow import _hash_file, _record_matches, auto_recover, convert_directory, execute_tool, finalize_run
 
 
 MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 DRAWING = "{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}"
 PKG_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+
+
+@pytest.mark.parametrize("kind", ["data_validation", "conditional_formatting"])
+def test_step1_matches_reordered_multi_area_source_ranges(kind: str) -> None:
+    record = RangeInventory(
+        source_location=SourceLocation(sheet_name="Inputs", object_type=kind),
+        address="A1 B2",
+        kind=kind,
+    )
+    source = {"kind": kind, "details": {"sheet": "Inputs", "address": "B2 A1"}}
+    assert _record_matches(record, source)
+    source["details"]["address"] = "B2 C3"
+    assert not _record_matches(record, source)
+    source["details"]["address"] = "B2 A1"
+    source["details"]["sheet"] = "Other"
+    assert not _record_matches(record, source)
+    source["details"]["sheet"] = "Inputs"
+    source["kind"] = "merged_range"
+    assert not _record_matches(record, source)
 
 
 def _make_book(path: Path, *, custom_part: bool = False, marker: str = "first") -> Path:

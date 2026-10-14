@@ -279,11 +279,11 @@ def test_exact_case_domain_requires_complete_hashed_evidence() -> None:
     reference = {"path": "case.json", "sha256": "b" * 64}
     domain = {"status": "exact_cases", "active_trace_sha256": "a" * 64,
               "cases": [{name: reference for name in
-                         ("trace", "raw_request", "public_request", "producer")}],
+                         ("trace", "raw_request", "public_request", "producer", "plan", "profile")}],
               "external_policy": {}, "tolerances": {"absolute": 1e-12, "relative": 1e-12}}
     validate_tool_interface_declarations({"objects": [_declaration("Count")],
                                           "support_domain": domain})
-    with pytest.raises(ValueError, match="incomplete"):
+    with pytest.raises(ValueError, match="distinct plan and profile"):
         validate_tool_interface_declarations({"objects": [_declaration("Count")],
             "support_domain": {**domain, "cases": [{"trace": reference}]}})
     with pytest.raises(ValueError, match="malformed"):
@@ -296,7 +296,7 @@ def test_exact_cases_can_defer_trace_binding_until_current_discovery() -> None:
     reference = {"path": "case.json", "sha256": "b" * 64}
     domain = {"status": "exact_cases", "trace_binding": "post_discovery",
               "cases": [{name: reference for name in
-                         ("trace", "raw_request", "public_request", "producer")}],
+                         ("trace", "raw_request", "public_request", "producer", "plan", "profile")}],
               "external_policy": {}, "tolerances": {"absolute": 0, "relative": 0}}
     validate_tool_interface_declarations({"objects": [_declaration("Count")],
                                           "support_domain": domain})
@@ -464,11 +464,12 @@ def test_design_axis_keys_reject_invalid_or_changed_boundary_axes(axes: list[dic
 def test_cli_reports_generation_without_execution_claim(tmp_path: Path) -> None:
     root = _approved_workflow(tmp_path)
     result = CliRunner().invoke(app, ["step3", "interface", "--workflow", str(root)])
-    assert result.exit_code == 0, result.output
-    output = json.loads(result.output)
+    assert result.exit_code == 2
+    assert "read-only" in result.output
+    output = export_tool_interface(root)
     assert output["message"] == "interface generated"
     assert output["runtime_readiness"]["status"] == "blocked"
-    assert "Excel equivalence" not in result.output
+    assert "Excel equivalence" not in json.dumps(output)
 
 
 def test_status_marks_changed_interface_artifact_stale(tmp_path: Path) -> None:

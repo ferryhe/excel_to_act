@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Convert an Excel workbook into a source-bound, reviewable Python workflow through six stages. Each stage pairs machine-readable JSON evidence with a human-readable handoff. The Agent selects tools from the current stage catalog, checks evidence, and reviews the exact handoff before a human reviews it. Only an explicit, current, stage-scoped delegation can replace the human reviewer for eligible later stages; input-boundary confirmation always requires a human decision.
+Start a new seven-stage workflow with `step1 report`, or attach one to a current approved six-stage legacy workflow. A native workflow reviews its own Stages 1–5; an attached workflow inherits those stages read-only from the exact pinned legacy parent. Legacy Stage 6 remains its historical final report. New Step 6 packages the approved standalone tool for internal delivery, and Step 7 produces the final conversion report. The CLI reports legacy status but does not write to legacy workflows. The Step 3 input boundary still requires an actual human decision.
 
 ## Workflow
 
@@ -15,18 +15,20 @@ flowchart TD
     A2 -->|approve| S3I[3a · Classify and confirm inputs]
     S3I --> A3I{Agent → human}
     A3I -->|confirm| S3[3b · Analyze and design]
-    S3 --> A3{Agent → human or scoped delegation}
+    S3 --> A3{Agent → human}
     A3 -->|approve| S4[4 · Generate standalone Python]
-    S4 --> A4{Agent → human or scoped delegation}
+    S4 --> A4{Agent → human}
     A4 -->|approve| S5[5 · Validate and reconcile]
-    S5 --> A5{Agent → human or scoped delegation}
-    A5 -->|approve| S6[6 · Report conversion results]
-    S6 --> A6{Agent → human or scoped delegation}
-    A6 -->|approve| D[Accepted workflow]
-    A1 & A2 & A3I & A3 & A4 & A5 & A6 -->|reject| R[Return to a responsible stage · revise · review]
+    S5 --> A5{Agent → human}
+    A5 -->|approve| S6[6 · Package internal candidate]
+    S6 --> A6{Agent → actual human}
+    A6 -->|approve| D[Deliver exact package and verify readback]
+    D --> S7[7 · Final conversion report]
+    S7 --> A7{Agent → actual human}
+    A1 & A2 & A3I & A3 & A4 & A5 & A6 & A7 -->|reject| R[Return to a responsible stage · revise · review]
 ```
 
-Put the workbook in `input/` and use a new directory under `output/` for each source and run. `workflow status --workflow DIR` shows current evidence and the next permitted stage. Draft creation or a successful tool check does not approve or advance a stage. Changed evidence invalidates affected decisions; rejected history remains in the workflow ledger.
+For a new conversion, use `step1 report --run FINAL_RUN --out NEW_DIR`, then the existing Step 2–5 commands and Agent/human review gates. After its own current approved Step 5, use `workflow bind-comparison --workflow NEW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256`. Supply that digest from a separate verification record. For migration, use `workflow attach --parent LEGACY_DIR --out NEW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256` only after legacy Stages 1–5 and their source are current. The attached root pins the exact legacy manifest and comparison identity. `workflow status --workflow DIR` shows current evidence, effective internal delivery, and the next permitted stage. A candidate smoke or report generation does not approve a stage. The candidate JSON/Markdown pair needs Agent review and an explicit human decision before delivery; old Stage 6 receipts or delegation cannot approve it. Rejected and delivered history remains in the ledger.
 
 ## CLI and deliverables
 
@@ -39,8 +41,9 @@ Run `excel-to-act stepN tools`, `excel-to-act stepN agent`, or `--help` for curr
 | 3 · Analyze and design | `step3 prepare`, `fields`, `dependencies`, `input-catalog`, `query`, `trace`, `source-trace`, `profile`, `plan`, `check`, `report` | Confirmed inputs, targets, source candidates, variables, equations, modules, and `analysis_design.json/.md` |
 | 4 · Generate | `step4 capture-external`, `discover`, `plan`, `generate` | Modular standalone bundle, source map, separate input/metadata records, generation report |
 | 5 · Validate | `step5 validate`, `oracle`, `reconcile` | Isolated execution evidence, native Excel capture, numerical comparison report |
-| 6 · Report | `step6 report`, `skill`, `template` | Human conversion report and JSON evidence |
-| Workflow | `workflow status`, `confirm`, `reject`, `delegate`, `typesafe` | Current status and hash-bound decisions |
+| 6 · Internal package | `step6 candidate`, `deliver`, `revoke` | Versioned exact bundle, candidate JSON/Markdown pair, separate delivery and readback record |
+| 7 · Final report | `step7 report`, `skill`, `template` | Human conversion report and JSON evidence |
+| Workflow | `workflow attach`, `bind-comparison`, `status`, `confirm`, `reject` | Native or pinned-parent origin, current decisions, effective internal delivery |
 
 Step 3 works backward from declared results and confirms scalar, vector, table, raw, and formula-derived input boundaries. Step 4 generates modular code only for supported, bound designs, after the semantic mapping and implementation preflight pass. Check the current tool catalog and source adapter for formula and input-shape limits; the workflow is not a universal Excel compiler. Formula caches are not model inputs, and extraction does not run VBA. Step 4 smoke evidence proves bundle execution only. Native Excel comparison requires Windows and Microsoft Excel. A tested scenario does not establish all-configuration coverage, actuarial certification, feedback solving, or GPU support.
 
@@ -56,7 +59,7 @@ excel-to-act step1 tools
 excel-to-act step1 agent
 excel-to-act workflow status --workflow WORKFLOW_DIR
 $BUNDLE = "output/WORKFLOW/stage4/bundles/revision-NNNN/bundle"
-python "$BUNDLE/model.py" --out "output/result.json"
+python "$BUNDLE/model.py" --inputs "REQUEST.json" --out "output/result.json"
 ```
 
-See the [six-step workflow](docs/workflow.md), [CLI guide](docs/cli.md), [generic Agent contracts](docs/design/generic_agent_contracts.md), [result-driven analysis guide](docs/design/result_driven_analysis.md), and [report contract](docs/design/model_conversion_report.md). Source workbooks and run evidence under `input/` and `output/` are local data. The README pair is bilingual; other authored project documentation is in English.
+See the [seven-stage workflow](docs/workflow.md), [CLI guide](docs/cli.md), [generic Agent contracts](docs/design/generic_agent_contracts.md), [result-driven analysis guide](docs/design/result_driven_analysis.md), and [report contract](docs/design/model_conversion_report.md). Source workbooks and run evidence under `input/` and `output/` are local data. The README pair is bilingual; other authored project documentation is in English.

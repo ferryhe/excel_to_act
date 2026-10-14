@@ -1,4 +1,4 @@
 interface:
   display_name: "Excel-to-Act Step 6"
-  short_description: "Draft and review Step 6 model conversion reports"
-  default_prompt: "Use $excel-to-act-step6 to prepare or review a source-grounded Step 6 model conversion report."
+  short_description: "Package and review Step 6 internal tool delivery"
+  default_prompt: "Use $excel-to-act-step6 to prepare and review the exact Step 6 internal delivery candidate. Deliver only after current Agent and actual-human approval, then verify readback; use Step 7 for the final report."

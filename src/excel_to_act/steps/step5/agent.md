@@ -1,5 +1,7 @@
 # Step 5 Agent Contract: Validate and Reconcile
 
+A new native v2 workflow has writable Stage 1–5 checkpoints and requires current Agent and actual-human review. Legacy v1 checkpoints and attached-v2 inherited Stage 1–5 evidence are read-only. Legacy TypeSafe delegation does not authorize current v2 reviews.
+
 Step 5 first checks that the approved Stage 4 bundle compiles and runs in isolation. It separately captures a fresh native Excel result and reconciles the generated outputs with that result. The oracle command does not advance the stage. Stage 5 is reviewable only after standalone validation and reconciliation both pass.
 
 Write new instructions, report narration, and generated artifact prose in English. Preserve source values, formulas, identifiers, and immutable provenance verbatim. Only the repository-root `README.md` and `README.zh-CN.md` are approved bilingual documentation exceptions.
@@ -12,9 +14,11 @@ Derive required targets, source ranges, inputs, external boundaries, and coverag
 
 Then run `step5 reconcile --workflow DIR --validation VALIDATION.json --oracle ORACLE.json`. Check the source and Stage 4 bindings, primary inputs, named targets, active formula identities and values, declared external values and keys, errors, and stated tolerances. Require the native calculation to be complete. Do not treat missing or blocked comparisons as zero. A mismatch or incomplete comparison is not ready for review; do not approve it. Do not alter the source workbook or earlier artifacts.
 
-After both required passes, review `validation_report.json/.md` and record the Agent decision against the current report pair. By default, the human decision must follow an explicit user response. If this workflow has an active TypeSafe delegation, submit a current-bound request with `workflow typesafe --workflow DIR --stage 5 --request REQUEST.json`, then confirm using its generated evidence file; hand-written packets do not count as live reviews. If a result changes, rerun the affected validation and reconciliation actions and obtain fresh confirmations.
+For a current exact-case variable contract, reconcile each approved case against that case's own source-bound formula trace. Each call writes a case receipt without advancing Stage 5. After all 32 distinct approved cases pass, run `step5 finalize-cases --workflow DIR --case-report FILE` with `--case-report` repeated once per case. Finalization rechecks current request, trace, package, native oracle, source, and tolerance bindings before writing one formal Stage 5 JSON/Markdown pair. A saved-scenario receipt or fewer than all approved cases cannot finalize the exact-case checkpoint.
 
-A new explicit actual-human approval under a valid active TypeSafe delegation restores the required pair to Agent+human only for that exact current, unrejected JSON/Markdown pair and revision; it does not change the authorization or other stages. A rejection from any reviewer makes that revision ineligible for later approvals; create a replacement artifact and obtain new decisions.
+After both technical passes, review `validation_report.json/.md` and record Agent approval of the current pair. Record actual-human approval only after an explicit response. The current v2 CLI disables legacy TypeSafe delegation and live TypeSafe review. If a result changes, rerun affected validation and reconciliation and obtain fresh decisions.
+
+A rejection from any reviewer makes that revision ineligible for later approvals; create a replacement artifact and obtain fresh Agent and actual-human decisions.
 
 ## Shared workflow and decision order
 
@@ -24,8 +28,8 @@ Read `stepN tools` and choose the existing actions that answer this case's open 
 
 Before entering a stage, run `workflow status` and verify that the stage is currently permitted and every required upstream decision and artifact is current. A successful tool check, report creation, draft CLI action, or clarification does not itself approve a stage or advance the workflow. Keep legacy standalone source-exploration APIs available for discovery; they do not create a workflow approval.
 
-The default review order is Agent first, then the actual human. `workflow confirm` records approvals only; use the stage-specific `workflow.reject` command and its explicit `--return-to` route to reject. Record the Agent decision against the exact current JSON/Markdown pair with `workflow confirm`; present that pair and its practical limits to the user; record a human approval only after an explicit response. New TypeSafe approvals also require a current matching Agent approval. Use TypeSafe only under a valid, explicitly scoped authorization already registered for this workflow; never infer or transfer delegation. The Step 3 input-boundary checkpoint always requires an actual human decision.
+The current review order is Agent first, then the actual human on the exact current JSON/Markdown pair. `workflow confirm` records approvals; use `workflow reject` with an explicit `--return-to` route for rejection. Record the human decision only after an explicit response. Legacy TypeSafe delegation and live review commands are disabled in v2. The Step 3 input-boundary checkpoint always requires an actual human decision.
 
 Ask the user when target, scope, input kind, axis, units, or business interpretation is materially unresolved. Keep unknown facts marked as unknown; do not turn planning into measured execution or claim checks that did not run.
 
-When a reviewer rejects a report at Stage 5, route it to the current or an earlier responsible stage with `workflow reject --workflow DIR --stage 5 --return-to 1|2|3|4|5 --message TEXT`. Keep the rejected artifact and decision in the ledger. Revise affected reports, rerun their checks, refresh later reports that depend on them, and obtain fresh Agent and human or explicitly delegated reviews before advancing. Inspect the ledger with `workflow status` after each decision and before each transition.
+When a reviewer rejects a report at Stage 5, route it to the responsible current or earlier stage with `workflow reject --workflow DIR --stage 5 --reviewer agent|human --return-to 1|2|3|4|5 --message TEXT`. Keep rejected history, revise affected reports, rerun checks, and obtain fresh Agent and actual-human reviews before advancing. Inspect `workflow status` after each decision.

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from excel_to_act.steps import conversion_workflow as conversion
 from excel_to_act.steps.conversion_workflow import hash_file, load_workflow, read_json, require_stage_approved
 from excel_to_act.steps.step3.calculation import CalculationBlocked, _parse_reference
 from excel_to_act.steps.step4.external_inputs import load_current_external_bundle
@@ -79,7 +80,17 @@ def _apply_family_execution_refinements(
             raise CalculationBlocked(f"schedule refinement has no logical axis: {family_id}")
         segments = [segment for segment in variable.get("equation_segments", [])
                     if family_id in segment.get("source_family_ids", [])]
-        if len(segments) != 1 or segments[0].get("execution") != "ascending_recurrence":
+        already_refined = (len(segments) == 1 and segments[0].get("execution") == "vectorized"
+                           and segments[0].get("update_order") == "same_index_dependencies"
+                           and any(proof.get("source_family_id") == family_id
+                                   and proof.get("variable_id") == variable_id
+                                   and proof.get("segment_id") == segments[0].get("segment_id")
+                                   and proof.get("old_execution") == "ascending_recurrence"
+                                   and proof.get("new_execution") == "vectorized"
+                                   for proof in plan.get("execution_refinements", [])
+                                   if isinstance(proof, dict)))
+        if len(segments) != 1 or (segments[0].get("execution") != "ascending_recurrence"
+                                  and not already_refined):
             raise CalculationBlocked(f"schedule refinement must name one declared recurrence segment: {family_id}")
         segment = segments[0]
         axis_name = segment.get("index_axis")
@@ -490,6 +501,7 @@ def validate_implementation(workflow_dir: Path, implementation_path: Path) -> di
 def create_implementation_plan(workflow_dir: Path, implementation_path: Path) -> dict[str, Any]:
     """Write an immutable Step 4 preflight only after all current bindings compile."""
     try:
+        conversion._require_upstream_writable(load_workflow(workflow_dir)[1])
         validated = validate_implementation(workflow_dir, implementation_path)
         root = validated["root"]
         plan_root = (root / "stage4" / "implementation_plans").resolve()

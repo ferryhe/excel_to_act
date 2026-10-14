@@ -10,6 +10,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 
+from excel_to_act.steps import conversion_workflow as conversion
 from excel_to_act.steps.conversion_workflow import hash_file, load_workflow, read_json, require_stage_approved
 from excel_to_act.steps.step3.calculation import CellRange, FormulaEvaluator, _json_value, _parse_reference
 from excel_to_act.steps.step4.external_inputs import (
@@ -144,6 +145,7 @@ def discover_active_trace(workflow_dir: Path) -> dict[str, Any]:
     stage4_root: Path | None = None
     try:
         root, manifest = load_workflow(workflow_dir)
+        conversion._require_upstream_writable(manifest)
         _workflow, stage3_revision = require_stage_approved(root, 3)
         stage3_path = root / stage3_revision["artifact"]["json"]
         stage3 = read_json(stage3_path)

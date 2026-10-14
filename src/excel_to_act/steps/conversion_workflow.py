@@ -16,6 +16,7 @@ from typing import Any
 
 MANIFEST_NAME = "workflow.json"
 STAGES = (1, 2, 3, 4, 5, 6)
+V2_STAGES = (1, 2, 3, 4, 5, 6, 7)
 REJECTION_ROUTES = {
     1: {1},
     2: {1, 2},
@@ -130,23 +131,22 @@ def review_tool_entries(stage: int) -> list[dict[str, Any]]:
     """Direct CLI entries shared by every numbered checkpoint catalogue."""
     if stage not in STAGES:
         raise ValueError(f"unsupported workflow stage: {stage}")
-    reviewers = "agent|human|typesafe" if stage >= 3 else "agent|human"
-    evidence_option = " [--evidence REVIEW.json]" if stage >= 3 else ""
+    reviewers = "agent|human"
     return_stages = "|".join(str(value) for value in range(1, stage + 1))
     entries = [
         {"name": "workflow.status", "command": "workflow status --workflow DIR",
-         "inputs": {"workflow": "six-stage conversion workflow directory"},
+         "inputs": {"workflow": "conversion workflow directory"},
          "outputs": ["checkpoint freshness", "recorded decisions", "next permitted stage"],
          "next": ["workflow.confirm", "workflow.reject"]},
         {"name": "workflow.confirm",
-         "command": f"workflow confirm --workflow DIR --stage {stage} --reviewer {reviewers} --decision approve --message TEXT{evidence_option}",
+         "command": f"workflow confirm --workflow DIR --stage {stage} --reviewer {reviewers} --decision approve --message TEXT",
          "inputs": {"workflow": "conversion workflow", "stage": str(stage),
-                    "reviewer": "agent or human" if stage < 3 else "agent, human, or delegated TypeSafe",
+                    "reviewer": "agent or actual human",
                     "decision": "approve only; use workflow.reject to reject", "message": "review evidence or explicit user response"},
          "outputs": ["receipt bound to the current JSON/Markdown revision and upstream inputs"],
          "next": ["workflow.status"]},
         {"name": "workflow.reject",
-         "command": f"workflow reject --workflow DIR --stage {stage} --reviewer {reviewers} --return-to {return_stages} --message TEXT{evidence_option}",
+         "command": f"workflow reject --workflow DIR --stage {stage} --reviewer {reviewers} --return-to {return_stages} --message TEXT",
          "inputs": {"workflow": "conversion workflow", "stage": str(stage),
                     "return_to": f"current or earlier checkpoint {return_stages}"},
          "outputs": ["rejection receipt and invalidated downstream approvals"],
@@ -155,15 +155,22 @@ def review_tool_entries(stage: int) -> list[dict[str, Any]]:
     if stage == 3:
         entries.append({"name": "workflow.delegate",
                         "command": "workflow delegate --workflow DIR --authorization AUTH.json",
-                        "inputs": {"authorization": "source/workflow-bound explicit delegation for TypeSafe reviews of stages 3..6"},
-                        "outputs": ["registered delegation hash; default Agent+human policy otherwise remains unchanged"],
+                        "inputs": {"authorization": "new publication-scoped authorization required; legacy delegation is disabled"},
+                        "outputs": ["blocked; no delegation is registered"],
                         "next": ["workflow.status"]})
     if stage >= 3:
         entries.append({"name": "workflow.typesafe",
                         "command": f"workflow typesafe --workflow DIR --stage {stage} --request REQUEST.json",
-                        "inputs": {"request": "current-artifact-bound TypeSafe Choice request; requires TYPESAFE_API_KEY"},
-                        "outputs": ["live request/response/review files and a workflow invocation record"],
+                        "inputs": {"request": "new publication-scoped authorization required; TypeSafe route is disabled"},
+                        "outputs": ["blocked; no TypeSafe review is recorded"],
                         "next": ["workflow.confirm", "workflow.reject"]})
+    for entry in entries:
+        entry["availability"] = (
+            "current status for native v2, attached v2, and legacy v1"
+            if entry["name"] == "workflow.status" else
+            "disabled pending new publication-scoped authorization"
+            if entry["name"] in {"workflow.delegate", "workflow.typesafe"} else
+            "native v2 Stage 1–5 only; attached v2 inherited stages and legacy v1 are read-only")
     return entries
 
 
@@ -201,30 +208,77 @@ def _write_manifest(root: Path, manifest: dict[str, Any]) -> None:
 def load_workflow(root: Path) -> tuple[Path, dict[str, Any]]:
     root = root.expanduser().resolve()
     manifest = read_json(root / MANIFEST_NAME)
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != "conversion.workflow.v1":
+    if not isinstance(manifest, dict) or manifest.get("schema_version") not in {
+        "conversion.workflow.v1", "conversion.workflow.v2"
+    }:
         raise ValueError("workflow.json is missing or has an unsupported schema")
+    expected = STAGES if manifest["schema_version"] == "conversion.workflow.v1" else V2_STAGES
+    if not isinstance(manifest.get("stages"), dict) or set(manifest["stages"]) != {
+        str(stage) for stage in expected
+    }:
+        raise ValueError("workflow.json has an invalid stage range")
+    workflow_origin(manifest)
     return root, manifest
+
+
+def workflow_origin(manifest: dict[str, Any]) -> str:
+    if manifest.get("schema_version") == "conversion.workflow.v1":
+        if "origin" in manifest or "parent" in manifest:
+            raise ValueError("legacy workflow has an invalid origin")
+        return "legacy"
+    if manifest.get("schema_version") != "conversion.workflow.v2":
+        raise ValueError("workflow has an unsupported schema")
+    origin = manifest.get("origin")
+    parent = manifest.get("parent")
+    if origin == "native" and "parent" not in manifest:
+        return "native"
+    # Earlier attached-v2 manifests explicitly recorded the parent, before origin was named.
+    if origin in (None, "attached") and isinstance(parent, dict) and set(parent) == {"root", "manifest_sha256"}:
+        if (isinstance(parent["root"], str) and Path(parent["root"]).is_absolute()
+                and isinstance(parent["manifest_sha256"], str)
+                and len(parent["manifest_sha256"]) == 64):
+            return "attached"
+    raise ValueError("seven-stage workflow has a missing or invalid origin/parent")
+
+
+def _require_writable(manifest: dict[str, Any]) -> None:
+    if manifest["schema_version"] == "conversion.workflow.v1":
+        raise ValueError("legacy six-stage workflows are read-only")
+
+
+def _require_upstream_writable(manifest: dict[str, Any]) -> None:
+    _require_writable(manifest)
+    if workflow_origin(manifest) == "attached":
+        raise ValueError("inherited Stages 1–5 are read-only in an attached seven-stage workflow")
 
 
 def create_workflow(root: Path, source: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
     root = root.expanduser().resolve()
     manifest_path = root / MANIFEST_NAME
     if manifest_path.exists():
-        existing = read_json(manifest_path)
+        _, existing = load_workflow(root)
+        _require_writable(existing)
+        if workflow_origin(existing) != "native":
+            raise ValueError("existing workflow is not a native seven-stage root")
         old_source = existing.get("source", {}) if isinstance(existing, dict) else {}
         identity_keys = ("workbook_sha256", "run_id", "step1_run_path")
         if not isinstance(existing, dict) or any(old_source.get(key) != source.get(key) for key in identity_keys):
             raise ValueError("workflow root already belongs to a different source workbook")
         return root, existing
-    manifest = {"schema_version": "conversion.workflow.v1", "created_at": _now(), "source": source,
+    manifest = {"schema_version": "conversion.workflow.v2", "origin": "native",
+                "created_at": _now(), "source": source,
                 "mode": "production", "stages": {str(stage): {"current_revision": 0, "revisions": []}
-                                                    for stage in STAGES}}
+                                                    for stage in V2_STAGES},
+                "delivery": None, "delivery_history": []}
     _write_manifest(root, manifest)
     return root, manifest
 
 
 def bind_source_id(root: Path, source_id: str) -> None:
     root, manifest = load_workflow(root)
+    _require_writable(manifest)
+    if workflow_origin(manifest) == "attached":
+        raise ValueError("inherited source binding is read-only")
     existing = manifest["source"].get("source_id")
     if existing not in (None, source_id):
         raise ValueError("workflow is already bound to a different Step 2 source ID")
@@ -276,6 +330,9 @@ def _validate_delegation(root: Path, manifest: dict[str, Any], authorization: An
 
 def register_review_delegation(root: Path, authorization_path: Path) -> dict[str, Any]:
     root, manifest = load_workflow(root)
+    _require_writable(manifest)
+    if manifest["schema_version"] == "conversion.workflow.v2":
+        raise ValueError("legacy TypeSafe delegation cannot authorize seven-stage publication")
     if manifest.get("mode") == "synthetic_fixture":
         raise ValueError("TypeSafe delegation cannot be registered for a synthetic workflow")
     path = authorization_path.expanduser().resolve()
@@ -324,6 +381,14 @@ def _delegation_state(root: Path, manifest: dict[str, Any]) -> tuple[dict[str, A
 
 
 def current_revision(manifest: dict[str, Any], stage: int) -> dict[str, Any] | None:
+    if workflow_origin(manifest) == "attached" and stage <= 5:
+        parent = manifest.get("parent", {})
+        parent_root, parent_manifest = load_workflow(Path(parent.get("root", "")))
+        if parent_manifest["schema_version"] != "conversion.workflow.v1" or hash_file(
+            parent_root / MANIFEST_NAME
+        ) != parent.get("manifest_sha256"):
+            raise ValueError("pinned legacy parent changed or is missing")
+        return current_revision(parent_manifest, stage)
     stage_value = manifest.get("stages", {}).get(str(stage), {})
     revision = stage_value.get("current_revision", 0)
     revisions = stage_value.get("revisions", [])
@@ -341,7 +406,10 @@ def append_stage_artifact(
     input_stages: dict[int, str | dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     root, manifest = load_workflow(root)
-    if stage not in STAGES:
+    _require_writable(manifest)
+    allowed = (V2_STAGES if workflow_origin(manifest) == "native" else
+               (6, 7) if workflow_origin(manifest) == "attached" else STAGES)
+    if stage not in allowed:
         raise ValueError(f"unsupported workflow stage: {stage}")
     stage_entry = manifest["stages"][str(stage)]
     revision_number = len(stage_entry["revisions"]) + 1
@@ -352,8 +420,6 @@ def append_stage_artifact(
         raise ValueError("stage revision output already exists; use a new workflow root")
     json_content = json_bytes(payload)
     md_content = markdown.encode("utf-8")
-    _atomic_write(json_path, json_content)
-    _atomic_write(md_path, md_content)
     files = {key: {"path": str(path.expanduser().resolve()), "sha256": hash_file(path)}
              for key, path in (input_files or {}).items()}
     stage_hashes: dict[str, dict[str, Any]] = {}
@@ -371,6 +437,8 @@ def append_stage_artifact(
                                   "json_sha256": artifact["json_sha256"],
                                   "md_sha256": artifact["md_sha256"]}
     resolves_rejections = _pending_rejection_tokens(manifest, stage)
+    _atomic_write(json_path, json_content)
+    _atomic_write(md_path, md_content)
     revision = {"revision": revision_number,
                 "artifact": {"json": str(json_path.relative_to(root)), "md": str(md_path.relative_to(root)),
                              "json_sha256": hash_bytes(json_content), "md_sha256": hash_bytes(md_content)},
@@ -378,6 +446,16 @@ def append_stage_artifact(
                 "resolves_rejections": resolves_rejections}
     stage_entry["revisions"].append(revision)
     stage_entry["current_revision"] = revision_number
+    if workflow_origin(manifest) == "native" and stage <= 5 and manifest.get("delivery"):
+        delivery = manifest["delivery"]
+        manifest.setdefault("delivery_history", []).append({
+            "schema_version": "step6.delivery_revocation.v1", "recorded_at": _now(),
+            "version": delivery["version"], "receipt_id": delivery["receipt_id"],
+            "reason": f"native Stage {stage} revision changed",
+        })
+        manifest["delivery"] = None
+    if manifest["schema_version"] == "conversion.workflow.v2" and stage == 6:
+        manifest["delivery"] = None
     if stage == 3 and payload.get("schema_version") == "step3.input_boundary.v1" and payload.get("phase") == "input_boundary":
         manifest["input_boundary"] = {
             "schema_version": "step3.input_boundary.pointer.v1",
@@ -399,7 +477,11 @@ def _revision_staleness(root: Path, manifest: dict[str, Any], stage: int, revisi
         if not path.is_file() or hash_file(path) != item.get("sha256"):
             reasons.append(f"input file changed or missing: {key}")
     for key, expected in revision.get("input_stages", {}).items():
-        prior = current_revision(manifest, int(key))
+        try:
+            prior = current_revision(manifest, int(key))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            reasons.append(f"stage {key} parent artifact unavailable: {exc}")
+            continue
         actual = prior.get("artifact", {}) if prior else {}
         if isinstance(expected, str):  # Legacy manifests created before paired-artifact binding.
             stage_revisions = manifest.get("stages", {}).get(str(key), {}).get("revisions", [])
@@ -414,6 +496,12 @@ def _revision_staleness(root: Path, manifest: dict[str, Any], stage: int, revisi
                        and actual.get("md_sha256") == expected.get("md_sha256"))
         if not matches:
             reasons.append(f"stage {key} artifact changed")
+    if workflow_origin(manifest) == "attached":
+        try:
+            from excel_to_act.steps.seven_stage import require_parent
+            require_parent(root, manifest)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            reasons.append(f"pinned parent is stale: {exc}")
     artifact = revision.get("artifact", {})
     for kind in ("json", "md"):
         path = root / artifact.get(kind, "")
@@ -678,6 +766,7 @@ def submit_typesafe_review(
 ) -> dict[str, Any]:
     """Call TypeSafe for the current delegated artifact and log a valid live invocation."""
     root, manifest = load_workflow(root)
+    _require_writable(manifest)
     if stage not in range(3, 7) or manifest.get("mode") == "synthetic_fixture":
         raise ValueError("TypeSafe calls are only available for delegated production stages 3..6")
     delegation, error = _delegation_state(root, manifest)
@@ -805,10 +894,27 @@ def stage_status(
     root: Path, manifest: dict[str, Any], stage: int,
     *, revision_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    origin = workflow_origin(manifest)
+    if stage not in (STAGES if manifest.get("schema_version") == "conversion.workflow.v1" else V2_STAGES):
+        raise ValueError(f"unsupported workflow stage: {stage}")
+    if origin == "attached" and stage <= 5:
+        from excel_to_act.steps.seven_stage import parent_stage_status
+        return parent_stage_status(root, manifest, stage)
     revision = revision_override if revision_override is not None else current_revision(manifest, stage)
     if revision is None:
         return {"stage": stage, "status": "pending", "revision": None, "reasons": ["artifact not produced"]}
     stale = _revision_staleness(root, manifest, stage, revision)
+    if manifest.get("schema_version") == "conversion.workflow.v2" and stage == 6:
+        from excel_to_act.steps.seven_stage import candidate_staleness
+        stale.extend(candidate_staleness(root, manifest, revision))
+    if manifest.get("schema_version") == "conversion.workflow.v2" and stage == 7:
+        try:
+            from excel_to_act.steps.seven_stage import require_delivery
+            delivery = require_delivery(root)
+            if read_json(root / revision["artifact"]["json"]).get("delivery") != delivery:
+                stale.append("Step 7 report is bound to a different delivery record")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            stale.append(f"Step 6 delivery is not current: {exc}")
     delegation: dict[str, Any] | None = None
     delegated = False
     if stage >= 3 and manifest.get("review_delegation") is not None:
@@ -931,6 +1037,14 @@ def stage_status(
 
 def require_stage_approved(root: Path, stage: int) -> tuple[dict[str, Any], dict[str, Any]]:
     root, manifest = load_workflow(root)
+    if workflow_origin(manifest) == "attached" and stage <= 5:
+        from excel_to_act.steps.seven_stage import require_parent
+        parent_root, _parent_manifest = require_parent(root, manifest)
+        _, revision = require_stage_approved(parent_root, stage)
+        return manifest, revision
+    if manifest["schema_version"] == "conversion.workflow.v2" and stage == 7:
+        from excel_to_act.steps.seven_stage import require_delivery
+        require_delivery(root)
     state = stage_status(root, manifest, stage)
     allowed = {"approved"}
     if manifest.get("mode") == "synthetic_fixture":
@@ -1013,8 +1127,14 @@ def record_decision(
     evidence_path: Path | None = None,
 ) -> dict[str, Any]:
     root, manifest = load_workflow(root)
-    if stage not in STAGES or reviewer not in {"agent", "human", "typesafe"} or decision not in {"approve", "reject"}:
-        raise ValueError("use stage 1..6, reviewer agent|human|typesafe, and decision approve|reject")
+    _require_writable(manifest)
+    v2 = manifest["schema_version"] == "conversion.workflow.v2"
+    allowed = (V2_STAGES if workflow_origin(manifest) == "native" else
+               (6, 7) if v2 else STAGES)
+    if stage not in allowed or reviewer not in {"agent", "human", "typesafe"} or decision not in {"approve", "reject"}:
+        raise ValueError("use an allowed stage, reviewer agent|human|typesafe, and decision approve|reject")
+    if v2 and stage == 6 and reviewer == "typesafe":
+        raise ValueError("Step 6 TypeSafe review needs a new publication-scoped authorization")
     if reviewer == "typesafe" and (stage < 3 or manifest.get("mode") == "synthetic_fixture"):
         raise ValueError("TypeSafe review is only available for delegated production stages 3..6")
     if reviewer != "typesafe" and evidence_path is not None:
@@ -1025,6 +1145,9 @@ def record_decision(
     if revision is None:
         raise ValueError(f"stage {stage} has no current artifact to review")
     stale = _revision_staleness(root, manifest, stage, revision)
+    if v2 and stage == 6:
+        from excel_to_act.steps.seven_stage import candidate_staleness
+        stale.extend(candidate_staleness(root, manifest, revision))
     if stale:
         raise ValueError("cannot review stale stage artifact: " + "; ".join(stale))
     delegation: dict[str, Any] | None = None
@@ -1042,11 +1165,16 @@ def record_decision(
         delegation, delegation_error = _delegation_state(root, manifest)
         if delegation_error or delegation is None or stage not in delegation.get("stages", []):
             delegation = None
-    if decision == "reject" and return_to not in REJECTION_ROUTES[stage]:
-        choices = ", ".join(str(value) for value in sorted(REJECTION_ROUTES[stage]))
+    routes = ({**REJECTION_ROUTES, 7: set(V2_STAGES)} if workflow_origin(manifest) == "native"
+              else {6: {6}, 7: {6, 7}} if v2 else REJECTION_ROUTES)
+    if decision == "reject" and return_to not in routes[stage]:
+        choices = ", ".join(str(value) for value in sorted(routes[stage]))
         raise ValueError(f"stage {stage} rejection must route to one of: {choices}")
     if stage > 1:
         require_stage_approved(root, stage - 1)
+    if v2 and stage == 7:
+        from excel_to_act.steps.seven_stage import require_delivery
+        require_delivery(root)
     artifact_payload: dict[str, Any] | None = None
     if decision == "approve":
         artifact_payload = read_json(root / revision["artifact"]["json"])
@@ -1086,6 +1214,14 @@ def record_decision(
             "reviewer_pair": ["agent", "human"],
         }
     revision["decisions"].append(receipt)
+    if v2 and decision == "reject" and return_to <= 6 and manifest.get("delivery"):
+        delivery = manifest["delivery"]
+        manifest.setdefault("delivery_history", []).append({
+            "schema_version": "step6.delivery_revocation.v1", "recorded_at": _now(),
+            "version": delivery["version"], "receipt_id": delivery["receipt_id"],
+            "reason": f"Stage {stage} rejection: {message.strip()}",
+        })
+        manifest["delivery"] = None
     _write_manifest(root, manifest)
     return _receipt_summary(receipt)
 
@@ -1112,7 +1248,9 @@ def _rejection_token(stage: int, revision: int, receipt: dict[str, Any]) -> str:
 
 
 def _rejection_receipts(manifest: dict[str, Any]):
-    for stage in STAGES:
+    stages = (V2_STAGES if workflow_origin(manifest) == "native" else
+              (6, 7) if workflow_origin(manifest) == "attached" else STAGES)
+    for stage in stages:
         revision = current_revision(manifest, stage)
         if revision is None:
             continue
@@ -1131,7 +1269,11 @@ def _pending_rejection_tokens(manifest: dict[str, Any], stage: int) -> list[str]
 
 def workflow_status(root: Path) -> dict[str, Any]:
     root, manifest = load_workflow(root)
+    if manifest["schema_version"] == "conversion.workflow.v2":
+        from excel_to_act.steps.seven_stage import v2_status
+        return v2_status(root, manifest)
     stages = [stage_status(root, manifest, stage) for stage in STAGES]
+    stages[5]["meaning"] = "legacy final report"
     next_stage: int | None = None
     for stage, state in zip(STAGES, stages):
         if stage == 1 and state["status"] in {"approved", "simulated_approved"}:
@@ -1149,7 +1291,8 @@ def workflow_status(root: Path) -> dict[str, Any]:
             "source": manifest.get("source"), "mode": manifest.get("mode", "production"),
             "stages": stages, "input_boundary": input_boundary_status(root, manifest),
             "tool_interface": _tool_interface_status(root, manifest, stages[2]),
-            "next_permitted_stage": next_stage}
+            "read_only": True, "legacy_next_stage": next_stage,
+            "next_permitted_stage": None}
 
 
 def _tool_interface_status(root: Path, manifest: dict[str, Any], design_state: dict[str, Any]) -> dict[str, Any]:

@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-通过六个步骤将 Excel 工作簿转换为来源绑定、可审阅的 Python 流程。每一步都生成机器可读的 JSON 证据和面向人的交接报告。Agent 从当前步骤的工具目录选择工具、检查证据，并先审阅确切的交接报告，再由用户审阅。只有明确且当前有效、范围匹配的委托才能在允许的后续步骤替代人工审阅；输入边界始终需要人工确认。
+七步流程可从 `step1 report` 新建，也可挂接到已批准的旧六步流程。新建流程在本地审阅第 1–5 步；挂接流程从固定的旧流程只读继承第 1–5 步。旧版第 6 步保留为历史最终报告。新版第 6 步打包并在内部交付工具，第 7 步生成最终转换报告。CLI 可查看旧流程状态，但不再写入旧流程。第 3 步输入边界仍须人工确认。
 
 ## 流程
 
@@ -15,18 +15,20 @@ flowchart TD
     A2 -->|通过| S3I[3a · 分类并确认输入]
     S3I --> A3I{Agent → 人工}
     A3I -->|确认| S3[3b · 分析与设计]
-    S3 --> A3{Agent → 人工或范围匹配的委托}
+    S3 --> A3{Agent → 人工}
     A3 -->|通过| S4[4 · 生成独立 Python]
-    S4 --> A4{Agent → 人工或范围匹配的委托}
+    S4 --> A4{Agent → 人工}
     A4 -->|通过| S5[5 · 验证与对账]
-    S5 --> A5{Agent → 人工或范围匹配的委托}
-    A5 -->|通过| S6[6 · 报告转换结果]
-    S6 --> A6{Agent → 人工或范围匹配的委托}
-    A6 -->|通过| D[流程验收]
-    A1 & A2 & A3I & A3 & A4 & A5 & A6 -->|退回| R[返回责任步骤 · 修改 · 重新审阅]
+    S5 --> A5{Agent → 人工}
+    A5 -->|通过| S6[6 · 打包内部候选工具]
+    S6 --> A6{Agent → 实际人工审阅}
+    A6 -->|通过| D[交付同一运行包并验证回读]
+    D --> S7[7 · 最终转换报告]
+    S7 --> A7{Agent → 实际人工审阅}
+    A1 & A2 & A3I & A3 & A4 & A5 & A6 & A7 -->|退回| R[返回责任步骤 · 修改 · 重新审阅]
 ```
 
-将工作簿放入 `input/`，每个来源和运行都使用 `output/` 下的新目录。`workflow status --workflow DIR` 显示当前证据和允许进入的下一步。创建草稿或工具检查成功本身不会批准或推进流程。证据变更会使相关决定失效；退回记录保留在流程台账中。
+新转换运行 `step1 report --run FINAL_RUN --out NEW_DIR`，并使用现有第 2–5 步工具及 Agent/人工审阅。第 5 步当前且已批准后，运行 `workflow bind-comparison --workflow NEW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256`，哈希须来自独立核验记录。迁移时，旧版第 1–5 步及其来源证据都有效后，运行 `workflow attach --parent LEGACY_DIR --out NEW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256`。`workflow status --workflow DIR` 显示证据、当前内部交付和下一步。候选运行成功或报告生成都不构成批准。新版第 6 步的确切 JSON/Markdown 对须先经 Agent、再经用户明确批准；旧版第 6 步收据及委托不能替代。退回和交付历史保留在台账中。
 
 ## CLI 与交付物
 
@@ -39,8 +41,9 @@ flowchart TD
 | 3 · 分析与设计 | `step3 prepare`、`fields`、`dependencies`、`input-catalog`、`query`、`trace`、`source-trace`、`profile`、`plan`、`check`、`report` | 已确认输入、目标、源候选、变量、方程、模块及 `analysis_design.json/.md` |
 | 4 · 生成 | `step4 capture-external`、`discover`、`plan`、`generate` | 模块化独立运行包、源映射、单独的输入/元数据记录、生成报告 |
 | 5 · 验证 | `step5 validate`、`oracle`、`reconcile` | 隔离执行证据、原生 Excel 捕获、数值对比报告 |
-| 6 · 报告 | `step6 report`、`skill`、`template` | 面向人的转换报告和 JSON 证据 |
-| 流程 | `workflow status`、`confirm`、`reject`、`delegate`、`typesafe` | 当前状态和绑定哈希的决定 |
+| 6 · 内部工具包 | `step6 candidate`、`deliver`、`revoke` | 版本化运行包、候选 JSON/Markdown 对、独立交付和回读记录 |
+| 7 · 最终报告 | `step7 report`、`skill`、`template` | 面向人的转换报告和 JSON 证据 |
+| 流程 | `workflow attach`、`bind-comparison`、`status`、`confirm`、`reject` | 新建或固定旧流程、当前决定及内部交付状态 |
 
 Step 3 从声明的结果倒推，并确认标量、向量、表格、原始输入和公式派生输入边界。Step 4 仅在语义映射和实现预检通过后，为受支持且绑定清楚的设计生成模块化代码。请检查当前工具目录和来源适配器所支持的公式与输入形状；本流程不是通用 Excel 编译器。公式缓存不是模型输入，提取阶段不会运行 VBA。Step 4 冒烟证据只证明运行包可执行。原生 Excel 对比需要 Windows 和 Microsoft Excel。已测试场景不代表所有参数组合覆盖、精算认证、反馈求解或 GPU 支持。
 
@@ -56,7 +59,7 @@ excel-to-act step1 tools
 excel-to-act step1 agent
 excel-to-act workflow status --workflow WORKFLOW_DIR
 $BUNDLE = "output/WORKFLOW/stage4/bundles/revision-NNNN/bundle"
-python "$BUNDLE/model.py" --out "output/result.json"
+python "$BUNDLE/model.py" --inputs "REQUEST.json" --out "output/result.json"
 ```
 
-参见[六步工作流](docs/workflow.md)、[CLI 指南](docs/cli.md)、[通用 Agent 约定](docs/design/generic_agent_contracts.md)、[结果驱动分析指南](docs/design/result_driven_analysis.md)和[报告约定](docs/design/model_conversion_report.md)。`input/` 和 `output/` 下的源工作簿及运行证据属于本地数据。根目录 README 中英文版本为双语；其他作者编写的项目文档为英语。
+参见[七步工作流](docs/workflow.md)、[CLI 指南](docs/cli.md)、[通用 Agent 约定](docs/design/generic_agent_contracts.md)、[结果驱动分析指南](docs/design/result_driven_analysis.md)和[报告约定](docs/design/model_conversion_report.md)。`input/` 和 `output/` 下的源工作簿及运行证据属于本地数据。根目录 README 中英文版本为双语；其他作者编写的项目文档为英语。
