@@ -2,6 +2,8 @@
 
 English | [简体中文](README.zh-CN.md)
 
+Use the complete [`excel-to-act` skill](.agents/skills/excel-to-act/SKILL.md) for agent-driven conversion. The [release guide](docs/release.md) covers the versioned skill/plugin ZIP, matching Python wheel, installation, checksums, and publication gates. The Step 6/7 skills packaged in the runtime remain stage-specific resources.
+
 Start a new seven-stage workflow with `step1 report`, or attach one to a current approved six-stage legacy workflow. A native workflow reviews its own Stages 1–5; an attached workflow inherits those stages read-only from the exact pinned legacy parent. Legacy Stage 6 remains its historical final report. New Step 6 packages the approved standalone tool for internal delivery, and Step 7 produces the final conversion report. The CLI reports legacy status but does not write to legacy workflows. The Step 3 input boundary still requires an actual human decision.
 
 ## Workflow
@@ -38,9 +40,9 @@ Run `excel-to-act stepN tools`, `excel-to-act stepN agent`, or `--help` for curr
 | --- | --- | --- |
 | 1 · Extract | `step1 convert`, `check`, `finalize`, `report` | Preserved source parts, inventories, `import_checkpoint.json/.md` |
 | 2 · Index and read | `step2 index`, `validate`, `prepare`, `query`, `trace`, `report` | Index, source-bound reading package, bounded evidence packets and traces |
-| 3 · Analyze and design | `step3 prepare`, `fields`, `dependencies`, `input-catalog`, `query`, `trace`, `source-trace`, `profile`, `plan`, `check`, `report` | Confirmed inputs, targets, source candidates, variables, equations, modules, and `analysis_design.json/.md` |
+| 3 · Analyze and design | `step3 prepare`, `fields`, `dependencies`, `input-catalog`, `query`, `trace`, `source-trace`, `produce-exact-cases`, `profile`, `plan`, `check`, `report`, `interface` | Confirmed inputs, targets, source candidates, variables, equations, modules, and `analysis_design.json/.md` |
 | 4 · Generate | `step4 capture-external`, `discover`, `plan`, `generate` | Modular standalone bundle, source map, separate input/metadata records, generation report |
-| 5 · Validate | `step5 validate`, `oracle`, `reconcile` | Isolated execution evidence, native Excel capture, numerical comparison report |
+| 5 · Validate | `step5 validate`, `oracle`, `reconcile`, `finalize-cases` | Isolated execution evidence, native Excel capture, numerical comparison report |
 | 6 · Internal package | `step6 candidate`, `deliver`, `revoke` | Versioned exact bundle, candidate JSON/Markdown pair, separate delivery and readback record |
 | 7 · Final report | `step7 report`, `skill`, `template` | Human conversion report and JSON evidence |
 | Workflow | `workflow attach`, `bind-comparison`, `status`, `confirm`, `reject` | Native or pinned-parent origin, current decisions, effective internal delivery |
@@ -53,6 +55,8 @@ Primary handoffs lead with the decision, scope, verified results, limits, unreso
 
 Python 3.11+ is required. Install the optional `vba` extra when using the VBA inspection tools.
 
+The [Step 1 demo](examples/README.md) creates its own synthetic workbook and runs extraction through finalization. For a design with an `exact_cases` support domain, follow the [finite-case preparation](docs/cli.md#finite-case-preparation) and [32-case validation](docs/cli.md#exact-case-validation) routes. Each request needs its own validation and matching native capture; only `finalize-cases` over all 32 approved cases creates the formal Step 5 checkpoint.
+
 ```powershell
 python -m pip install -e ".[vba]"
 excel-to-act step1 tools
@@ -61,5 +65,19 @@ excel-to-act workflow status --workflow WORKFLOW_DIR
 $BUNDLE = "output/WORKFLOW/stage4/bundles/revision-NNNN/bundle"
 python "$BUNDLE/model.py" --inputs "REQUEST.json" --out "output/result.json"
 ```
+
+## Development and packaging
+
+Run these commands from the repository root. Clear the generated `build/` directory before every build: setuptools can otherwise include deleted modules or resources left by an earlier build. Keep source files and workflow evidence outside `build/`.
+
+```powershell
+python -m pip install -e ".[dev]" build
+python -m pytest -q
+python -m ruff check .
+if (Test-Path -LiteralPath .\build) { Remove-Item -LiteralPath .\build -Recurse -Force }
+python -m build --outdir output/package-build
+```
+
+These development builds go to `output/package-build/`. For an immutable release candidate, use the [release guide](docs/release.md), which refuses an existing candidate directory before building. Building a package does not approve or deliver a converted model.
 
 See the [seven-stage workflow](docs/workflow.md), [CLI guide](docs/cli.md), [generic Agent contracts](docs/design/generic_agent_contracts.md), [result-driven analysis guide](docs/design/result_driven_analysis.md), and [report contract](docs/design/model_conversion_report.md). Source workbooks and run evidence under `input/` and `output/` are local data. The README pair is bilingual; other authored project documentation is in English.

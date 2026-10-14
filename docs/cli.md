@@ -104,7 +104,7 @@ For a workbook that already has a current source-bound Step 4 trace, retain the 
 excel-to-act step3 profile --analysis $analysis --trace ACTIVE_TRACE_JSON --out "output/conversion/active-profile"
 ```
 
-Supply exactly one of `--trace` and `--source-trace`. The active route profiles ordinary formulas in the supplied active trace; the candidate route profiles formulas reached from the confirmed input-catalog targets without requiring Step 4 history. Neither route reads trace values or formula caches, evaluates formulas, or infers business meanings.
+Supply exactly one of `--trace`, `--source-trace`, or `--case-manifest` with `--case-id`. The active route profiles ordinary formulas in the supplied active trace; the candidate route profiles formulas reached from the confirmed input-catalog targets without requiring Step 4 history. Neither route reads trace values or formula caches, evaluates formulas, or infers business meanings. The finite-case route is described below.
 
 `--target` accepts an exact name, finite cell/range, field ID, or canonical `vba:MODULE`. Use `--sheet` to resolve an unqualified address or local name. Query returns only stored cells; it does not fabricate blanks. A local name keeps its scope context for evidence replay. VBA queries return the canonical static inventory record; they do not execute VBA or infer worksheet ownership.
 
@@ -120,7 +120,7 @@ Create an Agent-authored `step3.analysis_design.input.v1` file using the Step 3 
 excel-to-act step3 report --analysis $analysis --design DESIGN_INPUT_JSON --workflow WORKFLOW_DIR
 ```
 
-Read the resulting `analysis_design.json/.md`, record Agent review, and wait for the human's explicit decision. For each `scenario.primary_inputs` entry that explicitly supplies both `source_cell` and `source_literal`, `step3 report` checks the qualified physical cell in the hash-bound Step 1 workbook copy with formulas visible. The cell must exist, contain no formula, and exactly match the declared literal. Partial assertions, missing cells, formula cells, and mismatches block the report before it appends a revision; diagnostics identify the scenario, selector, address, expected value, and actual value. The report records matched assertions under `scenario_source_validation`; it does not infer values or add undeclared guards. Step 3 is static: it does not calculate formulas, invoke native Excel, or read formula caches as runtime results.
+Read the resulting `analysis_design.json/.md`, record Agent review, and wait for the human's explicit decision. For each `scenario.primary_inputs` entry that explicitly supplies both `source_cell` and `source_literal`, `step3 report` checks the qualified physical cell in the hash-bound Step 1 workbook copy with formulas visible. The cell must exist, contain no formula, and exactly match the declared literal. Partial assertions, missing cells, formula cells, and mismatches block the report before it appends a revision; diagnostics identify the scenario, selector, address, expected value, and actual value. The report records matched assertions under `scenario_source_validation`; it does not infer values or add undeclared guards. These static analysis and report commands do not calculate formulas, invoke native Excel, or read formula caches as runtime results. The separate `produce-exact-cases` route below calculates source traces from previously captured native evidence.
 
 The design may include an optional `tool_execution_ledger` with text-only `tool`, `command`, `purpose`, `outputs`, and `status` fields. The report displays those records; it never executes listed commands. An optional `external_value_capture_plan` can describe the later phase, ranges, method, binding, and validation. It must say current values are unavailable and formula caches are prohibited. Step 3 records the prerequisite without capturing or including numeric values.
 
@@ -132,15 +132,44 @@ excel-to-act step3 interface --workflow WORKFLOW_DIR
 
 Optional per-input declarations belong in the accepted design's `tool_interface.objects`, keyed by boundary `variable_id`. State `mutability` as `mutable`, `immutable`, or `unknown`; supply `value_type`, `required`, `default_policy`, `allowed_range`, `units`, and `unit_basis` only when supported by reviewed evidence. Default policy may be `unknown` or `none`; literal numeric defaults need later approved value capture. Missing facts are emitted as unknown and block runtime readiness. Boundary objects determine membership; explicitly mutable objects are included regardless of their business label. Parameter keys use the boundary `logical_name`; source addresses appear only in `source_provenance`. Export creates a manifest-listed derived artifact and Markdown report without adding a Step 3 revision or approval. CLI and workflow status say “interface generated” only while the registered artifact is current; they do not claim parameterized computation, Excel equivalence, or production readiness. The input boundary still requires Agent and actual human approval of its exact JSON/Markdown pair.
 
+### Finite-case preparation
+
+For an `exact_cases` design, prepare the complete request set after the input boundary is confirmed and before submitting the final design. The implemented validation route requires all 32 approved requests. Each case needs its own raw request, public request (`inputs` and same-request `external_data`), and previously captured native Excel oracle. Use the current source's approved files and SHA-256 values; neither another request's capture nor a saved-scenario result can stand in for them.
+
+Supply a `step3.exact_cases.manifest.v1` JSON with a `cases` array. Each entry has exactly `case_id`, `raw_request`, `public_request`, and `native_oracle`; each file reference has `path` and `sha256`. The complete set must match the confirmed boundary's request hashes and case axes. Then seal and trace it:
+
+```powershell
+excel-to-act step3 produce-exact-cases --workflow WORKFLOW_DIR --cases CASE_MANIFEST.json --out NEW_CASES_DIR
+```
+
+The returned `artifact` is `NEW_CASES_DIR/exact_cases.json`. This command checks the existing native FullRebuild evidence and raw/public input readback, seals the formula-derived external cuts, and calculates a source formula trace for each request. It does not call Excel, use formula caches, or record a workflow decision. Use `step3 agent` for the source-bound case and semantic-map contracts.
+
+For each case, create a distinct profile and Agent-authored semantic map, then plan and check it:
+
+```powershell
+excel-to-act step3 profile --analysis ANALYSIS_DIR --case-manifest NEW_CASES_DIR/exact_cases.json --case-id CASE_ID --out NEW_PROFILE_DIR
+excel-to-act step3 plan --analysis ANALYSIS_DIR --semantic-map CASE_SEMANTIC_MAP.json --case-out NEW_PLAN_DIR
+excel-to-act step3 check --analysis ANALYSIS_DIR --case-plan NEW_PLAN_DIR/semantic_plan.json
+```
+
+The semantic map must declare `selection_basis: exact_case` and bind this case's ID, manifest, trace, and profile by path and SHA-256. Add each case's checked profile and plan references alongside its request, producer, and trace references in the final design's `tool_interface.support_domain.cases`, then submit `step3 report` and obtain the normal final-design reviews. A profile or plan from the saved scenario cannot cover another request. After the current design is approved and its interface is exported, continue through Step 4 and the exact-case Step 5 route below.
+
 ## 4. Generate standalone Python
 
 For each workflow, use its current confirmed input boundary and accepted semantic design. Earlier or rejected bundles remain historical evidence; their approval cannot release a replacement design. Read source-specific parameters and manual checks from the current workflow's bound evidence, not from reusable defaults.
 
-After the Stage 3 report has both current approvals, discover a fresh active trace from the approved targets, then emit the bounded model:
+After the Stage 3 report has both current approvals, capture external inputs if required by that design, discover a fresh active trace, and pass implementation preflight before generation:
 
 ```powershell
-excel-to-act step4 discover --workflow WORKFLOW_DIR
+excel-to-act step4 capture-external --workflow WORKFLOW_DIR
+```
+
+After the required capture, or directly when no capture is required:
+
+```powershell
 excel-to-act step4 tools
+excel-to-act step4 discover --workflow WORKFLOW_DIR
+excel-to-act step4 plan --workflow WORKFLOW_DIR --implementation IMPLEMENTATION_INPUT.json
 excel-to-act step4 generate --workflow WORKFLOW_DIR
 ```
 
@@ -148,7 +177,11 @@ Step 4 generates modular bundles only. Follow the accepted capture and implement
 
 ## 5. Validate the generated code and reconcile with Excel
 
-Run the generated code without the workbook or project package, then capture a new native Excel baseline and reconcile both results. The target/range arguments below are placeholders. Select all ranges and targets required by the current accepted design and manifest, and check the adapter's declared compatibility for the current source:
+Run the generated code without the workbook or project package, then capture a new native Excel baseline and reconcile both results. Choose the saved-scenario or exact-case route from the current accepted support domain.
+
+### Saved-scenario validation
+
+The commands below validate the bundle's saved scenario. The target/range arguments are placeholders. Select all ranges and targets required by the current accepted design and manifest, and check the adapter's declared compatibility for the current source:
 
 ```powershell
 excel-to-act step5 validate --workflow WORKFLOW_DIR
@@ -158,11 +191,38 @@ excel-to-act step5 reconcile --workflow WORKFLOW_DIR --validation VALIDATION_JSO
 
 `step5 validate` compiles and runs the standalone generated bundle in an isolated temporary directory. It does not compare against Excel. `step5 oracle` requires Windows with Microsoft Excel, disables macros and events, recalculates a private read-only copy, captures requested defined names and finite ranges, then closes without saving. It records evidence only and does not advance Stage 5. `step5 reconcile` separately verifies the source, inputs, targets, active formula values, error codes, and tolerances. Both generated-code validation and reconciliation must pass before the Stage 5 report is reviewable. Review `validation_report.json/.md`, then record Agent and human decisions.
 
+### Exact-case validation
+
+For the current `exact_cases` contract, use the same sealed `exact_cases.json` that the approved Stage 3 design binds. Each public request must match its own trace, source, external data, and approved support domain. Run isolated validation with `--inputs`, then capture Excel with `--validation` pointing to that exact validation file, then reconcile those two outputs. The example uses `1e-12` absolute and relative tolerances; use the exact tolerances recorded in the approved support domain.
+
+```powershell
+$cases = (Get-Content -LiteralPath "EXACT_CASES.json" -Raw | ConvertFrom-Json).cases
+$caseReports = @()
+foreach ($case in $cases) {
+    $validation = excel-to-act step5 validate --workflow WORKFLOW_DIR --inputs $case.public_request.path | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw "Validation failed: $($case.case_id)" }
+    $oracle = excel-to-act step5 oracle --workflow WORKFLOW_DIR --validation $validation.validation | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw "Native capture failed: $($case.case_id)" }
+    $comparison = excel-to-act step5 reconcile --workflow WORKFLOW_DIR --validation $validation.validation --oracle $oracle.artifact --abs-tol 1e-12 --rel-tol 1e-12 | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw "Reconciliation failed: $($case.case_id)" }
+    $caseReports += @("--case-report", $comparison.artifact)
+}
+excel-to-act step5 finalize-cases --workflow WORKFLOW_DIR @caseReports
+```
+
+The returned `validation` from `validate` names the execution evidence file; `oracle.artifact` names the matching Excel capture; `reconcile.artifact` names that case's `case_report.json`. Each case receipt records only that request and does not advance Stage 5. `finalize-cases` requires 32 distinct current passing receipts and rechecks their source, request, trace, package, native result, and tolerance bindings. It writes one formal `validation_report.json/.md` pair for Agent review and actual-human acceptance. Saved-scenario evidence, fewer cases, or a successful report command cannot replace those decisions. Only after the formal checkpoint is approved should the workflow bind its comparison and proceed to Step 6.
+
 Each reconciliation covers only its declared scenario, targets, formulas, and ranges. The workflow is not a general Excel compiler or an all-configuration model; a pass must not be described as broader than the evidence actually compared. Feedback solving or GPU execution requires separate implementation and evidence.
 
 ## 6. Package and internally deliver the approved tool
 
-After the pinned Stages 1–5 are current, create a candidate for an exact request and matching native comparison:
+After native Stages 1–5 are current and approved, bind the independently verified comparison. Attached workflows already pin that comparison when they are created. `APPROVED_SHA256` must come from the separate verification record described at the start of this guide:
+
+```powershell
+excel-to-act workflow bind-comparison --workflow WORKFLOW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256
+```
+
+Then create a candidate for an exact request and matching native comparison:
 
 ```powershell
 excel-to-act step6 tools

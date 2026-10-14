@@ -1,0 +1,4 @@
+interface:
+  display_name: "Excel to Act"
+  short_description: "Convert Excel models through seven reviewed stages"
+  default_prompt: "Use $excel-to-act to convert this Excel model or continue its current reviewed workflow."

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "excel-to-act"
 version = "0.1.0"
-description = "Phase 1 Excel decomposition framework for actuarial model migration."
+description = "Seven-stage Excel-to-Python conversion with reviewed evidence and internal delivery."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
