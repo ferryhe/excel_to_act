@@ -2,6 +2,8 @@
 
 [English](README.md) | 简体中文
 
+本项目采用 [MIT 许可证](LICENSE)。
+
 面向 Agent 的完整转换入口是 [`excel-to-act` Skill](.agents/skills/excel-to-act/SKILL.md)。[发布指南](docs/release.md)说明带版本的 Skill/插件 ZIP、配套 Python wheel、安装、校验清单及发布条件。运行时包含第 6 步交付和第 7 步报告的专用 Skill。
 
 Excel to Act 通过七个审阅步骤，把 Excel 模型转换为独立 Python 工具：提取、索引、输入确认与设计、代码生成、验证、内部交付和最终转换报告。提取定稿后，使用 `step1 report` 开始流程。每一步的确切 JSON/Markdown 报告对都须先经 Agent 审阅，再由用户明确决定。

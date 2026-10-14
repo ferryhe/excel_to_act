@@ -1,5 +1,6 @@
 ---
 name: excel-to-act
+license: MIT
 description: "Convert .xlsx/.xlsm models into standalone Python tools with the Excel-to-Act seven-stage workflow, or continue, validate, internally deliver, or report on an existing conversion. Not for general spreadsheet editing or development of this repository."
 ---
 

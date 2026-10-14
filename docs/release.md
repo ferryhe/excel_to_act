@@ -31,7 +31,7 @@ The resulting files are:
 | `excel-to-act-skill-0.1.0.zip` | Portable plugin layout with one complete skill and its matching wheel |
 | `SHA256SUMS` | SHA-256 of those release artifacts |
 
-Inside the ZIP, `excel-to-act/plugin.json` identifies the portable plugin, `skills/excel-to-act/` is the installable skill folder, and `release.json` records the version, `packaged` status, license presence, runtime path, and exact packaged file hashes. The wheel is under that skill's `runtime/`. Packaging selects only the maintained skill files and verified wheel. A root `LICENSE`, when present, is retained in both the plugin and standalone skill folders.
+Inside the ZIP, `excel-to-act/plugin.json` identifies the portable plugin, `skills/excel-to-act/` is the installable skill folder, and `release.json` records the version, `packaged` status, license presence, runtime path, and exact packaged file hashes. The wheel is under that skill's `runtime/`. Packaging selects only the maintained skill files and verified wheel. The MIT `LICENSE` is included in both the plugin and standalone skill folders, and the Python wheel and source distribution include the same license text.
 
 ## Install and verify locally
 
@@ -56,6 +56,6 @@ Test the installed runtime with the [synthetic Step 1 demo](../examples/README.m
 
 Publish from a reviewed commit with passing CI. Retain its exact distributions, checksum list, local installation result, and review evidence. Check that the ZIP and wheel identify the same version and that all seven packaged Agent contracts are readable. CI retains the distribution as `excel-to-act-distribution`. Creating a GitHub Release, uploading to PyPI, or submitting a plugin marketplace listing is a separate publishing action.
 
-Public distribution requires an owner-selected project `LICENSE`. The `license_recorded` field reports whether that file is included. The dependency license check covers dependency terms; it does not select the project's license. Optional `oracle-formulas` is a separate EUPL opt-in and is not bundled into the default runtime.
+The project is licensed under the [MIT License](../LICENSE). Python package metadata declares `License-Expression: MIT`, and the skill manifest records `license_recorded: true`. Dependency licenses retain their own terms. Optional `oracle-formulas` is a separate EUPL opt-in and is not bundled into the default runtime.
 
 The validated real-model scope is the Pricing workbook and its 32 approved requests. Each conversion's accepted evidence defines its supported source and scenarios. Public distribution, production activation, and publication of source workbooks or conversion evidence require explicit instructions for those actions.

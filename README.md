@@ -2,6 +2,8 @@
 
 English | [简体中文](README.zh-CN.md)
 
+Licensed under the [MIT License](LICENSE).
+
 Use the complete [`excel-to-act` skill](.agents/skills/excel-to-act/SKILL.md) for agent-driven conversion. The [release guide](docs/release.md) covers the versioned skill/plugin ZIP, matching Python wheel, installation, checksums, and publication requirements. The runtime includes dedicated Step 6 delivery and Step 7 reporting skills.
 
 Excel to Act converts Excel models into standalone Python tools through seven reviewed stages: extraction, indexing, input confirmation and design, code generation, validation, internal delivery, and a final conversion report. Start with `step1 report` after extraction is finalized. Each stage requires Agent review followed by an explicit human decision on its exact JSON/Markdown report pair.
