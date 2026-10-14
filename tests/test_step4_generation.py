@@ -15,6 +15,7 @@ from excel_to_act.steps.conversion_workflow import (
     record_decision,
 )
 from excel_to_act.steps.step4 import generate_model
+from excel_to_act.steps.step4.generator import _saved_scenario_guard
 from excel_to_act.steps.step4.discovery import (
     _approved_stored_empty_addresses,
     _cell_key,
@@ -134,6 +135,90 @@ def test_external_override_keys_match_casefolded_trace_membership() -> None:
         _record_external_override(overrides, "qTaBlE!w5", {"value": 0.5})
 
 
+def _source_cells_scenario() -> tuple[dict[str, object], dict[str, object]]:
+    """Synthetic current-shape scenario: scalar, sparse and fixed source inputs."""
+    scalar = [f"Main!A{row}" for row in range(1, 13)]
+    sparse_left = [f"Main!B{row}" for row in range(1, 24)]
+    sparse_right = [f"Main!C{row}" for row in range(1, 25)]
+    inputs = {f"selector_{row}": {"boundary_variable_id": f"var_{row}",
+                                  "source_cells": [address]}
+              for row, address in enumerate(scalar, 1)}
+    inputs["selector_1"]["source_cell"] = scalar[0]
+    inputs["selector_1"]["source_literal"] = 1
+    inputs["sparse_left"] = {"boundary_variable_id": "left", "source_cells": sparse_left}
+    inputs["sparse_right"] = {"boundary_variable_id": "right", "source_cells": sparse_right}
+    inputs["fixed_only"] = {"source_cell": "Main!D1", "source_literal": 99}
+    trace = {"cells": [{"address": address, "role": "source_value", "formula": None,
+                        "value": index}
+                       for index, address in enumerate(scalar + sparse_left + sparse_right, 1)]}
+    trace["cells"].append({"address": "Main!D1", "role": "source_value",
+                           "formula": None, "value": 99})
+    design = {"scenarios": [{"scenario_id": "synthetic-saved", "input_overrides": [],
+                              "primary_inputs": inputs}]}
+    return design, trace
+
+
+def test_saved_scenario_guard_binds_current_shape_to_exact_trace_values() -> None:
+    design, trace = _source_cells_scenario()
+
+    scenario_ids, guard = _saved_scenario_guard(design, trace)
+
+    assert scenario_ids == ["synthetic-saved"]
+    assert len(guard) == 60  # 59 source cells plus one separate fixed assertion.
+    assert guard["main!A1"] == 1
+    assert guard["main!B23"] == 35
+    assert guard["main!C24"] == 59
+    assert guard["main!D1"] == 99
+
+
+@pytest.mark.parametrize("change", ["literal_mismatch", "literal_missing_trace"])
+def test_saved_scenario_guard_checks_listed_cell_even_with_literal(change: str) -> None:
+    design, trace = _source_cells_scenario()
+    if change == "literal_mismatch":
+        design["scenarios"][0]["primary_inputs"]["selector_1"]["source_literal"] = 7
+    else:
+        trace["cells"] = [item for item in trace["cells"] if item["address"] != "Main!A1"]
+
+    with pytest.raises(ValueError, match="current source trace"):
+        _saved_scenario_guard(design, trace)
+
+
+@pytest.mark.parametrize("change, expected", [
+    ("unqualified", "qualified source cell"),
+    ("range", "qualified source cell"),
+    ("duplicate", "repeats a primary input source cell"),
+    ("missing_trace", "current source trace"),
+    ("wrong_role", "current source trace"),
+    ("formula", "current source trace"),
+    ("missing_value", "current source trace"),
+    ("duplicate_trace", "current source trace"),
+])
+def test_saved_scenario_guard_rejects_unbound_source_cells(change: str, expected: str) -> None:
+    design, trace = _source_cells_scenario()
+    cells = design["scenarios"][0]["primary_inputs"]["sparse_left"]["source_cells"]
+    if change == "unqualified":
+        cells[0] = "B1"
+    elif change == "range":
+        cells[0] = "Main!B1:B2"
+    elif change == "duplicate":
+        cells[0] = "main!$A$1"
+    else:
+        record = next(item for item in trace["cells"] if item["address"] == "Main!B1")
+        if change == "missing_trace":
+            trace["cells"].remove(record)
+        elif change == "wrong_role":
+            record["role"] = "calculated_formula"
+        elif change == "formula":
+            record["formula"] = "=1"
+        elif change == "missing_value":
+            del record["value"]
+        else:
+            trace["cells"].append(dict(record))
+
+    with pytest.raises(ValueError, match=expected):
+        _saved_scenario_guard(design, trace)
+
+
 def test_incomplete_accepted_design_cannot_create_legacy_bundle_or_advance_stage4(tmp_path: Path) -> None:
     workflow_dir, source_path = _approved_gp_workflow(tmp_path)
     before = (workflow_dir / "workflow.json").read_bytes()
@@ -245,6 +330,9 @@ def test_generation_reader_shows_ordered_non_scalar_values_and_unknowns_without_
     assert "resolved by recorded capture" in front and "**Q_MEANING**" in front
     assert "Recorded answer: Not recorded" in front and "status: Not recorded" in front
     assert "[generation_report.json](<machine.json>)" in front
+    assert "the actual human reviews it after an explicit response" in front
+    assert "live TypeSafe review commands are disabled in v2" in front
+    assert "unless a valid scoped TypeSafe delegation applies" not in front
     assert "[[1, 2], [3, 4]]" not in front
     assert json.dumps(payload, sort_keys=True) == before
 

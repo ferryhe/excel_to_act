@@ -19,6 +19,7 @@ _TYPES = {"boolean", "integer", "number", "string"}
 def export_tool_interface(workflow_dir: Path) -> dict[str, Any]:
     try:
         root, _manifest = conversion.load_workflow(workflow_dir)
+        conversion._require_upstream_writable(_manifest)
         manifest, design_revision = conversion.require_stage_approved(root, 3)
         boundary_reference, boundary_json, _boundary_md = confirmed_boundary_reference(root, manifest)
         boundary_state = conversion.input_boundary_status(root, manifest)
@@ -553,10 +554,9 @@ def _support_domain(value: Any) -> dict[str, Any] | None:
         if not isinstance(cases, list) or not cases:
             raise ValueError("exact-case support needs bound trace and request artifacts")
         for case in cases:
-            if not isinstance(case, dict) or set(case) not in ({
-                    "trace", "raw_request", "public_request", "producer"}, {
-                    "trace", "raw_request", "public_request", "producer", "plan", "profile"}):
-                raise ValueError("exact-case artifact references are incomplete")
+            if not isinstance(case, dict) or set(case) != {
+                    "trace", "raw_request", "public_request", "producer", "plan", "profile"}:
+                raise ValueError("exact-case requires a distinct plan and profile")
             for reference in case.values():
                 if (not isinstance(reference, dict) or set(reference) != {"path", "sha256"}
                         or not isinstance(reference["path"], str) or not reference["path"]

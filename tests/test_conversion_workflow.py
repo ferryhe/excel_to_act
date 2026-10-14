@@ -378,17 +378,14 @@ def test_human_override_is_bound_to_one_delegated_step5_revision(tmp_path: Path)
         "--decision", "approve", "--message", "I accept Step 5 report revision 1.",
     ])
     assert confirmation.exit_code != 0
-    assert "Agent must approve this current JSON/Markdown revision" in confirmation.stdout
+    assert "read-only" in confirmation.stdout
     assert (root / "workflow.json").read_bytes() == workflow_before_confirmation
+    with pytest.raises(ValueError, match="Agent must approve this current JSON/Markdown revision"):
+        workflow.record_decision(root, 5, "human", "approve", "I accept Step 5 report revision 1.")
     workflow.record_decision(root, 5, "agent", "approve", "Agent reviewed Step 5 revision 1.")
-    confirmation = CliRunner().invoke(app, [
-        "workflow", "confirm", "--workflow", str(root), "--stage", "5", "--reviewer", "human",
-        "--decision", "approve", "--message", "I accept Step 5 report revision 1.",
-    ])
-    assert confirmation.exit_code == 0, confirmation.stdout
-    confirmation_payload = json.loads(confirmation.stdout)
-    assert confirmation_payload["status"] == "pass"
-    assert confirmation_payload["receipt"]["reviewer_pair_override"]["authorization_sha256"] == delegation_record["authorization_sha256"]
+    confirmation_receipt = workflow.record_decision(
+        root, 5, "human", "approve", "I accept Step 5 report revision 1.")
+    assert confirmation_receipt["reviewer_pair_override"]["authorization_sha256"] == delegation_record["authorization_sha256"]
     pending = workflow.stage_status(*workflow.load_workflow(root), 5)
     assert pending["status"] == "approved"
     assert pending["reviewer_pair"] == ["agent", "human"]
@@ -533,7 +530,9 @@ def test_real_human_receipt_confirms_input_catalog_even_with_active_delegation(t
     status = workflow.workflow_status(root)
     assert status["input_boundary"]["revision"] == catalog_revision["revision"]
     assert status["input_boundary"]["status"] == "input_boundary_confirmed"
-    assert status["next_permitted_stage"] == 3
+    assert status["read_only"] is True
+    assert status["legacy_next_stage"] == 3
+    assert status["next_permitted_stage"] is None
     with pytest.raises(ValueError, match="does not release Step 4"):
         workflow.require_stage_approved(root, 3)
 
@@ -721,8 +720,10 @@ def test_typesafe_cli_makes_mocked_live_call_and_logs_compact_provenance(
     runner = CliRunner()
     result = runner.invoke(app, ["workflow", "typesafe", "--workflow", str(root),
                                  "--stage", "3", "--request", str(request_path)])
-    assert result.exit_code == 0, result.stdout
-    payload = json.loads(result.stdout)
+    assert result.exit_code == 1
+    assert "read-only" in result.stdout
+    assert "typesafe_invocations" not in workflow.load_workflow(root)[1]
+    payload = workflow.submit_typesafe_review(root, 3, request_path)
     assert payload["status"] == "pass"
     assert payload["correlation_id_origin"] == "client-generated; not provider-issued"
     _, manifest = workflow.load_workflow(root)
@@ -829,9 +830,9 @@ def test_workflow_delegate_cli_emits_compact_json_and_rejects_unbound_auth(tmp_p
     runner = CliRunner()
     result = runner.invoke(app, ["workflow", "delegate", "--workflow", str(root),
                                  "--authorization", str(paths["auth_path"])])
-    assert result.exit_code == 0, result.stdout
-    payload = json.loads(result.stdout)
-    assert payload["status"] == "pass"
+    assert result.exit_code == 1
+    assert "read-only" in result.stdout
+    payload = workflow.register_review_delegation(root, paths["auth_path"])
     assert payload["stages"] == [3, 4, 5, 6]
 
     wrong = json.loads(paths["auth_path"].read_text(encoding="utf-8"))

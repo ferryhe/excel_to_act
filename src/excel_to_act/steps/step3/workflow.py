@@ -168,6 +168,7 @@ def prepare_analysis(
             from excel_to_act.steps import conversion_workflow
 
             workflow_root, workflow_manifest = conversion_workflow.load_workflow(workflow_path)
+            conversion_workflow._require_upstream_writable(workflow_manifest)
             conversion_workflow.require_stage_approved(workflow_root, 2)
         checked = _validate_saved_index(index_path, root)
         if checked.get("status") != "pass":

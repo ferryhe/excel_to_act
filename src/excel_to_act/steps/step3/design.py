@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import itertools
 import math
 from pathlib import Path
 import re
@@ -23,6 +24,9 @@ from excel_to_act.steps.conversion_workflow import (
 from excel_to_act.steps.step3.workflow import _load_context, _read_stage
 from excel_to_act.steps.step3.input_boundary import confirmed_boundary_reference, _require_bound_workflow
 from excel_to_act.steps.step3.calculation import _parse_reference
+from excel_to_act.steps.step3.exact_cases import (
+    _case_axes, _digest, verify_case_semantic_pair, verify_native_case_producer,
+)
 from excel_to_act.steps.step3.tools.interface import (
     validate_output_interface_declarations,
     validate_tool_interface_declarations,
@@ -153,6 +157,18 @@ def create_design_report(analysis_dir: Path, design_path: Path, workflow_dir: Pa
                    "review_policy": _review_policy(workflow_root, workflow),
                    "evidence_policy": {"static_artifacts_only": True, "formula_calculation_performed": False,
                                        "native_excel_called": False, "formula_cache_used": False}}
+        exact_cases = (design.get("tool_interface") or {}).get("support_domain", {}).get("cases", [])
+        if exact_cases:
+            _validate_exact_cases_for_design(exact_cases, boundary_reference, boundary_json,
+                                             source_copy, context_dir, analysis, artifacts)
+            payload["evidence_policy"]["static_artifacts_only"] = False
+            payload["evidence_policy"]["referenced_native_case_evidence"] = True
+            payload["case_semantics"] = [
+                {"case_id": read_json(Path(case["plan"]["path"]))["case_identity"]["case_id"],
+                 "profile_sha256": case["profile"]["sha256"],
+                 "plan_sha256": case["plan"]["sha256"],
+                 "coverage": read_json(Path(case["plan"]["path"]))["coverage"]}
+                for case in exact_cases]
         if boundary_reference is not None:
             payload["input_boundary_reference"] = boundary_reference
         markdown = _design_markdown(
@@ -170,6 +186,21 @@ def create_design_report(analysis_dir: Path, design_path: Path, workflow_dir: Pa
         if boundary_json is not None and boundary_md is not None:
             input_files["confirmed_input_boundary_json"] = boundary_json
             input_files["confirmed_input_boundary_markdown"] = boundary_md
+        for index, case in enumerate(exact_cases, 1):
+            for label, reference in case.items():
+                path = Path(reference["path"]).expanduser().resolve()
+                if not path.is_file() or hash_file(path) != reference["sha256"]:
+                    raise ValueError(f"exact-case {index} {label} artifact is missing or stale")
+                input_files[f"exact_case_{index:02d}_{label}"] = path
+            producer = read_json(Path(case["producer"]["path"]))
+            native = producer["evidence"]["native_oracle"]
+            input_files[f"exact_case_{index:02d}_native_oracle"] = Path(native["path"]).resolve()
+            _case_plan, _case_profile, nested = verify_case_semantic_pair(
+                case, source["workbook_sha256"], hash_file(boundary_json))
+            for name, path in nested.items():
+                input_files[f"exact_case_{index:02d}_{name}"] = path
+            for name in ("plan", "profile"):
+                input_files[f"exact_case_{index:02d}_{name}_markdown"] = Path(case[name]["path"]).with_suffix(".md")
         revision = append_stage_artifact(workflow_root, 3, "analysis_design.json", payload, markdown,
                                          input_files=input_files,
                                          input_stages={2: stage2["artifact"]})
@@ -179,6 +210,77 @@ def create_design_report(analysis_dir: Path, design_path: Path, workflow_dir: Pa
     except Exception as exc:
         return {"schema_version": "step3.analysis_design.v1", "tool": "step3.report", "status": "blocked",
                 "reason": str(exc)}
+
+
+def _validate_exact_cases_for_design(cases: list[dict[str, Any]], boundary_reference: dict[str, Any] | None,
+                                     boundary_path: Path | None, source_path: Path,
+                                     analysis_dir: Path | None = None,
+                                     analysis: dict[str, Any] | None = None,
+                                     artifacts: dict[str, dict[str, str]] | None = None) -> None:
+    if boundary_reference is None or boundary_path is None:
+        raise ValueError("exact cases need a confirmed current input boundary")
+    boundary = read_json(boundary_path)
+    source_sha256 = hash_file(source_path)
+    sample = boundary["sample_boundary"]
+    approved = {item["sha256"] for item in sample["request_cases"]}
+    if (len(cases) != sample["request_case_count"] or len(approved) != len(cases)
+            or {case["public_request"]["sha256"] for case in cases} != approved):
+        raise ValueError("exact-case design omits or repeats a confirmed public request")
+    axes = []
+    pair_paths: set[tuple[str, str]] = set()
+    for index, case in enumerate(cases, 1):
+        case_artifacts = {}
+        for label, reference in case.items():
+            path = Path(reference["path"]).expanduser().resolve()
+            if not path.is_file() or hash_file(path) != reference["sha256"]:
+                raise ValueError(f"exact-case {index} {label} artifact is missing or stale")
+            case_artifacts[label] = read_json(path)
+        public, raw = case_artifacts["public_request"], case_artifacts["raw_request"]
+        producer, trace = case_artifacts["producer"], case_artifacts["trace"]
+        axes.append(_case_axes(boundary, public))
+        native = producer.get("evidence", {}).get("native_oracle")
+        if (not isinstance(native, dict) or set(native) != {"path", "sha256"}
+                or not Path(native["path"]).is_file()
+                or hash_file(Path(native["path"])) != native["sha256"]
+                or producer.get("boundary_json", {}).get("sha256") != hash_file(boundary_path)
+                or producer.get("source_sha256") != source_sha256
+                or producer.get("evidence", {}).get("raw_request") != case["raw_request"]
+                or producer.get("evidence", {}).get("public_request") != case["public_request"]
+                or producer.get("input_sha256") != _digest(raw.get("input_overrides"))
+                or trace.get("source_sha256") != source_sha256
+                or trace.get("input_sha256") != producer["input_sha256"]
+                or trace.get("request_sha256") != case["raw_request"]["sha256"]
+                or trace.get("producer_sha256") != case["producer"]["sha256"]):
+            raise ValueError(f"exact-case {index} source, request, native, or boundary binding differs")
+        verify_native_case_producer(producer, case, source_path, raw, public)
+        plan, profile, _nested = verify_case_semantic_pair(case, source_sha256, hash_file(boundary_path))
+        pair = (case["plan"]["path"], case["profile"]["path"])
+        if pair in pair_paths or any(path in previous for previous in pair_paths for path in pair):
+            raise ValueError(f"exact-case {index} reuses another case's plan or profile")
+        pair_paths.add(pair)
+        if (plan["case_identity"]["case_id"] != trace.get("case_id")
+                or plan["coverage"].get("unmapped_active_formula_members") != 0
+                or plan["coverage"].get("duplicate_active_formula_members") != 0
+                or plan["coverage"].get("active_formula_members") !=
+                plan["coverage"].get("active_formula_members_mapped")):
+            raise ValueError(f"exact-case {index} semantic coverage is incomplete")
+        if analysis is not None and artifacts is not None:
+            if (plan.get("binding_sha256") != analysis["binding_sha256"]
+                    or profile.get("binding_sha256") != analysis["binding_sha256"]
+                    or plan.get("source", {}).get("fields_sha256") != artifacts["fields"]["sha256"]
+                    or plan.get("source", {}).get("dependencies_sha256") != artifacts["dependencies"]["sha256"]
+                    or profile.get("inventory", {}).get("sha256") !=
+                    analysis["binding"]["artifacts"]["inventory_sha256"]):
+                raise ValueError(f"exact-case {index} analysis fields, dependencies or inventory differ")
+        if analysis_dir is not None:
+            from excel_to_act.steps.step3.semantic import validate_case_semantic_plan
+
+            checked = validate_case_semantic_plan(analysis_dir, Path(case["plan"]["path"]))
+            if checked["status"] != "pass":
+                raise ValueError(f"exact-case {index} semantic plan is stale: {checked['reason']}")
+    expected = set(itertools.product(*sample["case_axes"].values()))
+    if len(set(axes)) != len(axes) or set(axes) != expected:
+        raise ValueError("exact-case design does not cover each confirmed scenario once")
 
 
 def _validate_design_content(design: dict[str, Any]) -> None:
@@ -400,6 +502,18 @@ def _design_evidence_markdown(value: dict[str, Any]) -> str:
             )
     else:
         lines.append("No per-object tool-interface declarations were supplied; the derived contract will mark those facts unknown and block runtime readiness.")
+    domain = (tool_interface or {}).get("support_domain", {})
+    if domain.get("status") == "exact_cases":
+        lines.extend(["", f"Finite same-request evidence: {len(domain['cases'])} exact hash-bound cases; "
+                      "each cites its raw request, public request, sealed native producer, and current-source formula trace.",
+                      "The current Stage 4 discovery and case support certificate must still be built and checked. "
+                      "These references do not constitute Stage 5 Excel equivalence or publication acceptance."])
+    tolerances = domain.get("tolerances")
+    if tolerances is not None:
+        lines.extend(["", "Declared future Stage 5 numerical comparison thresholds: "
+                      f"absolute `{tolerances['absolute']}`, relative `{tolerances['relative']}`.",
+                      "Stage 5 acceptance remains pending. These thresholds are not an executed result; "
+                      "current native Excel and package evidence must still be reconciled."])
     coverage = design.get("coverage", {})
     known_ids = coverage.get("known_path_ids")
     known_count = len(known_ids) if isinstance(known_ids, list) else None
@@ -614,7 +728,7 @@ def _design_evidence_markdown(value: dict[str, Any]) -> str:
                 lines.append(f"- {item}")
     else:
         lines.append("- None recorded.")
-    lines.extend(["", "## Evidence", "", "This Step 3 command packages static analysis and design evidence. Declared historical evidence is reused by hash; this command performs no new formula calculation, native Excel rebuild, or formula-cache read.",
+    lines.extend(["", "## Evidence", "", "This Step 3 command packages checked analysis, design, and any declared case references by hash; it performs no new formula calculation, native Excel rebuild, or formula-cache read.",
                   _review_policy_sentence(value.get("review_policy", {})), ""])
     return "\n".join(lines)
 
@@ -720,6 +834,16 @@ def _design_markdown(
         lines.append(f"Known design-ledger units: {len(known_ids) if isinstance(known_ids, list) else 'Not recorded'}.")
     lines.append(f"Numerical route IDs: {', '.join(numerical_ids) if numerical_ids else 'Not recorded'}.")
     lines.append(f"Condition-only route IDs: {', '.join(condition_ids) if condition_ids else 'Not recorded'}.")
+    if value.get("case_semantics"):
+        lines.extend(["", "## Exact-case semantic coverage", "",
+                      "Each row binds one request and trace to its own profile and plan. Mapping coverage is address bookkeeping, not numerical acceptance.",
+                      "", "| Case | Ordinary | Array followers | Profile SHA-256 | Plan SHA-256 |",
+                      "| --- | ---: | ---: | --- | --- |"])
+        for case in value["case_semantics"]:
+            coverage = case["coverage"]
+            lines.append(f"| `{case['case_id']}` | {coverage['ordinary_formula_members_mapped']} | "
+                         f"{coverage['array_formula_followers_mapped']} | "
+                         f"`{case['profile_sha256']}` | `{case['plan_sha256']}` |")
     lines.extend(["", "## Limits and unresolved items", ""])
     questions = design.get("open_questions")
     if isinstance(questions, list):
@@ -750,9 +874,9 @@ def _design_markdown(
         link = boundary_link or boundary.get("artifact", {}).get("json", "Not recorded")
         lines.append(f"- Confirmed input-boundary JSON: [input_boundary.json](<{Path(link).as_posix()}>).")
     lines.extend([
-        "- Next: the Agent reviews this exact JSON/Markdown pair first. After Agent PASS, the actual human reviews it unless a valid, explicitly scoped TypeSafe delegation applies to final design.",
+        "- Next: the Agent reviews this exact JSON/Markdown pair first. After Agent PASS, the actual human reviews it after an explicit response. Legacy TypeSafe delegation and live TypeSafe review commands are disabled in v2.",
         "- A question that clarifies material target, scope, input kind, axis, units, or business meaning is not a final approval. To reject, route to the responsible current or earlier Step and refresh affected evidence.",
-        "- Report creation status and Agent PASS are technical/review states; formal human or delegated acceptance remains in the current ledger.", "",
+        "- Report creation status and Agent PASS are technical/review states; formal human acceptance remains in the current ledger.", "",
         "## Detailed design evidence", "",
         re.sub(r"(?m)^## ", "#### ", _design_evidence_markdown(value).replace(
             "# Step 3 Analysis and Design", "### Original design details", 1)), "",

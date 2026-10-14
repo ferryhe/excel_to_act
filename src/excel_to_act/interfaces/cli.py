@@ -18,25 +18,32 @@ from excel_to_act.steps.step2.query import QueryFailure, query as query_step2, v
 from excel_to_act.steps.step2.trace import trace as trace_step2
 from excel_to_act.steps.step3 import build_dependencies, build_fields, build_plan, prepare_analysis, query as step3_query, trace as step3_trace, validate_analysis
 from excel_to_act.steps.step3.tools import tool_catalog as step3_tool_catalog
-from excel_to_act.steps.step3.semantic import build_semantic_plan, validate_semantic_plan
+from excel_to_act.steps.step3.semantic import (
+    build_case_semantic_plan, build_semantic_plan, validate_case_semantic_plan,
+    validate_semantic_plan,
+)
 from excel_to_act.steps.step3.profiling import (
     build_source_candidate_trace,
     profile_source_candidates,
+    profile_exact_case,
     profile_source_families,
 )
 from excel_to_act.steps.step3.input_boundary import create_input_boundary
+from excel_to_act.steps.step3.exact_cases import produce_exact_cases
 from excel_to_act.steps.step3.tools.interface import export_tool_interface
-from excel_to_act.steps.conversion_workflow import record_decision, register_review_delegation, submit_typesafe_review, workflow_status
+from excel_to_act.steps.conversion_workflow import load_workflow, record_decision, workflow_origin, workflow_status
 from excel_to_act.steps.step1.checkpoint import create_checkpoint as create_step1_checkpoint
 from excel_to_act.steps.step2.checkpoint import create_checkpoint as create_step2_checkpoint
 from excel_to_act.steps.step3.design import create_design_report
 from excel_to_act.steps.step4 import (
     capture_external_inputs, create_implementation_plan, discover_active_trace, generate_model,
 )
-from excel_to_act.steps.step5 import capture_oracle, reconcile, validate_generated
+from excel_to_act.steps.step5 import capture_oracle, finalize_cases, reconcile, validate_generated
 from excel_to_act.steps.step5.tools import tool_catalog as step5_tool_catalog
-from excel_to_act.steps.step6 import create_conversion_report
 from excel_to_act.steps.step6.tools import tool_catalog as step6_tool_catalog
+from excel_to_act.steps.seven_stage import bind_native_comparison, create_attached_workflow, create_candidate, deliver, revoke_delivery
+from excel_to_act.steps.step7 import create_conversion_report as create_step7_report
+from excel_to_act.steps.step7.tools import tool_catalog as step7_tool_catalog
 from excel_to_act.steps.step4.tools import tool_catalog as step4_tool_catalog
 from excel_to_act.steps.step1.workflow import agent_definition, auto_recover, convert_directory, execute_tool, finalize_run
 from excel_to_act.steps.step1.tools import tool_catalog
@@ -52,8 +59,9 @@ step2_app = typer.Typer(help="Index Step 1 handoffs for downstream agents")
 step3_app = typer.Typer(help="Build static Step 3 analysis and design evidence")
 step4_app = typer.Typer(help="Generate standalone Python from an approved Step 3 design")
 step5_app = typer.Typer(help="Validate generated Python and reconcile it with native Excel")
-step6_app = typer.Typer(help="Write the final report from accepted conversion checkpoints")
-workflow_app = typer.Typer(help="Review and track the six conversion checkpoints")
+step6_app = typer.Typer(help="Prepare, review, and internally deliver a bound tool package")
+step7_app = typer.Typer(help="Write the final report from accepted delivery evidence")
+workflow_app = typer.Typer(help="Review and track seven conversion checkpoints")
 views_app = typer.Typer(help="Compile deterministic source-addressable workbook views")
 app.add_typer(step1_app, name="step1")
 step1_app.add_typer(checkbox_app, name="checkbox")
@@ -64,6 +72,7 @@ app.add_typer(step3_app, name="step3")
 app.add_typer(step4_app, name="step4")
 app.add_typer(step5_app, name="step5")
 app.add_typer(step6_app, name="step6")
+app.add_typer(step7_app, name="step7")
 app.add_typer(workflow_app, name="workflow")
 app.add_typer(views_app, name="views")
 
@@ -160,9 +169,9 @@ def step2_agent() -> None:
 def step1_report(
     run: Path = typer.Option(..., "--run", exists=True, file_okay=False, readable=True,
                              help="Finalized Step 1 per-source run directory"),
-    out: Path = typer.Option(..., "--out", help="New six-stage workflow directory"),
+    out: Path = typer.Option(..., "--out", help="New native seven-stage workflow directory"),
 ) -> None:
-    """Create a read-only checkpoint from finalized Step 1 artifacts."""
+    """Create the first reviewable checkpoint in a native seven-stage workflow."""
     result = create_step1_checkpoint(run, out)
     _emit_json(result)
     if result.get("status") != "pass":
@@ -276,6 +285,7 @@ def step2_report(
     source_id: str | None = typer.Option(None, "--source-id", help="Select one eligible indexed source"),
 ) -> None:
     """Create the approved-source Step 2 index checkpoint without rewriting it."""
+    _reject_upstream_write(workflow)
     result = create_step2_checkpoint(index, step1_root, workflow, source_id=source_id)
     _emit_json(result)
     if result.get("status") != "pass":
@@ -294,6 +304,53 @@ def workflow_status_command(
         raise typer.Exit(code=1) from exc
 
 
+@workflow_app.command("attach")
+def workflow_attach(
+    parent: Path = typer.Option(..., "--parent", exists=True, file_okay=False),
+    out: Path = typer.Option(..., "--out", help="New separate seven-stage workflow root"),
+    comparison: Path = typer.Option(..., "--comparison", exists=True, dir_okay=False,
+                                    help="Approved current native comparison JSON"),
+    comparison_sha256: str = typer.Option(..., "--comparison-sha256",
+                                          help="Separately verified exact comparison SHA-256"),
+) -> None:
+    """Attach approved legacy Stages 1–5 and a separately verified native comparison."""
+    try:
+        _emit_json(create_attached_workflow(out, parent, comparison, comparison_sha256))
+    except Exception as exc:
+        _emit_json({"status": "blocked", "reason": str(exc)})
+        raise typer.Exit(code=1) from exc
+
+
+@workflow_app.command("bind-comparison")
+def workflow_bind_comparison(
+    workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
+    comparison: Path = typer.Option(..., "--comparison", exists=True, dir_okay=False),
+    comparison_sha256: str = typer.Option(..., "--comparison-sha256",
+                                          help="Separately verified exact current comparison SHA-256"),
+) -> None:
+    """Bind a native Step 5 lineage to its independently verified comparison."""
+    try:
+        _emit_json(bind_native_comparison(workflow, comparison, comparison_sha256))
+    except Exception as exc:
+        _emit_json({"status": "blocked", "reason": str(exc)})
+        raise typer.Exit(code=1) from exc
+
+
+def _require_v2_write(workflow: Path) -> None:
+    if load_workflow(workflow)[1]["schema_version"] != "conversion.workflow.v2":
+        raise ValueError("legacy six-stage workflow is read-only in this CLI; use workflow attach for a separate seven-stage root")
+
+
+def _reject_upstream_write(workflow: Path) -> None:
+    origin = workflow_origin(load_workflow(workflow)[1])
+    if origin == "native":
+        return
+    raise typer.BadParameter(
+        "legacy Stages 1–5 are read-only in this CLI" if origin == "legacy"
+        else "inherited Stages 1–5 are read-only in an attached seven-stage workflow"
+    )
+
+
 @workflow_app.command("delegate")
 def workflow_delegate(
     workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
@@ -301,7 +358,8 @@ def workflow_delegate(
 ) -> None:
     """Register an explicit, source-bound TypeSafe review delegation."""
     try:
-        _emit_json(register_review_delegation(workflow, authorization))
+        _require_v2_write(workflow)
+        raise ValueError("legacy delegation cannot authorize seven-stage publication; a new publication-scoped authorization is required")
     except Exception as exc:
         _emit_json({"status": "blocked", "reason": str(exc)})
         raise typer.Exit(code=1) from exc
@@ -310,13 +368,14 @@ def workflow_delegate(
 @workflow_app.command("typesafe")
 def workflow_typesafe(
     workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
-    stage: int = typer.Option(..., "--stage", min=3, max=6),
+    stage: int = typer.Option(..., "--stage", min=3, max=7),
     request: Path = typer.Option(..., "--request", exists=True, dir_okay=False,
                                  help="Current-artifact-bound TypeSafe Choice request JSON"),
 ) -> None:
     """Submit a live TypeSafe review and record its response in the workflow."""
     try:
-        _emit_json(submit_typesafe_review(workflow, stage, request))
+        _require_v2_write(workflow)
+        raise ValueError("seven-stage TypeSafe review requires a new explicit publication-scoped authorization")
     except Exception as exc:
         _emit_json({"status": "blocked", "reason": str(exc)})
         raise typer.Exit(code=1) from exc
@@ -325,16 +384,17 @@ def workflow_typesafe(
 @workflow_app.command("confirm")
 def workflow_confirm(
     workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
-    stage: int = typer.Option(..., "--stage", min=1, max=6),
+    stage: int = typer.Option(..., "--stage", min=1, max=7),
     reviewer: str = typer.Option(..., "--reviewer", help="agent, human, or delegated typesafe for stages 3..6"),
     decision: str = typer.Option(..., "--decision", help="approve or reject"),
     message: str = typer.Option(..., "--message", help="Review evidence or the user's explicit response"),
-    return_to: int | None = typer.Option(None, "--return-to", min=1, max=6,
+    return_to: int | None = typer.Option(None, "--return-to", min=1, max=7,
                                          help="Required when rejecting; stage to revise"),
     evidence: Path | None = typer.Option(None, "--evidence", help="Required TypeSafe review record when reviewer is typesafe"),
 ) -> None:
     """Record a review receipt for the exact current stage artifact."""
     try:
+        _require_v2_write(workflow)
         result = record_decision(workflow, stage, reviewer, decision, message,
                                  return_to=return_to, evidence_path=evidence)
         _emit_json({"status": "pass", "receipt": result, "workflow_status": workflow_status(workflow)})
@@ -346,14 +406,15 @@ def workflow_confirm(
 @workflow_app.command("reject")
 def workflow_reject(
     workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
-    stage: int = typer.Option(..., "--stage", min=1, max=6),
+    stage: int = typer.Option(..., "--stage", min=1, max=7),
     reviewer: str = typer.Option(..., "--reviewer", help="agent, human, or delegated typesafe for stages 3..6"),
-    return_to: int = typer.Option(..., "--return-to", min=1, max=6),
+    return_to: int = typer.Option(..., "--return-to", min=1, max=7),
     message: str = typer.Option(..., "--message", help="Evidence-backed reason or explicit user response"),
     evidence: Path | None = typer.Option(None, "--evidence", help="Required TypeSafe review record when reviewer is typesafe"),
 ) -> None:
     """Reject the current artifact and record the required revision stage."""
     try:
+        _require_v2_write(workflow)
         result = record_decision(workflow, stage, reviewer, "reject", message,
                                  return_to=return_to, evidence_path=evidence)
         _emit_json({"status": "pass", "receipt": result, "workflow_status": workflow_status(workflow)})
@@ -416,6 +477,8 @@ def step3_prepare(
     workflow: Path | None = typer.Option(None, "--workflow", help="Bind this analysis to a reviewed workflow and require an input boundary before semantic design"),
 ) -> None:
     """Validate Step 2 and bind one source, optional scope, and optional workflow."""
+    if workflow is not None:
+        _reject_upstream_write(workflow)
 
     result = prepare_analysis(index, step1_root, out, source_id=source_id, scope_path=scope,
                               workflow_path=workflow)
@@ -436,9 +499,24 @@ def step3_input_catalog(
                                  help="Agent-authored step3.input_boundary.input.v1 JSON catalog"),
 ) -> None:
     """Validate grouped source inputs and submit the separate Step 3 boundary checkpoint."""
+    _reject_upstream_write(workflow)
     result = create_input_boundary(analysis, workflow, targets, catalog)
     _emit_json(result)
     if result.get("status") != "pass":
+        raise typer.Exit(code=1)
+
+
+@step3_app.command("produce-exact-cases")
+def step3_produce_exact_cases(
+    workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
+    cases: Path = typer.Option(..., "--cases", exists=True, dir_okay=False, readable=True,
+                               help="Explicit source-bound finite raw/public/native case manifest"),
+    out: Path = typer.Option(..., "--out", "-o", help="New external evidence directory"),
+) -> None:
+    """Seal native evidence and source formula traces for the confirmed finite case set."""
+    result = produce_exact_cases(workflow, cases, out)
+    _emit_json(result)
+    if result["status"] != "pass":
         raise typer.Exit(code=1)
 
 
@@ -469,16 +547,21 @@ def step3_profile(
                                       help="Source-bound active_trace.json from Step 4 discovery"),
     source_trace: Path | None = typer.Option(None, "--source-trace", exists=True, dir_okay=False, readable=True,
                                              help="Step 3 gp.source_candidate_trace.v1 JSON after input-catalog confirmation"),
+    case_manifest: Path | None = typer.Option(None, "--case-manifest", exists=True, dir_okay=False, readable=True,
+                                              help="Sealed step3.exact_cases.v1 manifest"),
+    case_id: str | None = typer.Option(None, "--case-id", help="One exact case ID in --case-manifest"),
     out: Path = typer.Option(..., "--out", help="Independent output directory for the reusable syntax profile"),
 ) -> None:
     """Group source formulas by translated syntax without evaluating them."""
-    if (trace is None) == (source_trace is None):
+    if sum(item is not None for item in (trace, source_trace, case_manifest)) != 1 or (
+            (case_manifest is None) != (case_id is None)):
         _emit_json({"tool": "step3.profile", "status": "blocked",
                     "diagnostics": [{"code": "profile_trace_choice_invalid", "severity": "error",
-                                     "message": "provide exactly one of --trace or --source-trace"}]})
+                                     "message": "provide one trace source; --case-manifest needs --case-id"}]})
         raise typer.Exit(code=1)
-    result = (profile_source_candidates(analysis, source_trace, out) if source_trace is not None
-              else profile_source_families(analysis, trace, out))
+    result = (profile_exact_case(analysis, case_manifest, case_id, out) if case_manifest is not None else
+              profile_source_candidates(analysis, source_trace, out) if source_trace is not None else
+              profile_source_families(analysis, trace, out))
     _emit_json(result)
     if result["status"] != "pass":
         raise typer.Exit(code=1)
@@ -495,6 +578,7 @@ def step3_source_trace(
     out: Path = typer.Option(..., "--out", help="Independent output directory for candidate trace JSON and Markdown"),
 ) -> None:
     """Trace static formula-reference candidates without Step 4 history or formula values."""
+    _reject_upstream_write(workflow)
     result = build_source_candidate_trace(analysis, workflow, out, model_scope)
     _emit_json(result)
     if result.get("status") != "pass":
@@ -505,9 +589,17 @@ def step3_source_trace(
 def step3_plan(
     analysis: Path = typer.Option(..., "--analysis", help="Prepared Step 3 analysis directory"),
     semantic_map: Path | None = typer.Option(None, "--semantic-map", help="Optional source-bound GP semantic map input JSON"),
+    case_out: Path | None = typer.Option(None, "--case-out", help="Independent output directory for one exact-case plan"),
 ) -> None:
     """Build structural blocks and optionally bind a complete static semantic map."""
 
+    if case_out is not None:
+        result = (build_case_semantic_plan(analysis, semantic_map, case_out) if semantic_map is not None
+                  else {"tool": "step3.plan", "status": "blocked", "reason": "--case-out needs --semantic-map"})
+        _emit_json(result)
+        if result["status"] != "pass":
+            raise typer.Exit(code=1)
+        return
     result = build_plan(analysis)
     if result["status"] == "pass" and semantic_map is not None:
         result["semantic_mapping"] = build_semantic_plan(analysis, semantic_map)
@@ -556,9 +648,17 @@ def step3_check(
     analysis: Path = typer.Option(..., "--analysis", help="Prepared Step 3 analysis directory"),
     spec: Path | None = typer.Option(None, "--spec", help="Optional Agent-authored step3.model_spec.input.v1 JSON draft"),
     semantic_plan: Path | None = typer.Option(None, "--semantic-plan", help="Check this analysis directory's current semantic_plan.json"),
+    case_plan: Path | None = typer.Option(None, "--case-plan", help="Check a separate exact-case semantic_plan.json"),
 ) -> None:
     """Check static source citations, cell coverage, dependencies, and draft block order."""
 
+    if case_plan is not None:
+        result = (validate_case_semantic_plan(analysis, case_plan) if semantic_plan is None and spec is None
+                  else {"tool": "step3.check", "status": "blocked", "reason": "--case-plan is exclusive"})
+        _emit_json(result)
+        if result["status"] != "pass":
+            raise typer.Exit(code=1)
+        return
     semantic_result = None
     if semantic_plan is not None:
         semantic_result = validate_semantic_plan(analysis, semantic_plan)
@@ -583,6 +683,7 @@ def step3_report(
                                   help="Workflow directory with approved Step 2 checkpoint"),
 ) -> None:
     """Create a reviewable source-bound analysis/design report; performs no formula calculation."""
+    _reject_upstream_write(workflow)
     result = create_design_report(analysis, design, workflow)
     _emit_json(result)
     if result.get("status") != "pass":
@@ -595,6 +696,7 @@ def step3_interface(
                                   help="Workflow with the currently approved Step 3 design and confirmed input boundary"),
 ) -> None:
     """Export a versioned tool interface from the current approved Step 3 evidence."""
+    _reject_upstream_write(workflow)
     result = export_tool_interface(workflow)
     _emit_json(result)
     if result.get("status") != "pass":
@@ -620,6 +722,7 @@ def step4_generate(
                                       help="Normally omit; if supplied, must be the active Stage 4 discovery trace bound by the current implementation preflight"),
 ) -> None:
     """Generate a modular Python bundle after the current semantic and implementation preflights."""
+    _reject_upstream_write(workflow)
     result = generate_model(workflow, trace)
     _emit_json(result)
     if result.get("status") != "pass":
@@ -633,6 +736,7 @@ def step4_plan(
                                         readable=True, help="Source-bound step4.active_implementation.v1 JSON"),
 ) -> None:
     """Preflight the approved modular mapping and schedules without creating a code bundle."""
+    _reject_upstream_write(workflow)
     result = create_implementation_plan(workflow, implementation)
     _emit_json(result)
     if result.get("status") != "pass":
@@ -642,6 +746,7 @@ def step4_plan(
 @step4_app.command("discover")
 def step4_discover(workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False)) -> None:
     """Discover the approved target closure from formula text and raw source values; do not call Excel."""
+    _reject_upstream_write(workflow)
     result = discover_active_trace(workflow)
     _emit_json(result)
     if result.get("status") != "pass":
@@ -653,6 +758,7 @@ def step4_capture_external(
     workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
 ) -> None:
     """Capture only formula-derived input vectors approved by the current Step 3 design."""
+    _reject_upstream_write(workflow)
     result = capture_external_inputs(workflow)
     _emit_json(result)
     if result.get("status") != "pass":
@@ -677,6 +783,7 @@ def step5_validate(
     inputs: Path | None = typer.Option(None, "--inputs", exists=True, dir_okay=False, readable=True),
 ) -> None:
     """Compile and run generated Python in isolation without the source workbook."""
+    _reject_upstream_write(workflow)
     result = validate_generated(workflow, request_path=inputs)
     _emit_json(result)
     if result.get("status") != "pass":
@@ -691,6 +798,7 @@ def step5_oracle(
     validation: Path | None = typer.Option(None, "--validation", exists=True, dir_okay=False, readable=True),
 ) -> None:
     """Capture native Excel results on a private macro-disabled copy; does not advance Step 5."""
+    _reject_upstream_write(workflow)
     result = capture_oracle(workflow, targets=target or None, ranges=cell_range or None,
                             validation_path=validation)
     _emit_json(result)
@@ -707,7 +815,21 @@ def step5_reconcile(
     rel_tol: float = typer.Option(1e-12, "--rel-tol", min=0),
 ) -> None:
     """Compare the standalone model with a current native Excel oracle and write the Stage 5 report."""
+    _reject_upstream_write(workflow)
     result = reconcile(workflow, validation, oracle, abs_tol=abs_tol, rel_tol=rel_tol)
+    _emit_json(result)
+    if result.get("status") != "pass":
+        raise typer.Exit(code=1)
+
+
+@step5_app.command("finalize-cases")
+def step5_finalize_cases(
+    workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
+    case_report: list[Path] = typer.Option(..., "--case-report", exists=True, dir_okay=False, readable=True),
+) -> None:
+    """Create one formal Stage 5 pair from all 32 current exact-case receipts."""
+    _reject_upstream_write(workflow)
+    result = finalize_cases(workflow, case_report)
     _emit_json(result)
     if result.get("status") != "pass":
         raise typer.Exit(code=1)
@@ -715,36 +837,92 @@ def step5_reconcile(
 
 @step6_app.command("agent")
 def step6_agent() -> None:
-    """Print the packaged Step 6 final-report contract."""
+    """Print the packaged Step 6 delivery contract."""
     typer.echo(files("excel_to_act.steps.step6").joinpath("agent.md").read_text(encoding="utf-8"))
-
-
-@step6_app.command("skill")
-def step6_skill() -> None:
-    """Print the packaged final-report skill instructions."""
-    skill = files("excel_to_act.steps.step6").joinpath("excel-to-act-step6", "SKILL.md")
-    typer.echo(skill.read_text(encoding="utf-8"))
-
-
-@step6_app.command("template")
-def step6_template() -> None:
-    """Print the packaged human-readable report scaffold."""
-    template = files("excel_to_act.steps.step6").joinpath(
-        "excel-to-act-step6", "assets", "conversion_report.md"
-    )
-    typer.echo(template.read_text(encoding="utf-8"))
 
 
 @step6_app.command("tools")
 def step6_tools() -> None:
-    """Print Step 6 report action and limits."""
+    """Print Step 6 packaging and internal delivery actions."""
     _emit_json(step6_tool_catalog())
+
+
+@step6_app.command("candidate")
+def step6_candidate(
+    workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
+    version: str = typer.Option(..., "--version"),
+    request: Path = typer.Option(..., "--request", exists=True, dir_okay=False),
+    comparison: Path = typer.Option(..., "--comparison", exists=True, dir_okay=False),
+) -> None:
+    """Stage the exact Step 4 bundle and create a reviewed candidate pair."""
+    try:
+        _emit_json(create_candidate(workflow, version, request, comparison))
+    except Exception as exc:
+        _emit_json({"status": "blocked", "reason": str(exc)})
+        raise typer.Exit(code=1) from exc
+
+
+@step6_app.command("deliver")
+def step6_deliver(workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False)) -> None:
+    """Deliver only the current accepted candidate and verify its actual entry."""
+    try:
+        _emit_json(deliver(workflow))
+    except Exception as exc:
+        _emit_json({"status": "blocked", "reason": str(exc)})
+        raise typer.Exit(code=1) from exc
+
+
+@step6_app.command("revoke")
+def step6_revoke(
+    workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
+    reason: str = typer.Option(..., "--reason"),
+) -> None:
+    """Remove the current effective registration while preserving delivered history."""
+    try:
+        _emit_json(revoke_delivery(workflow, reason))
+    except Exception as exc:
+        _emit_json({"status": "blocked", "reason": str(exc)})
+        raise typer.Exit(code=1) from exc
 
 
 @step6_app.command("report")
 def step6_report(workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False)) -> None:
-    """Create the final report after Stages 1–5 have been confirmed."""
-    result = create_conversion_report(workflow)
+    """Explain the read-only legacy report and the new Step 7 route."""
+    _, manifest = load_workflow(workflow)
+    reason = ("legacy Step 6 final reports are read-only; inspect the saved stage6 report"
+              if manifest["schema_version"] == "conversion.workflow.v1"
+              else "Step 6 now packages tools; use step7 report after accepted delivery")
+    _emit_json({"status": "blocked", "reason": reason})
+    raise typer.Exit(code=1)
+
+
+@step7_app.command("agent")
+def step7_agent() -> None:
+    typer.echo(files("excel_to_act.steps.step7").joinpath("agent.md").read_text(encoding="utf-8"))
+
+
+@step7_app.command("skill")
+def step7_skill() -> None:
+    skill = files("excel_to_act.steps.step7").joinpath("excel-to-act-step7", "SKILL.md")
+    typer.echo(skill.read_text(encoding="utf-8"))
+
+
+@step7_app.command("template")
+def step7_template() -> None:
+    template = files("excel_to_act.steps.step7").joinpath(
+        "excel-to-act-step7", "assets", "conversion_report.md"
+    )
+    typer.echo(template.read_text(encoding="utf-8"))
+
+
+@step7_app.command("tools")
+def step7_tools() -> None:
+    _emit_json(step7_tool_catalog())
+
+
+@step7_app.command("report")
+def step7_report(workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False)) -> None:
+    result = create_step7_report(workflow)
     _emit_json(result)
     if result.get("status") != "pass":
         raise typer.Exit(code=1)

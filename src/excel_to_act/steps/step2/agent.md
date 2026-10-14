@@ -1,5 +1,7 @@
 # Step 2 host-agent contract
 
+A new native v2 workflow has writable Stage 1–5 checkpoints and requires current Agent and actual-human review. Legacy v1 checkpoints and attached-v2 inherited Stage 1–5 evidence are read-only. Legacy TypeSafe delegation does not authorize current v2 reviews.
+
 Author new instructions, documentation, report narration, and generated artifact prose in English. Preserve source values, formulas, identifiers, and immutable provenance verbatim. Only the repository-root `README.md` and `README.zh-CN.md` are approved bilingual documentation exceptions.
 
 ## Normal flow
@@ -59,8 +61,8 @@ Read `stepN tools` and choose the existing actions that answer this case's open 
 
 Before entering a stage, run `workflow status` and verify that the stage is currently permitted and every required upstream decision and artifact is current. A successful tool check, report creation, draft CLI action, or clarification does not itself approve a stage or advance the workflow. Keep legacy standalone source-exploration APIs available for discovery; they do not create a workflow approval.
 
-The default review order is Agent first, then the actual human. `workflow confirm` records approvals only; use the stage-specific `workflow.reject` command and its explicit `--return-to` route to reject. Record the Agent decision against the exact current JSON/Markdown pair with `workflow confirm`; present that pair and its practical limits to the user; record a human approval only after an explicit response. New TypeSafe approvals also require a current matching Agent approval. Use TypeSafe only under a valid, explicitly scoped authorization already registered for this workflow; never infer or transfer delegation. The Step 3 input-boundary checkpoint always requires an actual human decision.
+The current review order is Agent first, then the actual human on the exact current JSON/Markdown pair. `workflow confirm` records approvals; use `workflow reject` with an explicit `--return-to` route for rejection. Record the human decision only after an explicit response. Legacy TypeSafe delegation and live review commands are disabled in v2. The Step 3 input-boundary checkpoint always requires an actual human decision.
 
 Ask the user when target, scope, input kind, axis, units, or business interpretation is materially unresolved. Keep unknown facts marked as unknown; do not turn planning into measured execution or claim checks that did not run.
 
-When a reviewer rejects a report at Stage 2, route it to the current or an earlier responsible stage with `workflow reject --workflow DIR --stage 2 --return-to 1|2 --message TEXT`. Keep the rejected artifact and decision in the ledger. Revise affected reports, rerun their checks, refresh later reports that depend on them, and obtain fresh Agent and human or explicitly delegated reviews before advancing. Inspect the ledger with `workflow status` after each decision and before each transition.
+When a reviewer rejects Stage 2, use `workflow reject --workflow DIR --stage 2 --reviewer agent|human --return-to 1|2 --message TEXT`. Keep rejected history, revise affected reports, rerun checks, and obtain fresh Agent and actual-human reviews before advancing.

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from excel_to_act.steps.conversion_workflow import (
+    _require_writable,
     append_stage_artifact,
     current_revision,
     hash_file,
@@ -21,6 +22,9 @@ from excel_to_act.steps.conversion_workflow import (
 def create_conversion_report(workflow_dir: Path) -> dict[str, Any]:
     try:
         root, manifest = load_workflow(workflow_dir)
+        if manifest["schema_version"] != "conversion.workflow.v1":
+            raise ValueError("legacy Step 6 report requires a six-stage workflow; use Step 7 for v2")
+        _require_writable(manifest)
         workflow, stage5_revision = require_stage_approved(root, 5)
         stage_refs: dict[str, Any] = {}
         input_files: dict[str, Path] = {}

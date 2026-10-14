@@ -580,8 +580,9 @@ def test_step3_report_rejects_standalone_analysis_without_appending(tmp_path: Pa
     result = CliRunner().invoke(app, ["step3", "report", "--analysis", str(analysis_dir),
                                      "--design", str(design_path), "--workflow", str(workflow_root)])
 
-    assert result.exit_code == 1
-    response = json.loads(result.stdout)
+    assert result.exit_code == 2
+    assert "read-only" in result.output
+    response = design.create_design_report(analysis_dir, design_path, workflow_root)
     assert response["status"] == "blocked"
     assert "analysis was not prepared for this workflow" in response["reason"]
     assert (workflow_root / "workflow.json").read_bytes() == manifest_before
@@ -664,9 +665,10 @@ def test_input_catalog_cli_uses_analysis_top_level_binding_hash(tmp_path: Path, 
     result = CliRunner().invoke(app, ["step3", "input-catalog", "--analysis", str(analysis_dir),
                                      "--workflow", str(workflow_root), "--targets", str(targets_path),
                                      "--catalog", str(catalog_path)])
-
-    assert result.exit_code == 0, result.stdout
-    response = json.loads(result.stdout)
+    assert result.exit_code == 2
+    assert "read-only" in result.output
+    from excel_to_act.steps.step3.input_boundary import create_input_boundary
+    response = create_input_boundary(analysis_dir, workflow_root, targets_path, catalog_path)
     assert response["status"] == "pass"
     pruned = response["pruned_source_analysis"]
     assert not {"_reachable_raw_keys", "_declared_boundary_keys", "_formula_by_address"} & pruned.keys()
@@ -682,7 +684,7 @@ def test_input_catalog_cli_uses_analysis_top_level_binding_hash(tmp_path: Path, 
             yield value
 
     assert not any(value.startswith("{'") for value in strings(pruned))
-    assert "_reachable_raw_keys" not in result.stdout
+    assert "_reachable_raw_keys" not in json.dumps(response)
     assert (analysis_dir / "analysis.json").read_bytes() == analysis_bytes
     _, manifest = conversion_workflow.load_workflow(workflow_root)
     boundary = conversion_workflow.current_revision(manifest, 3)
@@ -705,11 +707,7 @@ def test_input_catalog_cli_uses_analysis_top_level_binding_hash(tmp_path: Path, 
         invalid_catalog_path = tmp_path / f"catalog-with-{suffix}.json"
         _write_json(invalid_targets_path, target_doc)
         _write_json(invalid_catalog_path, catalog_doc)
-        rejected = CliRunner().invoke(app, ["step3", "input-catalog", "--analysis", str(analysis_dir),
-                                            "--workflow", str(workflow_root), "--targets", str(invalid_targets_path),
-                                            "--catalog", str(invalid_catalog_path)])
-        assert rejected.exit_code == 1
-        blocked = json.loads(rejected.stdout)
+        blocked = create_input_boundary(analysis_dir, workflow_root, invalid_targets_path, invalid_catalog_path)
         assert blocked["status"] == "blocked"
         assert expected_reason in blocked["diagnostics"][0]["message"]
         _, after_manifest = conversion_workflow.load_workflow(workflow_root)
@@ -916,10 +914,9 @@ def _confirmed_candidate_fixture(tmp_path: Path, monkeypatch, inventory: dict) -
     targets_path, catalog_path = tmp_path / "targets.json", tmp_path / "catalog.json"
     _write_json(targets_path, {"schema_version": "step3.input_targets.v1", **target_selection})
     _write_json(catalog_path, catalog)
-    result = CliRunner().invoke(app, ["step3", "input-catalog", "--analysis", str(original_analysis),
-                                     "--workflow", str(workflow_root), "--targets", str(targets_path),
-                                     "--catalog", str(catalog_path)])
-    assert result.exit_code == 0, result.stdout
+    from excel_to_act.steps.step3.input_boundary import create_input_boundary
+    result = create_input_boundary(original_analysis, workflow_root, targets_path, catalog_path)
+    assert result["status"] == "pass", result
     for reviewer in ("agent", "human"):
         conversion_workflow.record_decision(workflow_root, 3, reviewer, "approve", "Synthetic test fixture.")
 
@@ -941,10 +938,8 @@ def test_source_candidate_trace_and_profile_need_no_step4_history(tmp_path: Path
         tmp_path, monkeypatch, _candidate_source_inventory())
     trace_dir = tmp_path / "artifacts" / "candidate-trace"
     runner = CliRunner()
-    source_trace = runner.invoke(app, ["step3", "source-trace", "--analysis", str(continuation),
-                                       "--workflow", str(workflow_root), "--out", str(trace_dir)])
-    assert source_trace.exit_code == 0, source_trace.output
-    result = json.loads(source_trace.output)
+    result = profiling.build_source_candidate_trace(continuation, workflow_root, trace_dir)
+    assert result["status"] == "pass", result
     trace_path = Path(result["trace"])
     payload = json.loads(trace_path.read_text(encoding="utf-8"))
     assert payload["schema_version"] == "gp.source_candidate_trace.v1"
@@ -1009,10 +1004,8 @@ def test_source_candidate_model_scope_clips_ranges_and_binds_profile_evidence(tm
         tmp_path, monkeypatch, _candidate_source_inventory())
     runner = CliRunner()
     full_dir = tmp_path / "artifacts" / "full-candidate-trace"
-    full_result = runner.invoke(app, ["step3", "source-trace", "--analysis", str(continuation),
-                                     "--workflow", str(workflow_root), "--out", str(full_dir)])
-    assert full_result.exit_code == 0, full_result.output
-    full_payload = json.loads(full_result.output)
+    full_payload = profiling.build_source_candidate_trace(continuation, workflow_root, full_dir)
+    assert full_payload["status"] == "pass", full_payload
     full_trace_path = Path(full_payload["trace"])
     full_bytes = full_trace_path.read_bytes()
     full_trace = json.loads(full_bytes)
@@ -1039,11 +1032,9 @@ def test_source_candidate_model_scope_clips_ranges_and_binds_profile_evidence(tm
     }
     _write_json(scope_path, scope)
     scoped_dir = tmp_path / "artifacts" / "scoped-candidate-trace"
-    scoped_result = runner.invoke(app, ["step3", "source-trace", "--analysis", str(continuation),
-                                        "--workflow", str(workflow_root), "--model-scope", str(scope_path),
-                                        "--out", str(scoped_dir)])
-    assert scoped_result.exit_code == 0, scoped_result.output
-    scoped_payload = json.loads(scoped_result.output)
+    scoped_payload = profiling.build_source_candidate_trace(
+        continuation, workflow_root, scoped_dir, scope_path)
+    assert scoped_payload["status"] == "pass", scoped_payload
     trace_path = Path(scoped_payload["trace"])
     trace = json.loads(trace_path.read_text(encoding="utf-8"))
     assert trace["candidate_scope"] == "scope_bounded_static_candidate_design"
@@ -1904,8 +1895,10 @@ def test_step3_agent_prints_packaged_result_driven_contract() -> None:
     assert agent_tool["outputs"]
     profile_tool = next(item for item in catalog["tools"] if item["name"] == "step3.profile")
     assert profile_tool["command"] == (
-        "step3 profile --analysis DIR (--trace ACTIVE_TRACE.json | --source-trace SOURCE_CANDIDATE_TRACE.json) --out DIR"
+        "step3 profile --analysis DIR (--trace ACTIVE_TRACE.json | --source-trace SOURCE_CANDIDATE_TRACE.json | --case-manifest EXACT_CASES.json --case-id ID) --out DIR"
     )
+    assert "--case-out DIR" in next(item for item in catalog["tools"]
+                                   if item["name"] == "step3.plan")["command"]
     source_trace_tool = next(item for item in catalog["tools"] if item["name"] == "step3.source-trace")
     assert "--model-scope INPUT.json" in source_trace_tool["command"]
     assert any("clipped ranges are reported as explicit frontiers" in item for item in catalog["limits"])
@@ -2025,6 +2018,15 @@ def test_design_scenario_source_literals_are_checked_against_formula_mode_cells(
     })
     assert "## Saved scenario source-literal checks" in report
     assert "`Main!O26` = `\"Yes\"`" in report
+    exact_report = design._design_markdown({
+        "source": {"run_id": "run", "source_id": "source", "workbook_sha256": source_sha},
+        "binding_sha256": "binding",
+        "design": {**correct, "tool_interface": {"objects": [], "support_domain": {
+            "status": "exact_cases", "cases": [{}, {}]}}},
+        "scenario_source_validation": checked,
+    })
+    assert "Finite same-request evidence: 2 exact hash-bound cases" in exact_report
+    assert "do not constitute Stage 5 Excel equivalence" in exact_report
 
     formula_literal = make_design("Calculated", "Main!A1", "=1+1")
     design._validate_design_content(formula_literal)
@@ -2182,6 +2184,9 @@ def test_step3_design_reader_front_shows_field_groups_order_and_question_disposi
     assert "Boundary: Not recorded" in front
     assert "Recorded calculation order: False." in front
     assert "**Q_UNKNOWN** — What is the unit? Recorded answer: Not recorded; recorded disposition/status: Not recorded." in front
+    assert "actual human reviews it after an explicit response" in front
+    assert "live TypeSafe review commands are disabled in v2" in front
+    assert "unless a valid, explicitly scoped TypeSafe delegation applies" not in front
     assert json.dumps(payload, sort_keys=True) == before
     design_payload["open_questions"] = None
     null_questions = design._design_markdown(payload).split("## Detailed design evidence", 1)[0]
@@ -2199,6 +2204,27 @@ def test_step3_design_reader_front_shows_field_groups_order_and_question_disposi
     assert 'axes name: Policy duration; axis_id: policy-duration; role: observation; units: Not recorded; keys: [0, False, "None", 3]' in target_evidence
     matrix_evidence = next(line for line in evidence.splitlines() if line.startswith("- **T_MATRIX**"))
     assert matrix_evidence.index("name: Policy duration") < matrix_evidence.index("name: Benefit category")
+
+
+def test_stage3_design_report_discloses_future_numerical_tolerances() -> None:
+    payload = {
+        "source": {"run_id": "run", "source_id": "pricing", "workbook_sha256": "a" * 64},
+        "binding_sha256": "binding",
+        "design": {
+            "targets": [],
+            "tool_interface": {"support_domain": {
+                "status": "exact_cases", "cases": [],
+                "tolerances": {"absolute": 1e-12, "relative": 1e-12},
+            }},
+        },
+    }
+
+    report = design._design_evidence_markdown(payload)
+
+    assert "absolute `1e-12`" in report
+    assert "relative `1e-12`" in report
+    assert "Stage 5 acceptance remains pending" in report
+    assert "current native Excel and package evidence" in report
 
 
 def test_stage3_binds_nested_semantic_evidence_and_stales_when_trace_changes(tmp_path: Path) -> None:

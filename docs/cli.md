@@ -1,12 +1,21 @@
-# CLI guide for the six-stage conversion workflow
+# CLI guide for the seven-stage conversion workflow
 
-This guide describes the current six-stage CLI. Each stage writes a JSON artifact and a Markdown report. By default, each stage requires a separate Agent and human decision for the current report pair; an explicitly authorized TypeSafe review may replace the human reviewer for eligible later design and Stages 4–6. The Step 3 input-catalog subgate always requires an actual Agent and human decision, regardless of delegation. A TypeSafe receipt may be retained as a separate recommendation but cannot approve or reject that subgate. A human decision must come from an explicit user response. Do not create a receipt from an assumption, an earlier approval, or a synthetic test.
+The current CLI reads six-stage `conversion.workflow.v1` status and saved artifacts but rejects every write to it. Sections 1–5 below are usable for a new native v2 workflow created by `step1 report --run FINAL_RUN_DIR --out WORKFLOW_DIR`; its Stage 1–5 reports require their own Agent and actual-human decisions. Those writes cannot run against a v1 parent or inherited Stages 1–5 in attached v2. Attach a separate root only when the parent source and Stage 1–5 approvals are current:
+
+```powershell
+excel-to-act workflow attach --parent LEGACY_DIR --out NEW_DIR --comparison COMPARISON.json --comparison-sha256 APPROVED_SHA256
+excel-to-act workflow status --workflow NEW_DIR
+```
+
+Supply `APPROVED_SHA256` from a separate comparison approval or verification record, independently of the file being attached. The new root pins the exact parent manifest and comparison identity. Old Stage 6 reports, receipts, and TypeSafe delegation have no new publication authority. The Step 3 input-boundary decision remains an actual human decision.
+
+The historical six-stage CLI wrote a JSON artifact and a Markdown report at each stage. By default, each stage requires a separate Agent and human decision for the current report pair; an explicitly authorized TypeSafe review may replace the human reviewer for eligible later design and Stages 4–6. The Step 3 input-catalog subgate always requires an actual Agent and human decision, regardless of delegation. A TypeSafe receipt may be retained as a separate recommendation but cannot approve or reject that subgate. A human decision must come from an explicit user response. Do not create a receipt from an assumption, an earlier approval, or a synthetic test.
 
 Use a new workflow directory for a new conversion. The workflow manifest binds source files, stage reports, report revisions, and decisions. When an upstream report or input changes, later approvals become stale and must be reviewed again. `workflow status` shows the next permitted stage.
 
 ## 1. Review the source checkpoint
 
-Complete and finalize Step 1 using the existing `step1` workflow. Then create a read-only checkpoint over the final per-source run:
+Complete and finalize Step 1 using the existing `step1` workflow. Then create a native seven-stage workflow with its first reviewable checkpoint over the final per-source run:
 
 ```powershell
 excel-to-act step1 report --run FINAL_RUN_DIR --out WORKFLOW_DIR
@@ -151,24 +160,28 @@ excel-to-act step5 reconcile --workflow WORKFLOW_DIR --validation VALIDATION_JSO
 
 Each reconciliation covers only its declared scenario, targets, formulas, and ranges. The workflow is not a general Excel compiler or an all-configuration model; a pass must not be described as broader than the evidence actually compared. Feedback solving or GPU execution requires separate implementation and evidence.
 
-## 6. Create the final report
+## 6. Package and internally deliver the approved tool
 
-After Stages 1–5 have current approvals, write and review the final report:
+After the pinned Stages 1–5 are current, create a candidate for an exact request and matching native comparison:
 
 ```powershell
 excel-to-act step6 tools
-excel-to-act step6 report --workflow WORKFLOW_DIR
-excel-to-act workflow status --workflow WORKFLOW_DIR
+excel-to-act step6 candidate --workflow NEW_DIR --version VERSION --request REQUEST.json --comparison COMPARISON.json
+excel-to-act workflow status --workflow NEW_DIR
 ```
 
-The report binds all accepted stage JSON and Markdown files and summarizes source limits, known-path coverage, generated code, and validation results. Review `conversion_report.json/.md`; then record separate Agent and human decisions for Stage 6.
+Review the exact candidate JSON/Markdown pair and package ledger. Record an Agent decision, then obtain an explicit human decision on that pair with `workflow confirm --workflow NEW_DIR --stage 6 --reviewer agent|human --decision approve --message TEXT` (one reviewer per call). Smoke success or file presence is not acceptance. The old Stage 6 receipt and old delegation cannot substitute. After current acceptance, run `excel-to-act step6 deliver --workflow NEW_DIR`. It copies the same package, executes its entry, checks the readback and records a separate effective internal delivery. `step6 revoke --workflow NEW_DIR --reason TEXT` makes it inactive while retaining history. No production or public distribution is performed.
+
+## 7. Create the final report
+
+After current Step 6 acceptance and exact delivery/readback, run `excel-to-act step7 report --workflow NEW_DIR`. The copied report renderer preserves the legacy content, provenance and validation behavior and adds the delivered package record. `step7 skill` and `step7 template` expose its packaged resources. Report generation creates a new review pair; it is not approval.
 
 ## Revisions and rejection
 
-Use `excel-to-act workflow status --workflow WORKFLOW_DIR` at any point to inspect stage freshness, decisions, and the next allowed action. Reject a report with its required return stage, for example:
+Use `excel-to-act workflow status --workflow NEW_DIR` to inspect stage freshness, decisions, effective delivery and the next allowed action. Reject a new package or report with its required return stage, for example:
 
 ```powershell
-excel-to-act workflow reject --workflow WORKFLOW_DIR --stage 4 --reviewer agent --return-to 3 --message "The approved design omits a required target path."
+excel-to-act workflow reject --workflow NEW_DIR --stage 7 --reviewer agent --return-to 6 --message "The internal delivery evidence needs correction."
 ```
 
 The rejected revision remains in history. A rejection routed backward invalidates the downstream path until a revised return-stage report is produced and approved. A changed source, input file, JSON report, Markdown report, or upstream revision also invalidates later approvals. Preserve old evidence; do not overwrite an accepted report or reuse its receipts for a replacement.

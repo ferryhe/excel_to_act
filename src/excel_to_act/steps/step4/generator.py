@@ -15,6 +15,7 @@ from typing import Any
 from openpyxl import load_workbook
 from openpyxl.utils.cell import get_column_letter, range_boundaries
 
+from excel_to_act.steps import conversion_workflow as conversion
 from excel_to_act.steps.conversion_workflow import (
     append_stage_artifact,
     design_question_lines,
@@ -165,7 +166,7 @@ def _path_implementation_evidence(design: dict[str, Any], trace: dict[str, Any],
             "unproven_numerical_path_ids": sorted(numerical_ids - {item["path_id"] for item in evidence})}
 
 
-def _saved_scenario_guard(design: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+def _saved_scenario_guard(design: dict[str, Any], trace: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
     scenarios = design.get("scenarios", [])
     if (not isinstance(scenarios, list) or len(scenarios) != 1
             or not isinstance(scenarios[0], dict) or scenarios[0].get("input_overrides") != []):
@@ -174,17 +175,55 @@ def _saved_scenario_guard(design: dict[str, Any]) -> tuple[list[str], dict[str, 
     primary = scenario.get("primary_inputs")
     if not isinstance(primary, dict) or not primary:
         raise ValueError("approved saved scenario has no source-bound primary inputs")
+    cells = trace.get("cells")
+    if not isinstance(cells, list):
+        raise ValueError("current source trace has no cell list")
+    trace_cells: dict[str, list[dict[str, Any]]] = {}
+    for item in cells:
+        if not isinstance(item, dict) or not isinstance(item.get("address"), str):
+            continue
+        reference = _parse_reference(item["address"], "")
+        if reference is not None and reference.single and reference.sheet:
+            trace_cells.setdefault(_key(reference.address), []).append(item)
+
+    def source_key(address: Any, name: str) -> str:
+        reference = _parse_reference(address, "") if isinstance(address, str) else None
+        if not isinstance(address, str) or "!" not in address or reference is None or not reference.single or not reference.sheet:
+            raise ValueError(f"approved scenario input has no qualified source cell: {name}")
+        return _key(reference.address)
+
     guard: dict[str, Any] = {}
     for name, record in primary.items():
         if not isinstance(name, str) or not isinstance(record, dict):
             raise ValueError("approved scenario primary input is malformed")
-        address, value = record.get("source_cell"), record.get("source_literal")
-        if not isinstance(address, str) or "!" not in address:
-            raise ValueError(f"approved scenario input has no qualified source cell: {name}")
-        key = _key(address)
-        if key in guard:
-            raise ValueError(f"approved scenario repeats a primary input source cell: {address}")
-        guard[key] = value
+        literal = "source_cell" in record or "source_literal" in record
+        if literal and ("source_cell" not in record or "source_literal" not in record):
+            raise ValueError(f"approved scenario input has incomplete source literal: {name}")
+        addresses = record.get("source_cells", [])
+        if (not isinstance(addresses, list) or (not literal and not addresses)
+                or (addresses and (not isinstance(record.get("boundary_variable_id"), str)
+                                   or not record["boundary_variable_id"]))):
+            raise ValueError(f"approved scenario input has no source-bound cells: {name}")
+        own_keys: set[str] = set()
+        for address in addresses:
+            key = source_key(address, name)
+            if key in guard:
+                raise ValueError(f"approved scenario repeats a primary input source cell: {address}")
+            matches = trace_cells.get(key, [])
+            if (len(matches) != 1 or matches[0].get("role") != "source_value"
+                    or matches[0].get("formula") is not None or "value" not in matches[0]):
+                raise ValueError(f"approved scenario input is absent from the current source trace: {address}")
+            guard[key] = matches[0]["value"]
+            own_keys.add(key)
+        if literal:
+            address = record["source_cell"]
+            key = source_key(address, name)
+            if key in guard:
+                if key not in own_keys:
+                    raise ValueError(f"approved scenario repeats a primary input source cell: {address}")
+                if guard[key] != record["source_literal"]:
+                    raise ValueError(f"approved scenario source literal differs from current source trace: {address}")
+            guard[key] = record["source_literal"]
     return [scenario["scenario_id"]], guard
 
 
@@ -334,7 +373,7 @@ def _bundle_files(stage3_payload: dict[str, Any], trace_path: Path,
     external_capture = validated["capture"]
     external_capture_path = validated["capture_path"]
     external_capture_artifact_sha256 = validated["capture_file_sha256"]
-    scenario_ids, scenario_guard = _saved_scenario_guard(design)
+    scenario_ids, scenario_guard = _saved_scenario_guard(design, trace)
 
     before = hash_file(source_path)
     workbook = load_workbook(source_path, data_only=False, read_only=False, keep_vba=False)
@@ -496,6 +535,7 @@ def generate_model(workflow_dir: Path, trace_path: Path | None = None) -> dict[s
     stage4_root: Path | None = None
     try:
         root, workflow = load_workflow(workflow_dir)
+        conversion._require_upstream_writable(workflow)
         _manifest, stage3_revision = require_stage_approved(root, 3)
         stage3_json = root / stage3_revision["artifact"]["json"]
         stage3_payload = read_json(stage3_json)
@@ -811,7 +851,7 @@ def _generation_markdown(
     if design_link:
         lines.append(f"- Bound Step 3 design: [analysis_design.json](<{Path(design_link).as_posix()}>).")
     lines.extend([
-        "- Next: Agent reviews this exact JSON/Markdown pair first, then the actual human reviews it unless a valid scoped TypeSafe delegation applies. A successful compile/smoke is technical evidence; it is not Agent PASS or human acceptance.",
+        "- Next: Agent reviews this exact JSON/Markdown pair first, then the actual human reviews it after an explicit response. Legacy TypeSafe delegation and live TypeSafe review commands are disabled in v2. A successful compile/smoke is technical evidence; it is not Agent PASS or human acceptance.",
         "- To reject: route the decision to the responsible current or earlier Step, retain this revision, refresh affected reports, and check the ledger before continuing.",
         "- Report status `ready_for_review` describes generated evidence. Current formal acceptance is read from the linked workflow ledger.", "",
         "## Detailed generation evidence", "",

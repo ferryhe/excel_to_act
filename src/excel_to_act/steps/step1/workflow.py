@@ -25,7 +25,7 @@ from excel_to_act.ingest.control_artifacts import (
 )
 from excel_to_act.ingest.ooxml_package import OPAQUE_MARKERS
 from excel_to_act.ingest.openpyxl_reader import OpenpyxlWorkbookReader
-from excel_to_act.inventory.extractor import OpenpyxlInventoryExtractor
+from excel_to_act.inventory.extractor import OpenpyxlInventoryExtractor, _identity_key
 from excel_to_act.steps.step1.source_scan import SourceScanError, object_identity, scan_step1_source
 from excel_to_act.schemas import (
     CellInventory,
@@ -368,7 +368,7 @@ def _record_matches(record: RangeInventory, source_obj: dict[str, Any]) -> bool:
         return record.metadata.get("control_id") == details.get("control_id")
     if kind == "sheet_protection":
         return True
-    return str(record.address or "") == str(details.get("address", ""))
+    return _identity_key(kind, str(record.address or "")) == _identity_key(kind, str(details.get("address", "")))
 
 
 def _decorate_inventory(inventory: WorkbookInventory, scan: dict[str, Any]) -> WorkbookInventory:
