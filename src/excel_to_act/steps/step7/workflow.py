@@ -42,6 +42,18 @@ def _exact_case_details(stage3: dict[str, Any], stage5: dict[str, Any],
     cases = stage5["cases"]
     count = stage5["case_count"]
     compared = stage5["compared"]
+    targets = stage3["design"].get("targets")
+    if not isinstance(targets, list) or not targets or any(
+            not isinstance(target, dict) or not isinstance(target.get("selector"), str)
+            or not target["selector"] or type(target.get("result_order")) is not int
+            for target in targets):
+        raise ValueError("approved exact-case targets are malformed")
+    ordered_targets = sorted(targets, key=lambda target: target["result_order"])
+    target_names = [target["selector"] for target in ordered_targets]
+    if (len(set(target_names)) != len(target_names)
+            or [target["result_order"] for target in ordered_targets] != list(range(len(targets)))):
+        raise ValueError("approved exact-case targets are duplicated or unordered")
+    expected_targets = count * len(target_names)
     expected = {(item["trace"]["sha256"], item["public_request"]["sha256"])
                 for item in domain["cases"]}
     actual = {(item["trace_sha256"], item["request_sha256"]) for item in cases}
@@ -50,8 +62,10 @@ def _exact_case_details(stage3: dict[str, Any], stage5: dict[str, Any],
             or len(expected) != count or len(actual) != count or expected != actual
             or len({item["request_sha256"] for item in cases}) != count
             or len({item["case_id"] for item in cases}) != count
-            or compared.get("exact_cases") != count or compared.get("named_targets") != count
-            or compared.get("required_targets") != count or stage5.get("mismatch_count") != 0
+            or compared.get("exact_cases") != count
+            or compared.get("named_targets") != expected_targets
+            or compared.get("required_targets") != expected_targets
+            or stage5.get("mismatch_count") != 0
             or stage5["source_sha256"] != stage3["source"]["workbook_sha256"]):
         raise ValueError("Step 5 exact cases do not match the approved design and comparison")
     axes = stage3["design"]["scope"].get("sample_axes")
@@ -88,12 +102,18 @@ def _exact_case_details(stage3: dict[str, Any], stage5: dict[str, Any],
             input_files[f"step5_case_{index:02d}_{kind}"] = path
         case_report = read_json(Path(item["report"]["path"]))
         oracle = case_report["oracle"]
-        gp = case_report["target_results"]["GP"]
+        target_results = case_report.get("target_results")
+        if (not isinstance(target_results, dict) or set(target_results) != set(target_names)
+                or any(not isinstance(target_results[name], dict)
+                       or target_results[name].get("matched") is not True
+                       or any(not isinstance(target_results[name].get(key), (int, float))
+                              or isinstance(target_results[name].get(key), bool)
+                              for key in ("model", "excel"))
+                       for name in target_names)):
+            raise ValueError(f"Step 5 case {item['case_id']} has incomplete target evidence")
         if (case_report.get("status") != "ready_for_review"
                 or case_report["exact_case"]["case_id"] != item["case_id"]
-                or case_report.get("mismatch_count") != 0 or gp.get("matched") is not True
-                or any(not isinstance(gp.get(key), (int, float)) or isinstance(gp.get(key), bool)
-                       for key in ("model", "excel"))
+                or case_report.get("mismatch_count") != 0
                 or oracle["sha256"] != item["native_oracle"]["sha256"]
                 or oracle.get("source_copy_sha256") != stage5["source_sha256"]
                 or oracle.get("engine") != "Microsoft Excel"
@@ -101,7 +121,8 @@ def _exact_case_details(stage3: dict[str, Any], stage5: dict[str, Any],
             raise ValueError(f"Step 5 case {item['case_id']} has inconsistent native evidence")
         methods.add((oracle["engine"], oracle.get("engine_settings", {}).get("version")))
         formula_members += item["formula_member_count"]
-        results.append({"case_id": item["case_id"], "target_results": {"GP": gp},
+        results.append({"case_id": item["case_id"],
+                        "target_results": {name: target_results[name] for name in target_names},
                         "formula_member_count": item["formula_member_count"],
                         "report": item["report"], "native_oracle": item["native_oracle"],
                         "model_result": item["model_result"]})
@@ -801,11 +822,11 @@ def _report_markdown(
     target_rows = []
     exact_results = report.get("case_results", [])
     target_results = report.get("target_results", {})
+    ordered_targets = sorted(targets, key=lambda item: (
+        item.get("result_order") if isinstance(item.get("result_order"), int) else 10**9,
+        str(item.get("selector", item.get("target_id", ""))).casefold(),
+    ))
     if isinstance(target_results, dict):
-        ordered_targets = sorted(targets, key=lambda item: (
-            item.get("result_order") if isinstance(item.get("result_order"), int) else 10**9,
-            str(item.get("selector", item.get("target_id", ""))).casefold(),
-        ))
         emitted = set()
         for target in ordered_targets:
             name = target.get("selector", target.get("target_id"))
@@ -830,8 +851,10 @@ def _report_markdown(
                 continue
             target_rows.append(_result_row("Additional Step 5 check", str(name), record))
     for case in exact_results:
-        target_rows.append(_result_row("Requested result", f"GP / {case['case_id']}",
-                                       case["target_results"]["GP"], targets[0] if targets else None))
+        for target in ordered_targets:
+            name = target["selector"]
+            target_rows.append(_result_row("Requested result", f"{name} / {case['case_id']}",
+                                           case["target_results"][name], target))
     if target_rows:
         lines.extend(_table(["Classification", "Measure", "Converted model", "Workbook", "Difference", "Check"], target_rows))
     else:

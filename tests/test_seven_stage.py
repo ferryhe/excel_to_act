@@ -314,7 +314,9 @@ def test_step7_exact_case_report_has_no_saved_sample_claim() -> None:
     publication = _publication_details(
         {"interface_sha256": "d" * 64, "comparison_sha256": "e" * 64},
         Path("/synthetic/comparison.json"), comparison, delivery)
-    report = {"source": {}, "design_summary": {"scope": {"boundary": "Two synthetic cases."}},
+    report = {"source": {}, "design_summary": {
+                  "scope": {"boundary": "Two synthetic cases."},
+                  "targets": [{"target_id": "GP", "selector": "GP", "result_order": 0, "shape": []}]},
               "review_policy": {}, "delivery": delivery, "publication": publication,
               "case_results": [
                   {"case_id": "synthetic-1", "target_results": {"GP": {"model": 1.0, "excel": 1.0,
@@ -364,8 +366,13 @@ def test_step7_labels_stage3_exclusion_as_design_time_with_approved_stage4_and_5
 
 
 @pytest.mark.parametrize("fault", [None, "wrong_trace", "duplicate_case", "wrong_axes",
-                                   "stale_report", "wrong_source"])
-def test_step7_exact_case_lineage_and_counts_fail_closed(tmp_path: Path, fault: str | None) -> None:
+                                   "stale_report", "wrong_source", "missing_target",
+                                   "extra_target", "malformed_target", "nonnumeric_target",
+                                   "wrong_target_count"])
+@pytest.mark.parametrize("target_names", [("GP",), ("GP", "PVFB"),
+                                         ("PVFB", "GP"), ("PVFB",)])
+def test_step7_exact_case_lineage_and_counts_fail_closed(
+        tmp_path: Path, fault: str | None, target_names: tuple[str, ...]) -> None:
     source_sha = "a" * 64
     design_cases = []
     cases = []
@@ -383,9 +390,9 @@ def test_step7_exact_case_lineage_and_counts_fail_closed(tmp_path: Path, fault: 
             path.write_text("{}", encoding="utf-8")
             files[kind] = {"path": str(path), "sha256": workflow.hash_file(path)}
         case_report = {"status": "ready_for_review", "exact_case": {"case_id": case_id},
-                       "mismatch_count": 0, "target_results": {"GP": {"model": float(index),
-                                                                     "excel": float(index),
-                                                                     "matched": True}},
+                       "mismatch_count": 0, "target_results": {
+                           name: {"model": float(index), "excel": float(index), "matched": True}
+                           for name in target_names},
                        "oracle": {"sha256": files["native_oracle"]["sha256"],
                                   "source_copy_sha256": source_sha,
                                   "engine": "Microsoft Excel", "macros_executed": False,
@@ -399,11 +406,14 @@ def test_step7_exact_case_lineage_and_counts_fail_closed(tmp_path: Path, fault: 
                              "public_request": {"path": str(request), "sha256": request_sha}})
     stage3 = {"source": {"workbook_sha256": source_sha},
               "design": {"scope": {"sample_axes": {"IssueAge": [0, 30]}},
+                         "targets": [{"target_id": name, "selector": name, "result_order": order,
+                                      "shape": []} for order, name in enumerate(target_names)],
                          "tool_interface": {"support_domain": {"status": "exact_cases",
                                                                "cases": design_cases}}}}
     stage5 = {"execution_mode": "exact_cases", "source_sha256": source_sha,
               "case_count": 2, "cases": cases, "mismatch_count": 0,
-              "compared": {"exact_cases": 2, "named_targets": 2, "required_targets": 2,
+              "compared": {"exact_cases": 2, "named_targets": 2 * len(target_names),
+                           "required_targets": 2 * len(target_names),
                            "active_formula_members": 10, "required_active_formula_members": 10}}
     if fault == "wrong_trace":
         cases[1]["trace_sha256"] = "f" * 64
@@ -415,12 +425,36 @@ def test_step7_exact_case_lineage_and_counts_fail_closed(tmp_path: Path, fault: 
         Path(cases[0]["report"]["path"]).write_text("{}", encoding="utf-8")
     elif fault == "wrong_source":
         stage5["source_sha256"] = "f" * 64
+    elif fault == "wrong_target_count":
+        stage5["compared"]["named_targets"] -= 1
+    elif fault in {"missing_target", "extra_target", "malformed_target", "nonnumeric_target"}:
+        path = Path(cases[0]["report"]["path"])
+        report = json.loads(path.read_text(encoding="utf-8"))
+        results = report["target_results"]
+        if fault == "missing_target":
+            del results[target_names[0]]
+        elif fault == "extra_target":
+            results["UNDECLARED"] = {"model": 1.0, "excel": 1.0, "matched": True}
+        elif fault == "malformed_target":
+            del results[target_names[0]]["model"]
+        else:
+            results[target_names[0]]["excel"] = "not-a-number"
+        path.write_text(json.dumps(report), encoding="utf-8")
+        cases[0]["report"]["sha256"] = workflow.hash_file(path)
     if fault is None:
         scope, results, method = _exact_case_details(stage3, stage5, {})
         assert scope == {"case_count": 2, "axes": {"IssueAge": [0, 30]}}
         assert len(results) == 2 and method["formula_member_count"] == 10
+        assert all(list(item["target_results"]) == list(target_names) for item in results)
+        markdown = step7_markdown({"design_summary": {"targets": stage3["design"]["targets"]},
+                                   "case_results": results})
+        for name in target_names:
+            assert f"{name} / synthetic-1" in markdown
+        if len(target_names) > 1:
+            assert markdown.index(f"{target_names[0]} / synthetic-1") < \
+                markdown.index(f"{target_names[1]} / synthetic-1")
     else:
-        with pytest.raises(ValueError, match="exact|stale|axes"):
+        with pytest.raises(ValueError, match="exact|stale|axes|target|evidence"):
             _exact_case_details(stage3, stage5, {})
 
 
