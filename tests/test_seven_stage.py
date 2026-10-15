@@ -99,7 +99,7 @@ def test_v1_is_read_only_and_unknown_versions_or_stage_ranges_reject(tmp_path: P
     status = CliRunner().invoke(app, ["workflow", "status", "--workflow", str(root)])
     assert status.exit_code == 0
     assert len(json.loads(status.stdout)["stages"]) == 6
-    assert json.loads(status.stdout)["stages"][5]["meaning"] == "legacy final report"
+    assert json.loads(status.stdout)["stages"][5]["meaning"] == "saved final report"
     for command in (["workflow", "confirm", "--workflow", str(root), "--stage", "5",
                      "--reviewer", "agent", "--decision", "approve", "--message", "Synthetic"],
                     ["step6", "report", "--workflow", str(root)]):
@@ -165,7 +165,7 @@ def test_attached_v2_keeps_legacy_report_receipts_out_and_pins_parent(tmp_path: 
     stale = workflow.workflow_status(v2)
     assert all(item["status"] == "stale" for item in stale["stages"][:5])
     assert stale["next_permitted_stage"] is None
-    with pytest.raises(ValueError, match="pinned legacy workflow changed"):
+    with pytest.raises(ValueError, match="pinned parent workflow changed"):
         seven_stage.require_parent(v2)
 
 
@@ -226,11 +226,11 @@ def test_legacy_delegation_cannot_be_registered_on_v2(tmp_path: Path) -> None:
     authorization = tmp_path / "synthetic-old-auth.json"
     authorization.write_text('{"schema_version":"workflow.review_delegation.authorization.v1"}',
                              encoding="utf-8")
-    with pytest.raises(ValueError, match="legacy TypeSafe delegation"):
+    with pytest.raises(ValueError, match="TypeSafe delegation is disabled"):
         workflow.register_review_delegation(v2, authorization)
     result = CliRunner().invoke(app, ["workflow", "delegate", "--workflow", str(v2),
                                       "--authorization", str(authorization)])
-    assert result.exit_code == 1 and "publication-scoped" in result.output
+    assert result.exit_code == 1 and "TypeSafe delegation is disabled" in result.output
 
 
 def test_step6_pending_agent_only_rejected_and_forged_candidate_block(tmp_path: Path) -> None:

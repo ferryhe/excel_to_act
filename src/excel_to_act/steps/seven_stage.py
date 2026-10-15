@@ -60,7 +60,7 @@ def require_parent(root: Path, manifest: dict[str, Any] | None = None) -> tuple[
     parent_root, old = load_workflow(Path(parent["root"]))
     if (old["schema_version"] != "conversion.workflow.v1"
             or hash_file(parent_root / MANIFEST_NAME) != parent.get("manifest_sha256")):
-        raise ValueError("pinned legacy workflow changed")
+        raise ValueError("pinned parent workflow changed")
     if old.get("mode") != "production" or manifest.get("mode") != "production":
         raise ValueError("synthetic workflow cannot release a real package")
     if old.get("source", {}).get("fixture") or manifest.get("source", {}).get("fixture"):
@@ -149,7 +149,7 @@ def create_attached_workflow(root: Path, parent: Path, comparison: Path,
     root = root.expanduser().resolve()
     parent_root, old = load_workflow(parent)
     if old["schema_version"] != "conversion.workflow.v1":
-        raise ValueError("parent must be a six-stage workflow")
+        raise ValueError("parent workflow.json must use schema conversion.workflow.v1")
     if root == parent_root or root.exists() and any(root.iterdir()):
         raise ValueError("seven-stage root must be new and separate from its parent")
     comparison = comparison.expanduser().resolve()

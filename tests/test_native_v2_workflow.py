@@ -85,7 +85,7 @@ def test_legacy_report_api_rejects_native_v2_without_changing_delivery_or_histor
 
     result = legacy_report(root)
 
-    assert result["status"] == "blocked" and "legacy Step 6" in result["reason"]
+    assert result["status"] == "blocked" and "use Step 7" in result["reason"]
     assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
     assert workflow.load_workflow(root)[1]["delivery"] == pointer
 

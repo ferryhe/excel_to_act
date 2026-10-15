@@ -1,6 +1,6 @@
 # Step 5 Agent Contract: Validate and Reconcile
 
-A new native v2 workflow has writable Stage 1–5 checkpoints and requires current Agent and actual-human review. Legacy v1 checkpoints and attached-v2 inherited Stage 1–5 evidence are read-only. Legacy TypeSafe delegation does not authorize current v2 reviews.
+A native seven-stage workflow has writable checkpoints with Agent and actual-human review. Attached workflows inherit approved Stage 1–5 evidence as read-only input and review their own Stages 6–7.
 
 Step 5 first checks that the approved Stage 4 bundle compiles and runs in isolation. It separately captures a fresh native Excel result and reconciles the generated outputs with that result. The oracle command does not advance the stage. Stage 5 is reviewable only after standalone validation and reconciliation both pass.
 
@@ -16,7 +16,7 @@ Then run `step5 reconcile --workflow DIR --validation VALIDATION.json --oracle O
 
 For a current exact-case variable contract, reconcile each approved case against that case's own source-bound formula trace. Each call writes a case receipt without advancing Stage 5. After all 32 distinct approved cases pass, run `step5 finalize-cases --workflow DIR --case-report FILE` with `--case-report` repeated once per case. Finalization rechecks current request, trace, package, native oracle, source, and tolerance bindings before writing one formal Stage 5 JSON/Markdown pair. A saved-scenario receipt or fewer than all approved cases cannot finalize the exact-case checkpoint.
 
-After both technical passes, review `validation_report.json/.md` and record Agent approval of the current pair. Record actual-human approval only after an explicit response. The current v2 CLI disables legacy TypeSafe delegation and live TypeSafe review. If a result changes, rerun affected validation and reconciliation and obtain fresh decisions.
+After both technical passes, review `validation_report.json/.md` and record Agent approval of the current pair. Record actual-human approval only after an explicit response. The CLI disables TypeSafe delegation and live TypeSafe review. If a result changes, rerun affected validation and reconciliation and obtain fresh decisions.
 
 A rejection from any reviewer makes that revision ineligible for later approvals; create a replacement artifact and obtain fresh Agent and actual-human decisions.
 
@@ -26,9 +26,9 @@ Treat `input/` as the source Excel area and `output/` as the home for each new s
 
 Read `stepN tools` and choose the existing actions that answer this case's open questions. Explore from the source and current bound evidence, inspect each action's checks and outputs, then prepare the paired machine-readable JSON and reader-facing Markdown handoff. Review all files named in the handoff and confirm their source and upstream bindings before asking for a decision. Do not continue when a required check fails or an input is stale.
 
-Before entering a stage, run `workflow status` and verify that the stage is currently permitted and every required upstream decision and artifact is current. A successful tool check, report creation, draft CLI action, or clarification does not itself approve a stage or advance the workflow. Keep legacy standalone source-exploration APIs available for discovery; they do not create a workflow approval.
+Before entering a stage, run `workflow status` and verify that the stage is currently permitted and every required upstream decision and artifact is current. A successful tool check, report creation, draft CLI action, or clarification does not itself approve a stage or advance the workflow. Use standalone source-exploration APIs for discovery; record workflow approvals through the source-bound ledger.
 
-The current review order is Agent first, then the actual human on the exact current JSON/Markdown pair. `workflow confirm` records approvals; use `workflow reject` with an explicit `--return-to` route for rejection. Record the human decision only after an explicit response. Legacy TypeSafe delegation and live review commands are disabled in v2. The Step 3 input-boundary checkpoint always requires an actual human decision.
+The current review order is Agent first, then the actual human on the exact current JSON/Markdown pair. `workflow confirm` records approvals; use `workflow reject` with an explicit `--return-to` route for rejection. Record the human decision only after an explicit response. TypeSafe delegation and live review commands are disabled. The Step 3 input-boundary checkpoint always requires an actual human decision.
 
 Ask the user when target, scope, input kind, axis, units, or business interpretation is materially unresolved. Keep unknown facts marked as unknown; do not turn planning into measured execution or claim checks that did not run.
 

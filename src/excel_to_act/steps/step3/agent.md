@@ -1,6 +1,6 @@
 # Step 3 Host-Agent Contract: Result-Driven Analysis
 
-A new native v2 workflow has writable Stage 1–5 checkpoints and requires current Agent and actual-human review. Legacy v1 checkpoints and attached-v2 inherited Stage 1–5 evidence are read-only. Legacy TypeSafe delegation does not authorize current v2 reviews.
+A native seven-stage workflow has writable checkpoints with Agent and actual-human review. Attached workflows inherit approved Stage 1–5 evidence as read-only input and review their own Stages 6–7.
 
 The static Step 3 workflow creates a source-bound analysis draft. It helps a host agent work backward from requested results, record candidate paths and unknown boundaries, and prepare a reviewable implementation plan. Static preparation, field, dependency, plan, query, trace, check, and report commands do not calculate Excel formulas or prove numerical equivalence. Python generation is a separate Stage 4 action; isolated execution and native Excel reconciliation are separate Stage 5 actions. These tools do not execute VBA or call an AI model.
 
@@ -122,7 +122,7 @@ Bind the catalog to the exact source, run, workbook SHA-256, current analysis bi
 
 Topology evidence is optional for this checkpoint. Without a current target-bound trace, mark target reachability, formula closure, dynamic branches, lookup-selected inputs, and coverage as unknown. A historical trace may be listed as a lead but cannot prove the current boundary. Reconcile older candidate coordinates absent from the current fields against the source; distinguish stored-but-empty cells from missing cells and keep blank-read semantics open if a later formula consumes them.
 
-Review the input-boundary artifact separately from the final Step 3 design. The exact JSON/Markdown pair requires independent Agent and actual-human decisions. Approval records `input_boundary_confirmed` and keeps Stage 3 next; it does not approve the final design or release Step 4. The current final-design review also requires Agent and actual-human decisions. Legacy TypeSafe delegation cannot replace either human decision in v2.
+Review the input-boundary artifact separately from the final Step 3 design. The exact JSON/Markdown pair requires independent Agent and actual-human decisions. Approval records `input_boundary_confirmed` and keeps Stage 3 next; it does not approve the final design or release Step 4. The current final-design review also requires Agent and actual-human decisions. Both decisions require explicit human responses.
 
 After the catalog has both required input-boundary decisions, make a fresh continuation analysis directory with the same source binding and current fields/dependencies/structural-plan hashes. Do not add semantic-plan/check stages to the analysis.json that the accepted input-boundary revision directly binds; semantic writes belong in the continuation directory. The accepted boundary remains separately hash-checked against its original files.
 
@@ -136,7 +136,7 @@ For an `exact_cases` support domain, run `step3 profile --analysis DIR --case-ma
 
 ## Stage gates and handoff
 
-The native seven-stage workflow requires separate Agent and actual-human decisions on each current JSON/Markdown pair. Use `workflow status --workflow DIR` to inspect the current stage and `workflow confirm --workflow DIR --stage 3 --reviewer agent|human --decision approve --message TEXT` for the exact pair; record `human` only after an explicit response. Route a rejection with `workflow reject --workflow DIR --stage 3 --reviewer agent|human --return-to 1|2|3 --message TEXT`. Attached v2 inherited Stage 1–5 and legacy v1 are read-only. `workflow delegate` and `workflow typesafe` are disabled pending a new matching publication-scoped authorization. Changed artifacts or upstream inputs invalidate downstream decisions.
+The native seven-stage workflow requires separate Agent and actual-human decisions on each current JSON/Markdown pair. Use `workflow status --workflow DIR` to inspect the current stage and `workflow confirm --workflow DIR --stage 3 --reviewer agent|human --decision approve --message TEXT` for the exact pair; record `human` only after an explicit response. Route a rejection with `workflow reject --workflow DIR --stage 3 --reviewer agent|human --return-to 1|2|3 --message TEXT`. Inherited Stage 1–5 evidence in an attached workflow is read-only. `workflow delegate` and `workflow typesafe` are disabled. Changed artifacts or upstream inputs invalidate downstream decisions.
 
 A rejection from any reviewer makes that revision ineligible for later approvals; create a replacement artifact and obtain new Agent and actual-human decisions. The input-boundary catalog always requires actual human review.
 
@@ -160,9 +160,9 @@ Treat `input/` as the source Excel area and `output/` as the home for each new s
 
 Read `stepN tools` and choose the existing actions that answer this case's open questions. Explore from the source and current bound evidence, inspect each action's checks and outputs, then prepare the paired machine-readable JSON and reader-facing Markdown handoff. Review all files named in the handoff and confirm their source and upstream bindings before asking for a decision. Do not continue when a required check fails or an input is stale.
 
-Before entering a stage, run `workflow status` and verify that the stage is currently permitted and every required upstream decision and artifact is current. A successful tool check, report creation, draft CLI action, or clarification does not itself approve a stage or advance the workflow. Keep legacy standalone source-exploration APIs available for discovery; they do not create a workflow approval.
+Before entering a stage, run `workflow status` and verify that the stage is currently permitted and every required upstream decision and artifact is current. A successful tool check, report creation, draft CLI action, or clarification does not itself approve a stage or advance the workflow. Use standalone source-exploration APIs for discovery; record workflow approvals through the source-bound ledger.
 
-The current review order is Agent first, then the actual human on the exact current JSON/Markdown pair. `workflow confirm` records approvals; use `workflow reject` with an explicit `--return-to` route for rejection. Record the human decision only after an explicit response. Legacy TypeSafe delegation and live review commands are disabled in v2. The Step 3 input-boundary checkpoint always requires an actual human decision.
+The current review order is Agent first, then the actual human on the exact current JSON/Markdown pair. `workflow confirm` records approvals; use `workflow reject` with an explicit `--return-to` route for rejection. Record the human decision only after an explicit response. TypeSafe delegation and live review commands are disabled. The Step 3 input-boundary checkpoint always requires an actual human decision.
 
 Ask the user when target, scope, input kind, axis, units, or business interpretation is materially unresolved. Keep unknown facts marked as unknown; do not turn planning into measured execution or claim checks that did not run.
 

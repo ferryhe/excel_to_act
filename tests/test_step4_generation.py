@@ -331,7 +331,7 @@ def test_generation_reader_shows_ordered_non_scalar_values_and_unknowns_without_
     assert "Recorded answer: Not recorded" in front and "status: Not recorded" in front
     assert "[generation_report.json](<machine.json>)" in front
     assert "the actual human reviews it after an explicit response" in front
-    assert "live TypeSafe review commands are disabled in v2" in front
+    assert "live TypeSafe review commands are disabled" in front
     assert "unless a valid scoped TypeSafe delegation applies" not in front
     assert "[[1, 2], [3, 4]]" not in front
     assert json.dumps(payload, sort_keys=True) == before

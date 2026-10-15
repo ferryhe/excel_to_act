@@ -1,6 +1,6 @@
 # Step 2 host-agent contract
 
-A new native v2 workflow has writable Stage 1–5 checkpoints and requires current Agent and actual-human review. Legacy v1 checkpoints and attached-v2 inherited Stage 1–5 evidence are read-only. Legacy TypeSafe delegation does not authorize current v2 reviews.
+A native seven-stage workflow has writable checkpoints with Agent and actual-human review. Attached workflows inherit approved Stage 1–5 evidence as read-only input and review their own Stages 6–7.
 
 Author new instructions, documentation, report narration, and generated artifact prose in English. Preserve source values, formulas, identifiers, and immutable provenance verbatim. Only the repository-root `README.md` and `README.zh-CN.md` are approved bilingual documentation exceptions.
 
@@ -45,7 +45,7 @@ Use `--resume` with `step2 index` or `step2.index.build` to reuse validated entr
 
 For downstream analysis, treat `index.json` and `INDEX.md` as navigation and quality context. Use each entry's stable source identity, status, metrics, diagnostics, artifact references, and next actions to select relevant Step 1 artifacts. Load detailed artifacts progressively, only when needed for analysis; do not copy every artifact into the index or rescan the whole batch. Preserve all entries when selecting work. The analysis agent chooses its analysis tools and loops on their results. Keep analytical findings and conclusions in its own analysis output; Step 2 records indexing, reference integrity, and source quality context only.
 
-`output/step2_index/index.json` is the new batch/source navigation index. It is distinct from the legacy per-workbook `artifact_index.json` produced by `store/local_store.py`.
+`output/step2_index/index.json` provides batch/source navigation. The per-workbook `artifact_index.json` produced by `store/local_store.py` lists that workbook's artifacts.
 
 ## Reviewed conversion checkpoint
 
@@ -59,9 +59,9 @@ Treat `input/` as the source Excel area and `output/` as the home for each new s
 
 Read `stepN tools` and choose the existing actions that answer this case's open questions. Explore from the source and current bound evidence, inspect each action's checks and outputs, then prepare the paired machine-readable JSON and reader-facing Markdown handoff. Review all files named in the handoff and confirm their source and upstream bindings before asking for a decision. Do not continue when a required check fails or an input is stale.
 
-Before entering a stage, run `workflow status` and verify that the stage is currently permitted and every required upstream decision and artifact is current. A successful tool check, report creation, draft CLI action, or clarification does not itself approve a stage or advance the workflow. Keep legacy standalone source-exploration APIs available for discovery; they do not create a workflow approval.
+Before entering a stage, run `workflow status` and verify that the stage is currently permitted and every required upstream decision and artifact is current. A successful tool check, report creation, draft CLI action, or clarification does not itself approve a stage or advance the workflow. Use standalone source-exploration APIs for discovery; record workflow approvals through the source-bound ledger.
 
-The current review order is Agent first, then the actual human on the exact current JSON/Markdown pair. `workflow confirm` records approvals; use `workflow reject` with an explicit `--return-to` route for rejection. Record the human decision only after an explicit response. Legacy TypeSafe delegation and live review commands are disabled in v2. The Step 3 input-boundary checkpoint always requires an actual human decision.
+The current review order is Agent first, then the actual human on the exact current JSON/Markdown pair. `workflow confirm` records approvals; use `workflow reject` with an explicit `--return-to` route for rejection. Record the human decision only after an explicit response. TypeSafe delegation and live review commands are disabled. The Step 3 input-boundary checkpoint always requires an actual human decision.
 
 Ask the user when target, scope, input kind, axis, units, or business interpretation is materially unresolved. Keep unknown facts marked as unknown; do not turn planning into measured execution or claim checks that did not run.
 

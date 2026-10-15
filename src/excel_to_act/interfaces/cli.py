@@ -306,14 +306,15 @@ def workflow_status_command(
 
 @workflow_app.command("attach")
 def workflow_attach(
-    parent: Path = typer.Option(..., "--parent", exists=True, file_okay=False),
+    parent: Path = typer.Option(..., "--parent", exists=True, file_okay=False,
+                                help="Production conversion.workflow.v1 parent with approved Stages 1–5"),
     out: Path = typer.Option(..., "--out", help="New separate seven-stage workflow root"),
     comparison: Path = typer.Option(..., "--comparison", exists=True, dir_okay=False,
                                     help="Approved current native comparison JSON"),
     comparison_sha256: str = typer.Option(..., "--comparison-sha256",
                                           help="Separately verified exact comparison SHA-256"),
 ) -> None:
-    """Attach approved legacy Stages 1–5 and a separately verified native comparison."""
+    """Attach approved parent Stages 1–5 and a separately verified native comparison."""
     try:
         _emit_json(create_attached_workflow(out, parent, comparison, comparison_sha256))
     except Exception as exc:
@@ -338,7 +339,7 @@ def workflow_bind_comparison(
 
 def _require_v2_write(workflow: Path) -> None:
     if load_workflow(workflow)[1]["schema_version"] != "conversion.workflow.v2":
-        raise ValueError("legacy six-stage workflow is read-only in this CLI; use workflow attach for a separate seven-stage root")
+        raise ValueError("this parent workflow is read-only; use workflow attach for a separate seven-stage root")
 
 
 def _reject_upstream_write(workflow: Path) -> None:
@@ -346,7 +347,7 @@ def _reject_upstream_write(workflow: Path) -> None:
     if origin == "native":
         return
     raise typer.BadParameter(
-        "legacy Stages 1–5 are read-only in this CLI" if origin == "legacy"
+        "parent Stages 1–5 are read-only in this CLI" if origin == "legacy"
         else "inherited Stages 1–5 are read-only in an attached seven-stage workflow"
     )
 
@@ -356,10 +357,10 @@ def workflow_delegate(
     workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
     authorization: Path = typer.Option(..., "--authorization", help="Human-authored workflow-bound delegation JSON"),
 ) -> None:
-    """Register an explicit, source-bound TypeSafe review delegation."""
+    """TypeSafe delegation is disabled; use Agent and actual-human review."""
     try:
         _require_v2_write(workflow)
-        raise ValueError("legacy delegation cannot authorize seven-stage publication; a new publication-scoped authorization is required")
+        raise ValueError("TypeSafe delegation is disabled; use Agent and actual-human review")
     except Exception as exc:
         _emit_json({"status": "blocked", "reason": str(exc)})
         raise typer.Exit(code=1) from exc
@@ -372,10 +373,10 @@ def workflow_typesafe(
     request: Path = typer.Option(..., "--request", exists=True, dir_okay=False,
                                  help="Current-artifact-bound TypeSafe Choice request JSON"),
 ) -> None:
-    """Submit a live TypeSafe review and record its response in the workflow."""
+    """Live TypeSafe review is disabled; use Agent and actual-human review."""
     try:
         _require_v2_write(workflow)
-        raise ValueError("seven-stage TypeSafe review requires a new explicit publication-scoped authorization")
+        raise ValueError("live TypeSafe review is disabled; use Agent and actual-human review")
     except Exception as exc:
         _emit_json({"status": "blocked", "reason": str(exc)})
         raise typer.Exit(code=1) from exc
@@ -385,12 +386,12 @@ def workflow_typesafe(
 def workflow_confirm(
     workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
     stage: int = typer.Option(..., "--stage", min=1, max=7),
-    reviewer: str = typer.Option(..., "--reviewer", help="agent, human, or delegated typesafe for stages 3..6"),
-    decision: str = typer.Option(..., "--decision", help="approve or reject"),
+    reviewer: str = typer.Option(..., "--reviewer", help="agent or human; human requires an explicit response"),
+    decision: str = typer.Option(..., "--decision", help="approve; use workflow reject for rejection"),
     message: str = typer.Option(..., "--message", help="Review evidence or the user's explicit response"),
     return_to: int | None = typer.Option(None, "--return-to", min=1, max=7,
                                          help="Required when rejecting; stage to revise"),
-    evidence: Path | None = typer.Option(None, "--evidence", help="Required TypeSafe review record when reviewer is typesafe"),
+    evidence: Path | None = typer.Option(None, "--evidence", hidden=True),
 ) -> None:
     """Record a review receipt for the exact current stage artifact."""
     try:
@@ -407,10 +408,10 @@ def workflow_confirm(
 def workflow_reject(
     workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False),
     stage: int = typer.Option(..., "--stage", min=1, max=7),
-    reviewer: str = typer.Option(..., "--reviewer", help="agent, human, or delegated typesafe for stages 3..6"),
+    reviewer: str = typer.Option(..., "--reviewer", help="agent or human; human requires an explicit response"),
     return_to: int = typer.Option(..., "--return-to", min=1, max=7),
     message: str = typer.Option(..., "--message", help="Evidence-backed reason or explicit user response"),
-    evidence: Path | None = typer.Option(None, "--evidence", help="Required TypeSafe review record when reviewer is typesafe"),
+    evidence: Path | None = typer.Option(None, "--evidence", hidden=True),
 ) -> None:
     """Reject the current artifact and record the required revision stage."""
     try:
@@ -887,11 +888,11 @@ def step6_revoke(
 
 @step6_app.command("report")
 def step6_report(workflow: Path = typer.Option(..., "--workflow", exists=True, file_okay=False)) -> None:
-    """Explain the read-only legacy report and the new Step 7 route."""
+    """Direct final-report requests to Step 7 after accepted internal delivery."""
     _, manifest = load_workflow(workflow)
-    reason = ("legacy Step 6 final reports are read-only; inspect the saved stage6 report"
+    reason = ("this saved report is read-only; inspect its recorded artifacts"
               if manifest["schema_version"] == "conversion.workflow.v1"
-              else "Step 6 now packages tools; use step7 report after accepted delivery")
+              else "Step 6 packages tools; use step7 report after accepted delivery")
     _emit_json({"status": "blocked", "reason": reason})
     raise typer.Exit(code=1)
 
@@ -947,7 +948,7 @@ def views_validate(
     views_file: Path = typer.Option(..., "--views", exists=True, dir_okay=False),
     output: Path = typer.Option(..., "--output", exists=True, dir_okay=False),
 ) -> None:
-    """Validate claims against a legacy view list or a source-bound evidence packet."""
+    """Validate claims against a saved view list or a source-bound evidence packet."""
     try:
         view_data = json.loads(views_file.read_text(encoding="utf-8"))
         agent_output = json.loads(output.read_text(encoding="utf-8"))

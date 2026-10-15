@@ -39,7 +39,7 @@ def test_stages_one_to_three_publish_review_commands_and_agent_contracts() -> No
     assert "step4 discover --workflow DIR" in step3_agent
 
 
-def test_legacy_catalogs_and_new_delivery_catalog_expose_their_scopes() -> None:
+def test_stage_catalogs_expose_native_and_inherited_review_scopes() -> None:
     runner = CliRunner()
     for stage in range(1, 6):
         result = runner.invoke(app, [f"step{stage}", "tools"])
@@ -52,8 +52,8 @@ def test_legacy_catalogs_and_new_delivery_catalog_expose_their_scopes() -> None:
         assert "--decision approve " in confirm
         assert "reject" not in confirm
         assert f"--return-to {routes}" in reject
-        assert "native v2 Stage 1–5 only" in tools_by_name["workflow.confirm"]["availability"]
-        assert "attached v2 inherited stages and legacy v1 are read-only" in tools_by_name["workflow.reject"]["availability"]
+        assert "native workflow Stage 1–5 only" in tools_by_name["workflow.confirm"]["availability"]
+        assert "inherited stages and saved parent evidence are read-only" in tools_by_name["workflow.reject"]["availability"]
         assert "typesafe" not in confirm and "typesafe" not in reject
         if stage >= 3:
             assert "disabled" in tools_by_name["workflow.typesafe"]["availability"]
@@ -73,7 +73,7 @@ def test_legacy_catalogs_and_new_delivery_catalog_expose_their_scopes() -> None:
     reject = next(item for item in final["tools"] if item["name"] == "workflow.reject")
     assert "--return-to 1|2|3|4|5|6|7" in reject["command"]
     assert "--return-to 6|7" in reject["attached_command"]
-    assert "legacy v1" in reject["availability"]
+    assert "inherited stages are read-only" in reject["availability"]
 
     source_root = Path(__file__).resolve().parents[1] / "src" / "excel_to_act" / "steps"
     assert "--return-to 1|2|3|4|5|6" in (source_root / "step6" / "agent.md").read_text(encoding="utf-8")
@@ -83,11 +83,11 @@ def test_legacy_catalogs_and_new_delivery_catalog_expose_their_scopes() -> None:
 def test_workflow_guide_describes_native_and_attached_review_routes() -> None:
     guide = (Path(__file__).resolve().parents[1] / "docs" / "workflow.md").read_text(encoding="utf-8")
     assert "step1 report --run RUN_DIR --out WORKFLOW_DIR" in guide
-    assert "Native v2 uses `workflow confirm` and `workflow reject`" in guide
-    assert "Attached v2 keeps inherited v1 Stage 1–5 receipts as read-only provenance" in guide
+    assert "Native workflows use `workflow confirm` and `workflow reject`" in guide
+    assert "Attached workflows keep inherited Stage 1–5 receipts as read-only provenance" in guide
     assert "`workflow delegate` and `workflow typesafe` reject writes" in guide
     assert "Step 7-only report edits return to Stage 7" in guide
-    assert "attached v2 cannot return to inherited Stages 1–5" in guide
+    assert "An attached workflow cannot return to inherited Stages 1–5" in guide
     assert "report defects to Step 6" not in guide
     for stage in ("3b", "4", "5"):
         row = next(line for line in guide.splitlines() if line.startswith(f"| {stage} —"))
@@ -120,7 +120,7 @@ def test_later_step_agent_contracts_describe_current_human_route() -> None:
     for stage in (3, 4, 5):
         agent = (source_root / f"step{stage}" / "agent.md").read_text(encoding="utf-8")
         assert "actual-human" in agent or "actual human" in agent
-        assert "Legacy TypeSafe delegation" in agent or "legacy TypeSafe delegation" in agent
+        assert "TypeSafe delegation" in agent and "disabled" in agent
         assert "A rejection from any reviewer makes that revision ineligible for later approvals" in agent
     assert "input-boundary catalog always requires actual human review" in (source_root / "step3" / "agent.md").read_text(encoding="utf-8")
     assert "actual human decision on this exact pair" in (source_root / "step6" / "agent.md").read_text(encoding="utf-8")
@@ -137,7 +137,7 @@ def test_emitted_step3_and_step7_agents_describe_current_seven_stage_review_rout
     assert "Stage 7 creates the final report" in step3.stdout
     assert "Stage 6 summarizes" not in step3.stdout
     assert "actual human" in step7.stdout
-    assert "live TypeSafe review commands are disabled in v2" in step7.stdout
+    assert "live TypeSafe review commands are disabled" in step7.stdout
     assert "Use TypeSafe only" not in step7.stdout
     assert "explicitly delegated reviews" not in step7.stdout
 
@@ -151,7 +151,7 @@ def test_current_guides_show_only_the_executable_human_review_route() -> None:
     assert "Agent → human or scoped delegation" not in english
     assert "Agent → 人工或范围匹配的委托" not in chinese
     assert "seven packaged `agent.md` files" in guide
-    assert "live TypeSafe review commands are disabled in v2" in guide
+    assert "live TypeSafe review commands are disabled" in guide
     assert "Use TypeSafe only" not in guide
 
 
@@ -211,7 +211,7 @@ def test_step7_skill_and_template_are_packaged_cli_resources() -> None:
     assert commands["step7.template"] == "step7 template"
 
 
-def test_step6_packaged_skill_routes_current_delivery_and_legacy_report() -> None:
+def test_step6_packaged_skill_routes_internal_delivery_and_final_report() -> None:
     package = files("excel_to_act.steps.step6").joinpath("excel-to-act-step6")
     metadata = package.joinpath("agents", "openai.yaml").read_text(encoding="utf-8")
     skill = package.joinpath("SKILL.md").read_text(encoding="utf-8")
@@ -221,5 +221,5 @@ def test_step6_packaged_skill_routes_current_delivery_and_legacy_report() -> Non
     assert "step6 candidate" in skill and "step6 deliver" in skill
     assert "exact JSON/Markdown pair" in skill and "actual human" in skill
     assert "delivery/readback" in skill and "step7 report" in skill
-    assert "Historical v1" in skill and "read-only" in skill
+    assert "read-only inherited Stages 1–5" in skill
     assert "Step 7" in skill and "final report" in skill

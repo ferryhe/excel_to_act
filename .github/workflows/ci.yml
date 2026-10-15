@@ -96,7 +96,7 @@ jobs:
           cache: pip
 
       - name: Install package and dev dependencies
-        run: python -m pip install -e '.[dev]'
+        run: python -m pip install -e '.[dev]' build
 
       - name: Compile Python sources
         run: python -m compileall src
@@ -109,3 +109,16 @@ jobs:
 
       - name: CLI smoke test
         run: excel-to-act --help
+
+      - name: Build the matching runtime and skill distribution
+        run: |
+          python -m build
+          python tools/build_skill.py --wheel dist/*.whl --out dist
+
+      - name: Retain the Python 3.11 distribution
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: excel-to-act-distribution
+          path: dist/*
+          retention-days: 14
